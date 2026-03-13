@@ -1,0 +1,452 @@
+"""
+Database Module
+Handles storage and retrieval of defect data for historical tracking
+"""
+
+import sqlite3
+import json
+import logging
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+class DefectDatabase:
+    """Handles database operations for defect tracking"""
+    
+    def __init__(self, db_path: str = "data/defects.db"):
+        self.db_path = db_path
+        self._ensure_db_directory()
+        self._init_database()
+    
+    def _ensure_db_directory(self):
+        """Ensure database directory exists"""
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+    
+    def _init_database(self):
+        """Initialize database tables"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Daily snapshots table (for monitored components)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    component TEXT NOT NULL,
+                    total INTEGER NOT NULL,
+                    untriaged INTEGER NOT NULL,
+                    test_bugs INTEGER NOT NULL,
+                    product_bugs INTEGER NOT NULL,
+                    infra_bugs INTEGER NOT NULL,
+                    data JSON NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(date, component)
+                )
+            """)
+            
+            # All components snapshots table (for all 51 components)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS all_components_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    component TEXT NOT NULL,
+                    total INTEGER NOT NULL,
+                    untriaged INTEGER NOT NULL,
+                    test_bugs INTEGER NOT NULL,
+                    product_bugs INTEGER NOT NULL,
+                    infra_bugs INTEGER NOT NULL,
+                    data JSON NOT NULL,
+                    created_at TEXT NOT NULL,
+                    is_monitored INTEGER DEFAULT 0,
+                    UNIQUE(date, component)
+                )
+            """)
+            
+            # SOE Triage snapshots table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS soe_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    total INTEGER NOT NULL,
+                    data JSON NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(date)
+                )
+            """)
+            
+            # Check history table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS check_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    total_defects INTEGER NOT NULL,
+                    total_untriaged INTEGER NOT NULL,
+                    components_checked INTEGER NOT NULL,
+                    success INTEGER NOT NULL,
+                    error_message TEXT,
+                    data JSON NOT NULL
+                )
+            """)
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info("✅ Database initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Error initializing database: {e}")
+            raise
+    
+    def store_daily_snapshot(self, results: Dict):
+        """Store daily snapshot of defect data"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            date = datetime.now().strftime("%Y-%m-%d")
+            created_at = datetime.now().isoformat()
+            
+            # Store component data
+            for component, data in results.get("components", {}).items():
+                cursor.execute("""
+                    INSERT OR REPLACE INTO daily_snapshots 
+                    (date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    date,
+                    component,
+                    data["total"],
+                    data["untriaged"],
+                    data["test_bugs"],
+                    data["product_bugs"],
+                    data["infra_bugs"],
+                    json.dumps(data),
+                    created_at
+                ))
+            
+            # Store SOE Triage data
+            soe_data = results.get("soe_triage")
+            if soe_data:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO soe_snapshots 
+                    (date, total, data, created_at)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    date,
+                    soe_data["total"],
+                    json.dumps(soe_data),
+                    created_at
+                ))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Daily snapshot stored for {date}")
+            
+        except Exception as e:
+            logger.error(f"Error storing daily snapshot: {e}")
+    
+    def store_all_components_snapshot(self, component: str, data: Dict, is_monitored: bool = False):
+        """Store snapshot for any component (all 51 components)"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            date = datetime.now().strftime("%Y-%m-%d")
+            created_at = datetime.now().isoformat()
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO all_components_snapshots
+                (date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data, created_at, is_monitored)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                date,
+                component,
+                data.get("total", 0),
+                data.get("untriaged", 0),
+                data.get("test_bugs", 0),
+                data.get("product_bugs", 0),
+                data.get("infra_bugs", 0),
+                json.dumps(data),
+                created_at,
+                1 if is_monitored else 0
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error storing all components snapshot: {e}")
+    
+    def get_all_components_data(self, component_names: Optional[List[str]] = None, days: int = 7) -> Dict:
+        """Get data for all components or specific components"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            if component_names:
+                placeholders = ','.join('?' * len(component_names))
+                query = f"""
+                    SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data, is_monitored
+                    FROM all_components_snapshots
+                    WHERE date >= ? AND component IN ({placeholders})
+                    ORDER BY date ASC, component ASC
+                """
+                cursor.execute(query, (start_date, *component_names))
+            else:
+                cursor.execute("""
+                    SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data, is_monitored
+                    FROM all_components_snapshots
+                    WHERE date >= ?
+                    ORDER BY date ASC, component ASC
+                """, (start_date,))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            # Format data
+            components_data = {
+                "dates": [],
+                "components": {}
+            }
+            
+            for row in rows:
+                date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data_json, is_monitored = row
+                
+                if date not in components_data["dates"]:
+                    components_data["dates"].append(date)
+                
+                if component not in components_data["components"]:
+                    components_data["components"][component] = []
+                
+                components_data["components"][component].append({
+                    "date": date,
+                    "total": total,
+                    "untriaged": untriaged,
+                    "test_bugs": test_bugs,
+                    "product_bugs": product_bugs,
+                    "infra_bugs": infra_bugs,
+                    "is_monitored": bool(is_monitored),
+                    "data": json.loads(data_json)
+                })
+            
+            return components_data
+            
+        except Exception as e:
+            logger.error(f"Error getting all components data: {e}")
+            return {"dates": [], "components": {}}
+    
+    def get_latest_all_components_snapshot(self, component_names: Optional[List[str]] = None) -> Optional[Dict]:
+        """Get the most recent snapshot for all or specific components"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            if component_names:
+                placeholders = ','.join('?' * len(component_names))
+                query = f"""
+                    SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs
+                    FROM all_components_snapshots
+                    WHERE date = (SELECT MAX(date) FROM all_components_snapshots)
+                    AND component IN ({placeholders})
+                """
+                cursor.execute(query, component_names)
+            else:
+                cursor.execute("""
+                    SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs
+                    FROM all_components_snapshots
+                    WHERE date = (SELECT MAX(date) FROM all_components_snapshots)
+                """)
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if not rows:
+                return None
+            
+            snapshot = {
+                "date": rows[0][0],
+                "components": {}
+            }
+            
+            for row in rows:
+                date, component, total, untriaged, test_bugs, product_bugs, infra_bugs = row
+                snapshot["components"][component] = {
+                    "total": total,
+                    "untriaged": untriaged,
+                    "test_bugs": test_bugs,
+                    "product_bugs": product_bugs,
+                    "infra_bugs": infra_bugs
+                }
+            
+            return snapshot
+            
+        except Exception as e:
+            logger.error(f"Error getting latest all components snapshot: {e}")
+            return None
+    
+    def store_check_history(self, results: Dict, success: bool, error_message: Optional[str] = None):
+        """Store check history"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO check_history
+                (timestamp, total_defects, total_untriaged, components_checked, success, error_message, data)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                datetime.now().isoformat(),
+                results.get("total_defects", 0),
+                results.get("total_untriaged", 0),
+                len(results.get("components", {})),
+                1 if success else 0,
+                error_message,
+                json.dumps(results)
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error storing check history: {e}")
+    
+    def get_weekly_data(self, days: int = 7) -> Dict:
+        """Get data for the last N days"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            # Get component data
+            cursor.execute("""
+                SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data
+                FROM daily_snapshots
+                WHERE date >= ?
+                ORDER BY date ASC
+            """, (start_date,))
+            
+            component_rows = cursor.fetchall()
+            
+            # Get SOE data
+            cursor.execute("""
+                SELECT date, total, data
+                FROM soe_snapshots
+                WHERE date >= ?
+                ORDER BY date ASC
+            """, (start_date,))
+            
+            soe_rows = cursor.fetchall()
+            
+            conn.close()
+            
+            # Format data
+            weekly_data = {
+                "dates": [],
+                "components": {},
+                "soe_triage": []
+            }
+            
+            # Process component data
+            for row in component_rows:
+                date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data_json = row
+                
+                if date not in weekly_data["dates"]:
+                    weekly_data["dates"].append(date)
+                
+                if component not in weekly_data["components"]:
+                    weekly_data["components"][component] = []
+                
+                weekly_data["components"][component].append({
+                    "date": date,
+                    "total": total,
+                    "untriaged": untriaged,
+                    "test_bugs": test_bugs,
+                    "product_bugs": product_bugs,
+                    "infra_bugs": infra_bugs,
+                    "data": json.loads(data_json)
+                })
+            
+            # Process SOE data
+            for row in soe_rows:
+                date, total, data_json = row
+                weekly_data["soe_triage"].append({
+                    "date": date,
+                    "total": total,
+                    "data": json.loads(data_json)
+                })
+            
+            return weekly_data
+            
+        except Exception as e:
+            logger.error(f"Error getting weekly data: {e}")
+            return {"dates": [], "components": {}, "soe_triage": []}
+    
+    def get_latest_snapshot(self) -> Optional[Dict]:
+        """Get the most recent snapshot"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs
+                FROM daily_snapshots
+                WHERE date = (SELECT MAX(date) FROM daily_snapshots)
+            """)
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if not rows:
+                return None
+            
+            snapshot = {
+                "date": rows[0][0],
+                "components": {}
+            }
+            
+            for row in rows:
+                date, component, total, untriaged, test_bugs, product_bugs, infra_bugs = row
+                snapshot["components"][component] = {
+                    "total": total,
+                    "untriaged": untriaged,
+                    "test_bugs": test_bugs,
+                    "product_bugs": product_bugs,
+                    "infra_bugs": infra_bugs
+                }
+            
+            return snapshot
+            
+        except Exception as e:
+            logger.error(f"Error getting latest snapshot: {e}")
+            return None
+    
+    def cleanup_old_data(self, retention_days: int = 90):
+        """Remove data older than retention period"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cutoff_date = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+            
+            cursor.execute("DELETE FROM daily_snapshots WHERE date < ?", (cutoff_date,))
+            cursor.execute("DELETE FROM soe_snapshots WHERE date < ?", (cutoff_date,))
+            cursor.execute("DELETE FROM check_history WHERE timestamp < ?", (cutoff_date,))
+            
+            deleted = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Cleaned up {deleted} old records")
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up old data: {e}")
+
+# Made with Bob

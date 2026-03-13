@@ -1,0 +1,152 @@
+# Defect Monitor Server Configuration
+
+# IBM Configuration
+ibm:
+
+  username: "username"  # Your IBM w3id email
+  password: "password"  # Your IBM w3id password (will be encrypted)
+  build_break_url: "https://libh-proxy1.fyre.ibm.com/buildBreakReport"
+  soe_triage_url: "https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workitems.json"
+  session_timeout: 7200  # 2 hours in seconds
+
+# Slack Configuration
+slack:
+  webhook_url: "https://hooks.slack.com/triggers/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"  # Your Slack webhook URL
+  channel: "#defect-notifications"  # Default channel
+  username: "Defect Monitor Bot"
+  icon_emoji: ":bug:"
+
+# All Available Components (51 Liberty components)
+# These will be fetched and tracked in the background
+all_components:
+  - AdminCenter
+  - App Client
+  - Async Scheduling (Persistent Executor, CommonJ)
+  - Batch
+  - Bean Validation
+  - Build
+  - CDI
+  - Classloading
+  - Cloud/Virtualization
+  - Core Security
+  - Database (jdbc, oracle, db2, derby)
+  - Docs
+  - Dynacache
+  - EE / MP Concurrency
+  - EJB Container
+  - IIOP/ORB
+  - IBM i
+  - Install
+  - InstantOn
+  - Intelligent Management
+  - JAX-RS
+  - Jakarta Data
+  - Java EE Platform
+  - JCA
+  - JPA
+  - JSON
+  - Kernel/Bootstrap
+  - MCP
+  - Messaging
+  - MicroProfile Core (config, fault tolerance, reactive)
+  - MicroProfile GraphQL
+  - MicroProfile Observability (metrics, open tracing, health)
+  - MicroProfile Open API
+  - MicroProfile REST Client
+  - Mongo
+  - OSGi Applications
+  - Observability
+  - Real-Time Comm (WebRTC, SIP)
+  - Repository
+  - Security SSO (jwt, oauth, oidc, social, mpjwt, saml)
+  - Spring Boot
+  - Systems Management
+  - Transactions
+  - Transport (cfw, http, ssl, websockets)
+  - Usage Metering
+  - WAS on Cloud
+  - Web Comps (servlet, httpsession, jsp, jsf, etc)
+  - Web Services
+  - Web Services Security
+  - WebSphere Automation
+  - z/OS
+
+# Monitored Components (Only these will send Slack notifications)
+monitored_components:
+  - name: "JCA"
+    notify: true
+    slack_channel: "#jca-defects"
+  - name: "JPA"
+    notify: true
+    slack_channel: "#jpa-defects"
+  - name: "Spring Boot"
+    notify: true
+    slack_channel: "#springboot-defects"
+  - name: "Messaging"
+    notify: true
+    slack_channel: "#messaging-defects"
+
+# Schedule Configuration
+schedule:
+  daily_check_time: "10:00"  # 24-hour format (IST)
+  weekly_dashboard_day: "monday"  # Day of week
+  weekly_dashboard_time: "11:00"  # 24-hour format (IST)
+  all_components_fetch_time: "09:00"  # Fetch all 51 components daily
+  timezone: "Asia/Kolkata"
+
+# Dashboard Configuration
+dashboard:
+  port: 5000
+  host: "0.0.0.0"
+  secret_key: "change-this-to-random-secret-key"  # Change in production
+  retention_days: 90  # Keep data for 90 days
+  enable_component_explorer: true  # Enable component explorer feature
+
+# Database Configuration
+database:
+  type: "sqlite"  # sqlite or postgresql
+  path: "data/defects.db"  # For SQLite
+  # For PostgreSQL, uncomment and configure:
+  # host: "localhost"
+  # port: 5432
+  # name: "defect_monitor"
+  # user: "defect_user"
+  # password: "secure_password"
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  file: "logs/defect_monitor.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
+
+# Notification Rules
+notifications:
+  send_on_no_defects: false  # Send notification even if no defects found
+  group_by_component: true
+  include_soe_defects: true
+  max_defects_per_notification: 50
+  only_notify_monitored: true  # Only send notifications for monitored_components
+
+# SOE Triage Configuration
+soe_triage:
+  enabled: true
+  project_area: "WS-CD"  # WebSphere Liberty project area
+  query_overdue_days: 7  # Defects overdue by more than 7 days
+  max_results: 100
+
+# Health Check
+health_check:
+  enabled: true
+  interval: 300  # 5 minutes
+  alert_on_failure: true
+
+# Feature Flags
+features:
+  all_components_tracking: true  # Track all 51 components in background
+  component_explorer: true  # Enable component explorer in dashboard
+  soe_triage_tracking: true  # Track SOE Triage overdue defects
+  weekly_dashboard: true  # Generate weekly dashboard
+  selective_notifications: true  # Only notify for monitored components
+
+# Made with Bob

@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Defect Monitor - Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #0a0e27 0%, #151829 100%);
+            color: #e1e8ed;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .header {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 30px;
+            border-radius: 15px;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            color: #fff;
+        }
+        
+        .header .subtitle {
+            opacity: 0.8;
+            font-size: 1.1em;
+        }
+        
+        /* Component Selector */
+        .component-selector {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 25px;
+            border-radius: 15px;
+            margin-bottom: 30px;
+        }
+        
+        .selector-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .selector-header h2 {
+            font-size: 1.5em;
+            color: #fff;
+        }
+        
+        .component-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .component-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .component-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        .component-item input[type="checkbox"] {
+            cursor: pointer;
+        }
+        
+        .component-item label {
+            cursor: pointer;
+            flex: 1;
+            font-size: 0.9em;
+        }
+        
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #1d9bf0 0%, #0d8bd9 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(29, 155, 240, 0.4);
+        }
+        
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        /* KPI Cards */
+        .kpi-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .kpi-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 25px;
+            transition: transform 0.3s;
+        }
+        
+        .kpi-card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(29, 155, 240, 0.4);
+        }
+        
+        .kpi-label {
+            color: #8899a6;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+        
+        .kpi-value {
+            font-size: 3em;
+            font-weight: bold;
+            color: #1d9bf0;
+            margin: 10px 0;
+        }
+        
+        .kpi-trend {
+            font-size: 0.9em;
+            color: #8899a6;
+        }
+        
+        /* Charts */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .chart-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 25px;
+        }
+        
+        .chart-title {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 20px;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+        
+        /* SOE Triage Table */
+        .table-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+        }
+        
+        .table-wrapper {
+            overflow-x: auto;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            color: #8899a6;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        
+        td {
+            padding: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        
+        .defect-id {
+            color: #1d9bf0;
+            font-weight: 600;
+        }
+        
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 50px;
+            font-size: 1.2em;
+            color: #8899a6;
+        }
+        
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-top: 4px solid #1d9bf0;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 Defect Monitor Dashboard</h1>
+        <div class="subtitle">Real-time defect tracking and analytics</div>
+    </div>
+
+    <!-- Component Selector -->
+    <div class="component-selector">
+        <div class="selector-header">
+            <h2>🔍 Select Components</h2>
+            <div class="action-buttons">
+                <button class="btn btn-secondary" onclick="selectAll()">Select All</button>
+                <button class="btn btn-secondary" onclick="clearAll()">Clear All</button>
+                <button class="btn btn-primary" onclick="loadDashboard()" id="loadBtn">Load Dashboard</button>
+            </div>
+        </div>
+        
+        <div class="component-grid" id="componentGrid">
+            <div class="loading">
+                <div class="spinner"></div>
+                Loading components...
+            </div>
+        </div>
+        
+        <div style="color: #8899a6; font-size: 0.9em;">
+            <span id="selectedCount">0</span> components selected
+        </div>
+    </div>
+
+    <!-- Dashboard Content -->
+    <div id="dashboardContent" style="display: none;">
+        <!-- KPI Cards -->
+        <div class="kpi-cards" id="kpiCards"></div>
+
+        <!-- Charts -->
+        <div class="charts-grid">
+            <div class="chart-card">
+                <div class="chart-title">📈 Defect Trend</div>
+                <div class="chart-container">
+                    <canvas id="trendChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="chart-card">
+                <div class="chart-title">📊 Defects by Component</div>
+                <div class="chart-container">
+                    <canvas id="pieChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- SOE Triage Table -->
+        <div class="table-card">
+            <div class="chart-title">⚠️ SOE Triage: Overdue Defects</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Summary</th>
+                            <th>Functional Area</th>
+                            <th>Owner</th>
+                            <th>State</th>
+                            <th>Created</th>
+                        </tr>
+                    </thead>
+                    <tbody id="soeTableBody">
+                        <tr>
+                            <td colspan="6" style="text-align: center; color: #8899a6;">No SOE Triage defects</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allComponents = [];
+        let selectedComponents = [];
+        let charts = {};
+
+        // Load components on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            await loadComponents();
+            loadSavedSelection();
+        });
+
+        async function loadComponents() {
+            try {
+                const response = await fetch('/api/all-components');
+                const data = await response.json();
+                
+                allComponents = data.all_components;
+                const monitored = data.monitored_components;
+                
+                const grid = document.getElementById('componentGrid');
+                grid.innerHTML = '';
+                
+                allComponents.forEach(component => {
+                    const isMonitored = monitored.includes(component);
+                    const item = document.createElement('div');
+                    item.className = 'component-item';
+                    item.innerHTML = `
+                        <input type="checkbox" id="comp-${component}" value="${component}" onchange="updateSelection()">
+                        <label for="comp-${component}">${component} ${isMonitored ? '⭐' : ''}</label>
+                    `;
+                    grid.appendChild(item);
+                });
+                
+            } catch (error) {
+                console.error('Error loading components:', error);
+                document.getElementById('componentGrid').innerHTML = '<div class="loading">Error loading components</div>';
+            }
+        }
+
+        function loadSavedSelection() {
+            const saved = localStorage.getItem('selectedComponents');
+            if (saved) {
+                selectedComponents = JSON.parse(saved);
+                selectedComponents.forEach(comp => {
+                    const checkbox = document.getElementById(`comp-${comp}`);
+                    if (checkbox) checkbox.checked = true;
+                });
+                updateSelection();
+            }
+        }
+
+        function updateSelection() {
+            selectedComponents = Array.from(document.querySelectorAll('#componentGrid input:checked'))
+                .map(cb => cb.value);
+            document.getElementById('selectedCount').textContent = selectedComponents.length;
+            localStorage.setItem('selectedComponents', JSON.stringify(selectedComponents));
+        }
+
+        function selectAll() {
+            document.querySelectorAll('#componentGrid input[type="checkbox"]').forEach(cb => cb.checked = true);
+            updateSelection();
+        }
+
+        function clearAll() {
+            document.querySelectorAll('#componentGrid input[type="checkbox"]').forEach(cb => cb.checked = false);
+            updateSelection();
+        }
+
+        async function loadDashboard() {
+            if (selectedComponents.length === 0) {
+                alert('Please select at least one component');
+                return;
+            }
+
+            const loadBtn = document.getElementById('loadBtn');
+            loadBtn.disabled = true;
+            loadBtn.textContent = 'Loading...';
+
+            try {
+                // Fetch data for selected components
+                const response = await fetch('/api/fetch-components', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ components: selectedComponents })
+                });
+
+                const data = await response.json();
+                
+                // Show dashboard
+                document.getElementById('dashboardContent').style.display = 'block';
+                
+                // Render KPIs
+                renderKPIs(data.results);
+                
+                // Render charts
+                renderCharts(data.results);
+                
+                // Load SOE Triage data
+                await loadSOETriage();
+                
+                // Scroll to dashboard
+                document.getElementById('dashboardContent').scrollIntoView({ behavior: 'smooth' });
+                
+            } catch (error) {
+                console.error('Error loading dashboard:', error);
+                alert('Error loading dashboard. Please try again.');
+            } finally {
+                loadBtn.disabled = false;
+                loadBtn.textContent = 'Load Dashboard';
+            }
+        }
+
+        function renderKPIs(results) {
+            const kpiCards = document.getElementById('kpiCards');
+            
+            let totalDefects = 0;
+            let totalUntriaged = 0;
+            let totalTestBugs = 0;
+            let totalProductBugs = 0;
+            
+            Object.values(results).forEach(comp => {
+                totalDefects += comp.total;
+                totalUntriaged += comp.untriaged;
+                totalTestBugs += comp.test_bugs;
+                totalProductBugs += comp.product_bugs;
+            });
+            
+            kpiCards.innerHTML = `
+                <div class="kpi-card">
+                    <div class="kpi-label">Total Defects</div>
+                    <div class="kpi-value">${totalDefects}</div>
+                    <div class="kpi-trend">${selectedComponents.length} components</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Untriaged</div>
+                    <div class="kpi-value">${totalUntriaged}</div>
+                    <div class="kpi-trend">${Math.round((totalUntriaged/totalDefects)*100)}% of total</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Test Bugs</div>
+                    <div class="kpi-value">${totalTestBugs}</div>
+                    <div class="kpi-trend">Test infrastructure</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Product Bugs</div>
+                    <div class="kpi-value">${totalProductBugs}</div>
+                    <div class="kpi-trend">Product issues</div>
+                </div>
+            `;
+        }
+
+        function renderCharts(results) {
+            // Destroy existing charts
+            Object.values(charts).forEach(chart => chart.destroy());
+            charts = {};
+            
+            // Prepare data
+            const labels = Object.keys(results);
+            const untriagedData = labels.map(comp => results[comp].untriaged);
+            const totalData = labels.map(comp => results[comp].total);
+            
+            // Trend Chart
+            const trendCtx = document.getElementById('trendChart').getContext('2d');
+            charts.trend = new Chart(trendCtx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Untriaged',
+                        data: untriagedData,
+                        borderColor: '#ff6b9d',
+                        backgroundColor: 'rgba(255, 107, 157, 0.1)',
+                        tension: 0.4
+                    }, {
+                        label: 'Total',
+                        data: totalData,
+                        borderColor: '#1d9bf0',
+                        backgroundColor: 'rgba(29, 155, 240, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#e1e8ed' } }
+                    },
+                    scales: {
+                        y: { ticks: { color: '#8899a6' }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                        x: { ticks: { color: '#8899a6' }, grid: { color: 'rgba(255,255,255,0.1)' } }
+                    }
+                }
+            });
+            
+            // Pie Chart
+            const pieCtx = document.getElementById('pieChart').getContext('2d');
+            charts.pie = new Chart(pieCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: totalData,
+                        backgroundColor: [
+                            '#1d9bf0', '#ff6b9d', '#00d4aa', '#ffad1f', 
+                            '#8b5cf6', '#ec4899', '#10b981', '#f59e0b'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#e1e8ed' } }
+                    }
+                }
+            });
+        }
+
+        async function loadSOETriage() {
+            try {
+                const response = await fetch('/api/weekly-data?days=1');
+                const data = await response.json();
+                
+                // This would need SOE data from backend
+                // For now, show placeholder
+                const tbody = document.getElementById('soeTableBody');
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #8899a6;">SOE Triage data will be available after first scheduled check</td></tr>';
+                
+            } catch (error) {
+                console.error('Error loading SOE Triage:', error);
+            }
+        }
+    </script>
+</body>
+</html>

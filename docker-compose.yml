@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  defect-monitor:
+    build: .
+    container_name: defect-monitor-server
+    ports:
+      - "5001:5000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+    environment:
+      - TZ=Asia/Kolkata
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - defect-monitor-network
+
+networks:
+  defect-monitor-network:
+    driver: bridge
+
+# Made with Bob
