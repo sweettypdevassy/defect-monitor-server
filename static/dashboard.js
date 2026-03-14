@@ -488,6 +488,10 @@ function renderBarChart(componentBreakdown) {
     // Check if we have the new detailed breakdown, otherwise use old format
     const hasDetailedBreakdown = componentBreakdown.testBugs && componentBreakdown.testBugs.length > 0;
     
+    console.log('=== Bar Chart Debug ===');
+    console.log('componentBreakdown:', componentBreakdown);
+    console.log('hasDetailedBreakdown:', hasDetailedBreakdown);
+    
     let untriaged, testBugs, productBugs, infraBugs;
     
     if (hasDetailedBreakdown) {
@@ -496,6 +500,7 @@ function renderBarChart(componentBreakdown) {
         testBugs = componentBreakdown.testBugs || [];
         productBugs = componentBreakdown.productBugs || [];
         infraBugs = componentBreakdown.infraBugs || [];
+        console.log('Using detailed breakdown:', { untriaged, testBugs, productBugs, infraBugs });
     } else {
         // Old format - show total and untriaged only
         const total = componentBreakdown.total || [];
@@ -564,10 +569,12 @@ function renderBarChart(componentBreakdown) {
             },
             scales: {
                 x: {
+                    stacked: true,
                     grid: { display: false },
                     ticks: { color: '#8899a6', font: { size: 9 } }
                 },
                 y: {
+                    stacked: true,
                     beginAtZero: true,
                     grid: { color: 'rgba(255, 255, 255, 0.05)', drawBorder: false },
                     ticks: { color: '#8899a6', font: { size: 9 } }
@@ -807,12 +814,18 @@ async function generateExplorerDashboard() {
             })
         });
         
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
         const data = await response.json();
+        console.log('Received data:', data);
         
         // Check if data has any content
         const hasData = data && data.summary && Object.keys(data.summary).length > 0;
         
         if (!hasData) {
+            console.error('No data in response:', data);
             alert('No data available for selected components.\n\nPlease click "🔄 Fetch Latest Data" button first to collect defect data for all components.');
             return;
         }
@@ -1057,8 +1070,14 @@ async function renderExplorerSOETriageTable(defectsArray) {
 // Render explorer KPI cards
 function renderExplorerKPICards(summary) {
     const kpiRow = document.getElementById('explorerKpiRow');
-    const untriagedPercent = summary.totalDefects > 0
-        ? Math.round((summary.untriaged / summary.totalDefects) * 100)
+    const totalDefects = summary.total || summary.totalDefects || 0;
+    const untriaged = summary.untriaged || 0;
+    const testBugs = summary.test_bugs || summary.testBugs || 0;
+    const productBugs = summary.product_bugs || summary.productBugs || 0;
+    const infraBugs = summary.infra_bugs || summary.infraBugs || 0;
+    
+    const untriagedPercent = totalDefects > 0
+        ? Math.round((untriaged / totalDefects) * 100)
         : 0;
     const slaCompliance = Math.max(0, Math.min(100, 100 - untriagedPercent));
     
@@ -1066,28 +1085,28 @@ function renderExplorerKPICards(summary) {
         <div class="kpi-card" style="animation-delay: 0s;">
             <div class="icon">🏆</div>
             <div class="label">Total Defects</div>
-            <div class="value">${summary.totalDefects}</div>
+            <div class="value">${totalDefects}</div>
         </div>
         <div class="kpi-card" style="animation-delay: 0.1s;">
             <div class="icon">📍</div>
             <div class="label">Untriaged</div>
-            <div class="value">${summary.untriaged}</div>
+            <div class="value">${untriaged}</div>
             <div class="change neutral">${untriagedPercent}% of total</div>
         </div>
         <div class="kpi-card" style="animation-delay: 0.2s;">
             <div class="icon">⭐</div>
             <div class="label">Test Bugs</div>
-            <div class="value">${summary.testBugs}</div>
+            <div class="value">${testBugs}</div>
         </div>
         <div class="kpi-card" style="animation-delay: 0.3s;">
             <div class="icon">🔒</div>
             <div class="label">Product Bugs</div>
-            <div class="value">${summary.productBugs}</div>
+            <div class="value">${productBugs}</div>
         </div>
         <div class="kpi-card" style="animation-delay: 0.4s;">
             <div class="icon">🔮</div>
             <div class="label">Infrastructure Issues</div>
-            <div class="value">${summary.infraBugs}</div>
+            <div class="value">${infraBugs}</div>
         </div>
         <div class="kpi-card" style="animation-delay: 0.5s;">
             <div class="label">SLA Compliance</div>
@@ -1219,7 +1238,7 @@ function renderExplorerPieChart(componentBreakdown, summary) {
                 ctx.font = `bold ${fontSize}em sans-serif`;
                 ctx.textBaseline = 'middle';
                 ctx.fillStyle = '#fff';
-                const text = summary.totalDefects.toString();
+                const text = (summary.total || summary.totalDefects || 0).toString();
                 const textX = Math.round((width - ctx.measureText(text).width) / 2);
                 const textY = height / 2 - 8;
                 ctx.fillText(text, textX, textY);
@@ -1276,8 +1295,8 @@ function renderExplorerBarChart(componentBreakdown) {
                 tooltip: { backgroundColor: '#1a1f3a', titleColor: '#fff', bodyColor: '#e1e8ed', borderColor: 'rgba(255, 255, 255, 0.1)', borderWidth: 1, padding: 8, bodyFont: { size: 10 }, titleFont: { size: 10 } }
             },
             scales: {
-                x: { grid: { display: false }, ticks: { color: '#8899a6', font: { size: 9 } } },
-                y: { beginAtZero: true, grid: { color: 'rgba(255, 255, 255, 0.05)', drawBorder: false }, ticks: { color: '#8899a6', font: { size: 9 } } }
+                x: { stacked: true, grid: { display: false }, ticks: { color: '#8899a6', font: { size: 9 } } },
+                y: { stacked: true, beginAtZero: true, grid: { color: 'rgba(255, 255, 255, 0.05)', drawBorder: false }, ticks: { color: '#8899a6', font: { size: 9 } } }
             }
         }
     });

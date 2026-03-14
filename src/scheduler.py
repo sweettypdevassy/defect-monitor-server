@@ -250,11 +250,22 @@ class DefectScheduler:
             if self.defect_checker.authenticator.refresh_session():
                 logger.info("✅ Session refreshed successfully")
             else:
-                logger.error("❌ Session refresh failed")
-                self.slack_notifier.send_error_notification("IBM session refresh failed")
+                # Session refresh failed, but check if we can still authenticate
+                logger.warning("⚠️ Session refresh returned false, verifying authentication...")
+                
+                # Try to get a session - this will trigger re-authentication if needed
+                session = self.defect_checker.authenticator.get_session()
+                
+                if session:
+                    logger.info("✅ Session recovered through re-authentication")
+                else:
+                    # Only send error if we truly can't authenticate
+                    logger.error("❌ Session refresh and re-authentication both failed")
+                    self.slack_notifier.send_error_notification("IBM session refresh failed - unable to authenticate")
                 
         except Exception as e:
             logger.error(f"Error refreshing session: {e}")
+            self.slack_notifier.send_error_notification(f"IBM session refresh error: {str(e)}")
     
     def cleanup_old_data(self):
         """Clean up old data from database"""

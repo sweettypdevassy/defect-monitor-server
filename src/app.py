@@ -116,6 +116,14 @@ def initialize_services():
 
 # Routes
 
+@app.after_request
+def add_header(response):
+    """Add headers to prevent caching during development"""
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, post-check=0, pre-check=0, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '-1'
+    return response
+
 @app.route('/')
 def index():
     """Home page"""
@@ -328,11 +336,24 @@ def api_soe_defects():
     try:
         # Get SOE defects from database
         soe_defects = database.get_soe_defects()
+        raw_defects = soe_defects.get("defects", [])
+        
+        # Normalize field names to camelCase for frontend
+        normalized_defects = []
+        for defect in raw_defects:
+            normalized_defects.append({
+                "id": defect.get("id"),
+                "summary": defect.get("summary", ""),
+                "functionalArea": defect.get("functionalArea") or defect.get("functional_area", ""),
+                "filedAgainst": defect.get("filedAgainst") or defect.get("filed_against", ""),
+                "creationDate": defect.get("creationDate") or defect.get("creation_date", ""),
+                "ownedBy": defect.get("ownedBy") or defect.get("owned_by", "Unassigned")
+            })
         
         return jsonify({
-            "defects": soe_defects.get("defects", []),
+            "defects": normalized_defects,
             "last_fetch": soe_defects.get("last_fetch"),
-            "count": len(soe_defects.get("defects", []))
+            "count": len(normalized_defects)
         })
     except Exception as e:
         logger.error(f"Error getting SOE defects: {e}")
@@ -357,7 +378,7 @@ def api_components():
 
 @app.route('/api/explorer/data', methods=['POST'])
 def api_explorer_data():
-    """Get dashboard data for selected components from defect_snapshots table"""
+    """Get dashboard data for selected components from all_components_snapshots table"""
     try:
         data = request.get_json()
         selected_components = data.get('components', [])
@@ -365,51 +386,113 @@ def api_explorer_data():
         if not selected_components:
             return jsonify({"error": "No components selected"}), 400
         
-        # Get data from defect_snapshots table (same as main dashboard)
+        # Get data from all_components_snapshots table (data from Check Now)
         days = 7
-        weekly_data = database.get_weekly_data(days=days)
+        components_data = database.get_all_components_data(selected_components, days)
         
-        # Filter data for selected components only
-        if weekly_data and 'component_breakdown' in weekly_data:
-            # Filter component breakdown
-            filtered_breakdown = {}
+        if not components_data or not components_data.get("components"):
+            return jsonify({"error": "No data available for selected components"}), 404
+        
+        # Get latest data for each component to calculate summary
+        latest_data = {}
+        for comp_name, comp_history in components_data["components"].items():
+            if comp_history:
+                # Get the most recent entry
+                latest_data[comp_name] = comp_history[-1]
+        
+        # Calculate summary statistics
+        total_defects = sum(comp['total'] for comp in latest_data.values())
+        untriaged_defects = sum(comp['untriaged'] for comp in latest_data.values())
+        test_bugs = sum(comp['test_bugs'] for comp in latest_data.values())
+        product_bugs = sum(comp['product_bugs'] for comp in latest_data.values())
+        infra_bugs = sum(comp['infra_bugs'] for comp in latest_data.values())
+        
+        # Build daily trend data
+        dates = components_data.get("dates", [])
+        
+        # Format dates as labels (e.g., "Mon", "Tue", etc.)
+        from datetime import datetime
+        labels = []
+        for date_str in dates:
+            try:
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                labels.append(date_obj.strftime("%a"))  # Mon, Tue, etc.
+            except:
+                labels.append(date_str)
+        
+        daily_trend = {
+            "labels": labels,
+            "total": [],
+            "untriaged": []
+        }
+        
+        for date in dates:
+            date_total = 0
+            date_untriaged = 0
+            for comp_name, comp_history in components_data["components"].items():
+                for entry in comp_history:
+                    if entry["date"] == date:
+                        date_total += entry["total"]
+                        date_untriaged += entry["untriaged"]
+                        break
+            daily_trend["total"].append(date_total)
+            daily_trend["untriaged"].append(date_untriaged)
+        
+        # Get SOE defects filtered by selected components
+        soe_data = database.get_soe_defects()
+        all_soe_defects = soe_data.get("defects", [])
+        filtered_soe = []
+        for defect in all_soe_defects:
+            functional_area = defect.get("functionalArea", "") or defect.get("functional_area", "")
+            filed_against = defect.get("filedAgainst", "") or defect.get("filed_against", "")
+            
+            # Check if defect matches any selected component
             for comp in selected_components:
-                if comp in weekly_data['component_breakdown']:
-                    filtered_breakdown[comp] = weekly_data['component_breakdown'][comp]
-            
-            # Recalculate summary for selected components only
-            total_defects = sum(comp['total'] for comp in filtered_breakdown.values())
-            untriaged_defects = sum(comp['untriaged'] for comp in filtered_breakdown.values())
-            test_bugs = sum(comp['test_bugs'] for comp in filtered_breakdown.values())
-            product_bugs = sum(comp['product_bugs'] for comp in filtered_breakdown.values())
-            infra_bugs = sum(comp['infra_bugs'] for comp in filtered_breakdown.values())
-            
-            dashboard_data = {
-                "summary": {
+                if (comp.lower() in functional_area.lower() or
+                    comp.lower() in filed_against.lower()):
+                    filtered_soe.append({
+                        "id": defect.get("id"),
+                        "summary": defect.get("summary", ""),
+                        "functionalArea": functional_area,
+                        "filedAgainst": filed_against,
+                        "creationDate": defect.get("creationDate", "") or defect.get("creation_date", "")
+                    })
+                    break
+        
+        # Build dashboard data
+        logger.info(f"Latest data keys: {list(latest_data.keys())}")
+        logger.info(f"Sample component data: {list(latest_data.values())[0] if latest_data else 'No data'}")
+        
+        dashboard_data = {
+            "summary": {
+                "totalDefects": total_defects,
+                "untriaged": untriaged_defects,
+                "testBugs": test_bugs,
+                "productBugs": product_bugs,
+                "infraBugs": infra_bugs,
+                "triageRate": round((total_defects - untriaged_defects) / total_defects * 100, 1) if total_defects > 0 else 0
+            },
+            "dailyTrend": daily_trend,
+            "componentBreakdown": {
+                "labels": list(latest_data.keys()),
+                "total": [comp.get('total', 0) for comp in latest_data.values()],
+                "untriaged": [comp.get('untriaged', 0) for comp in latest_data.values()],
+                "testBugs": [comp.get('test_bugs', 0) for comp in latest_data.values()],
+                "productBugs": [comp.get('product_bugs', 0) for comp in latest_data.values()],
+                "infraBugs": [comp.get('infra_bugs', 0) for comp in latest_data.values()]
+            },
+            "weekComparison": {
+                "thisWeek": {
                     "total": total_defects,
-                    "untriaged": untriaged_defects,
-                    "test_bugs": test_bugs,
-                    "product_bugs": product_bugs,
-                    "infra_bugs": infra_bugs,
-                    "triage_rate": round((total_defects - untriaged_defects) / total_defects * 100, 1) if total_defects > 0 else 0
+                    "untriaged": untriaged_defects
                 },
-                "dailyTrend": weekly_data.get("daily_trend", {}),
-                "componentBreakdown": {
-                    "labels": list(filtered_breakdown.keys()),
-                    "total": [comp['total'] for comp in filtered_breakdown.values()],
-                    "untriaged": [comp['untriaged'] for comp in filtered_breakdown.values()]
-                },
-                "weekComparison": weekly_data.get("week_comparison", {}),
-                "soeTriageDefects": weekly_data.get("soe_triage_defects", [])
-            }
-        else:
-            dashboard_data = {
-                "summary": {},
-                "dailyTrend": {},
-                "componentBreakdown": {},
-                "weekComparison": {},
-                "soeTriageDefects": []
-            }
+                "lastWeek": {
+                    "total": 0,
+                    "untriaged": 0
+                }
+            },
+            "soeTriageDefects": filtered_soe
+        }
         
         return jsonify(dashboard_data)
     except Exception as e:

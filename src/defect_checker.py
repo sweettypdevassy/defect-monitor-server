@@ -304,7 +304,7 @@ class DefectChecker:
     def parse_defects(self, defects: List[Dict], component: str) -> Dict:
         """
         Parse and categorize defects - ONLY returns untriaged defects
-        Matches the logic from defect-triaging-extension
+        Matches the logic from defect-triaging-extension and IBM Build Break Report
         """
         untriaged_defects = []
         untriaged_count = 0
@@ -320,17 +320,32 @@ class DefectChecker:
             if not isinstance(triage_tags, list):
                 triage_tags = []
             
-            # A defect is untriaged if it does NOT have any of these tags:
-            # - test_bug or test
-            # - product_bug or product
-            # - infrastructure_bug or infrastructure
-            has_triaged_tag = any(
-                tag.lower() in ['test_bug', 'test', 'product_bug', 'product', 'infrastructure_bug', 'infrastructure'] or
-                'test_bug' in tag.lower() or
-                'product_bug' in tag.lower() or
-                'infrastructure_bug' in tag.lower()
-                for tag in triage_tags
+            # Convert all tags to lowercase strings for comparison
+            tags_lower = [str(tag).lower().strip() for tag in triage_tags]
+            
+            # Check for specific triage tags with flexible matching
+            # Match exact tags or tags containing the keywords
+            has_test_bug = any(
+                tag == 'test_bug' or tag == 'test' or
+                'test_bug' in tag or 'testbug' in tag
+                for tag in tags_lower
             )
+            
+            has_product_bug = any(
+                tag == 'product_bug' or tag == 'product' or
+                'product_bug' in tag or 'productbug' in tag
+                for tag in tags_lower
+            )
+            
+            has_infra_bug = any(
+                tag == 'infrastructure_bug' or tag == 'infrastructure' or tag == 'infra' or
+                'infrastructure_bug' in tag or 'infrastructurebug' in tag or
+                'infra_bug' in tag or 'infrabug' in tag
+                for tag in tags_lower
+            )
+            
+            # A defect is untriaged if it does NOT have any of these specific tags
+            has_triaged_tag = has_test_bug or has_product_bug or has_infra_bug
             
             is_untriaged = not has_triaged_tag
             
@@ -349,13 +364,13 @@ class DefectChecker:
                 })
             else:
                 # Categorize triaged defects by their tags (for statistics)
-                tag_str = ' '.join(str(tag).lower() for tag in triage_tags)
-                
-                if 'test_bug' in tag_str or 'test' in tag_str:
-                    test_bugs_count += 1
-                elif 'infrastructure_bug' in tag_str or 'infrastructure' in tag_str:
+                # Priority order: infra_bug > test_bug > product_bug
+                # This matches IBM Build Break Report categorization
+                if has_infra_bug:
                     infra_bugs_count += 1
-                elif 'product_bug' in tag_str or 'product' in tag_str:
+                elif has_test_bug:
+                    test_bugs_count += 1
+                elif has_product_bug:
                     product_bugs_count += 1
         
         result = {
