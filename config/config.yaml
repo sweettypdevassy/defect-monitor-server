@@ -2,12 +2,25 @@
 
 # IBM Configuration
 ibm:
-
-  username: "username"  # Your IBM w3id email
-  password: "password"  # Your IBM w3id password (will be encrypted)
+  # Authentication Method: "password" or "cookies"
+  # Use "cookies" for MFA-enabled accounts (recommended for VM deployment)
+  auth_method: "cookies"  # Change to "cookies" when using cookie-based auth
+  
+  # For cookie-based authentication (MFA-compatible)
+  # Extract cookies from your browser after logging in
+  # Browser DevTools (F12) → Application → Cookies → libh-proxy1.fyre.ibm.com
+  cookies:
+    LtpaToken2: ""
+    mod_auth_openidc_session: ""
+    # mod_auth_openidc_state_k0ewdm7l4qb6GXBXHNNx8Uu-vOo: "eyJhbGciOiAiZGlyIiwgImVuYyI6ICJBMjU2R0NNIn0..qfUDlh73JEgTL97R.FrkBGFDAcC7pGzAfzFHYlioJ3V8D1ZJM3HDYim6r-4MkFPxrWPjYkmGek0dHshKtBYvVhgVEWNpnQnrr5W2tYHgOfNtpLU38iujOEvuNxMH7BEUdGtIf2h04B61z-5hI6KfZvH6GEpymKW75h6LK4j7riqRcBj8JeLBGxmYQmTBPVgmVt2UbD7MFEq8bZ7ukLXm4zV_la7Lok2rGoKqQW_s2kt8Urb-GOFULtUN-GzDYVGJW3t7jVXZ8NCQComXyGt6SYv9fm-Klrda1BrCITdQmlqf1Mw.Og2UFWKm4wy8HszT2cWFHg"
+  
+  # For password-based authentication (only works without MFA)
+  username: "" # Your IBM w3id email
+  password: ""  # Your IBM w3id password
+  
   build_break_url: "https://libh-proxy1.fyre.ibm.com/buildBreakReport"
-  soe_triage_url: "https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workitems.json"
-  session_timeout: 7200  # 2 hours in seconds
+  soe_triage_url: "https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.runSavedQuery&id=_fJ834OXIEemRB5enIPF1MQ"
+  session_timeout: 28800  # 8 hours in seconds (for cookie-based auth)
 
 # Slack Configuration
 slack:
@@ -82,9 +95,7 @@ monitored_components:
   - name: "Spring Boot"
     notify: true
     slack_channel: "#springboot-defects"
-  - name: "Messaging"
-    notify: true
-    slack_channel: "#messaging-defects"
+
 
 # Schedule Configuration
 schedule:
@@ -150,3 +161,4 @@ features:
   selective_notifications: true  # Only notify for monitored components
 
 # Made with Bob
+
