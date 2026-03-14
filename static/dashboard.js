@@ -75,24 +75,6 @@ function renderDashboard(data) {
         const today = new Date().toISOString().split('T')[0];
         document.getElementById('weekRange').textContent = `Week ending ${today}`;
     }
-    
-    if (data.generatedAt) {
-        document.getElementById('generatedTime').textContent = `Last Updated: ${new Date(data.generatedAt).toLocaleString('en-IN', {
-            month: 'short',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-        })}`;
-    } else {
-        document.getElementById('generatedTime').textContent = `Last Updated: ${new Date().toLocaleString('en-IN', {
-            month: 'short',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-        })}`;
-    }
 
     // Render KPI cards with icons
     renderKPICards(data.summary);
