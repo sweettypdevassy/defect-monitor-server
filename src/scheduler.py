@@ -117,7 +117,11 @@ class DefectScheduler:
             logger.error(f"Error stopping scheduler: {e}")
     
     def run_daily_check(self):
-        """Run daily defect check for MONITORED components only (sends notifications)"""
+        """
+        Run daily defect check:
+        1. Check monitored components and send Slack notification
+        2. Fetch all components in background for dashboard
+        """
         try:
             logger.info("=" * 60)
             logger.info("🔍 Starting scheduled daily defect check (monitored components)")
@@ -130,7 +134,7 @@ class DefectScheduler:
                 logger.warning("No monitored components configured")
                 return
             
-            # Check defects for monitored components
+            # Step 1: Check defects for monitored components
             results = self.defect_checker.check_monitored_components(monitored_components, self.database)
             
             # Store check history
@@ -146,6 +150,26 @@ class DefectScheduler:
             logger.info(f"   Total Defects: {results['total_defects']}")
             logger.info(f"   Untriaged: {results['total_untriaged']}")
             logger.info("=" * 60)
+            
+            # Step 2: Fetch all components in background for dashboard
+            if self.config.get("features", {}).get("all_components_tracking", True):
+                logger.info("")
+                logger.info("=" * 60)
+                logger.info("🔄 Starting background fetch for all components (for dashboard)")
+                logger.info("=" * 60)
+                
+                all_components = self.config.get("all_components", [])
+                if all_components:
+                    summary = self.defect_checker.fetch_all_components_background(all_components, self.database)
+                    
+                    logger.info("=" * 60)
+                    logger.info("✅ Background fetch completed")
+                    logger.info(f"   Total Components: {summary['total_components']}")
+                    logger.info(f"   Successful: {summary['successful']}")
+                    logger.info(f"   Failed: {summary['failed']}")
+                    logger.info("=" * 60)
+                else:
+                    logger.warning("No all_components configured for background fetch")
             
         except Exception as e:
             logger.error(f"❌ Error in daily check: {e}")

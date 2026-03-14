@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Defect Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0a0e27 0%, #151829 100%);
+            color: #e1e8ed;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: #fff;
+            margin-bottom: 30px;
+            font-size: 28px;
+        }
+
+        /* Component Selection */
+        .component-selection {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+
+        .component-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 12px;
+            margin: 20px 0;
+        }
+
+        .component-item {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 12px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .component-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .component-item input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        .component-item label {
+            cursor: pointer;
+            flex: 1;
+        }
+
+        .actions {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #1d9bf0 0%, #0d8bd9 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(29, 155, 240, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: #e1e8ed;
+        }
+
+        /* Dashboard */
+        .dashboard {
+            display: none;
+        }
+
+        .dashboard.active {
+            display: block;
+        }
+
+        .back-btn {
+            background: rgba(255, 255, 255, 0.1);
+            color: #e1e8ed;
+            margin-bottom: 20px;
+        }
+
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .kpi-card {
+            background: linear-gradient(135deg, rgba(29, 155, 240, 0.1) 0%, rgba(29, 155, 240, 0.05) 100%);
+            border: 1px solid rgba(29, 155, 240, 0.2);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .kpi-card .label {
+            font-size: 12px;
+            color: #8899a6;
+            margin-bottom: 8px;
+        }
+
+        .kpi-card .value {
+            font-size: 32px;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .chart-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 15px;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+
+        .soe-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        th {
+            color: #8899a6;
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        td {
+            font-size: 13px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #8899a6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Defect Dashboard</h1>
+
+        <!-- Component Selection -->
+        <div id="selection" class="component-selection">
+            <h2 style="margin-bottom: 20px;">Select Components to View</h2>
+            <div id="componentGrid" class="component-grid">
+                <div class="loading">Loading components...</div>
+            </div>
+            <div class="actions">
+                <button class="btn-primary" id="viewDashboardBtn" disabled>View Dashboard</button>
+                <button class="btn-secondary" id="selectAllBtn">Select All</button>
+                <button class="btn-secondary" id="clearAllBtn">Clear All</button>
+                <span style="color: #8899a6; margin-left: 15px;" id="selectedCount">0 selected</span>
+            </div>
+        </div>
+
+        <!-- Dashboard -->
+        <div id="dashboard" class="dashboard">
+            <button class="back-btn" id="backBtn">← Back to Selection</button>
+            
+            <div class="kpi-grid" id="kpiGrid"></div>
+            
+            <div class="charts-grid">
+                <div class="chart-card">
+                    <div class="chart-title">📈 Defect Trend</div>
+                    <div class="chart-container">
+                        <canvas id="trendChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">📊 Component Breakdown</div>
+                    <div class="chart-container">
+                        <canvas id="pieChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="soe-section">
+                <div class="chart-title">⚠️ SOE Triage: Overdue Defects</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Summary</th>
+                            <th>Functional Area</th>
+                            <th>Filed Against</th>
+                            <th>Creation Date</th>
+                        </tr>
+                    </thead>
+                    <tbody id="soeTable">
+                        <tr><td colspan="5" class="loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedComponents = [];
+        let allComponents = [];
+        let charts = {};
+
+        // Load components
+        async function loadComponents() {
+            try {
+                const response = await fetch('/api/components');
+                const data = await response.json();
+                allComponents = data.all_components || [];
+                
+                const grid = document.getElementById('componentGrid');
+                grid.innerHTML = allComponents.map(comp => `
+                    <div class="component-item">
+                        <input type="checkbox" id="comp-${comp.replace(/\s+/g, '-')}" value="${comp}">
+                        <label for="comp-${comp.replace(/\s+/g, '-')}">${comp}</label>
+                    </div>
+                `).join('');
+
+                // Add event listeners
+                grid.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                    cb.addEventListener('change', updateSelection);
+                });
+            } catch (error) {
+                console.error('Error loading components:', error);
+                document.getElementById('componentGrid').innerHTML = '<div class="loading">Error loading components</div>';
+            }
+        }
+
+        function updateSelection() {
+            const checkboxes = document.querySelectorAll('#componentGrid input[type="checkbox"]:checked');
+            selectedComponents = Array.from(checkboxes).map(cb => cb.value);
+            document.getElementById('selectedCount').textContent = `${selectedComponents.length} selected`;
+            document.getElementById('viewDashboardBtn').disabled = selectedComponents.length === 0;
+        }
+
+        document.getElementById('selectAllBtn').addEventListener('click', () => {
+            document.querySelectorAll('#componentGrid input[type="checkbox"]').forEach(cb => cb.checked = true);
+            updateSelection();
+        });
+
+        document.getElementById('clearAllBtn').addEventListener('click', () => {
+            document.querySelectorAll('#componentGrid input[type="checkbox"]').forEach(cb => cb.checked = false);
+            updateSelection();
+        });
+
+        document.getElementById('viewDashboardBtn').addEventListener('click', loadDashboard);
+        document.getElementById('backBtn').addEventListener('click', () => {
+            document.getElementById('selection').style.display = 'block';
+            document.getElementById('dashboard').classList.remove('active');
+        });
+
+        async function loadDashboard() {
+            try {
+                // Show dashboard
+                document.getElementById('selection').style.display = 'none';
+                document.getElementById('dashboard').classList.add('active');
+
+                // Fetch data
+                const response = await fetch('/api/explorer/data', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({components: selectedComponents})
+                });
+                const data = await response.json();
+
+                // Render KPIs
+                renderKPIs(data.summary);
+                
+                // Render charts
+                renderTrendChart(data.dailyTrend);
+                renderPieChart(data.componentBreakdown);
+                
+                // Load SOE defects
+                loadSOEDefects();
+            } catch (error) {
+                console.error('Error loading dashboard:', error);
+                alert('Error loading dashboard data');
+            }
+        }
+
+        function renderKPIs(summary) {
+            const kpiGrid = document.getElementById('kpiGrid');
+            kpiGrid.innerHTML = `
+                <div class="kpi-card">
+                    <div class="label">Total Defects</div>
+                    <div class="value">${summary.totalDefects || 0}</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="label">Untriaged</div>
+                    <div class="value">${summary.untriaged || 0}</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="label">Test Bugs</div>
+                    <div class="value">${summary.testBugs || 0}</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="label">Product Bugs</div>
+                    <div class="value">${summary.productBugs || 0}</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="label">Infrastructure</div>
+                    <div class="value">${summary.infraBugs || 0}</div>
+                </div>
+            `;
+        }
+
+        function renderTrendChart(dailyTrend) {
+            if (charts.trend) charts.trend.destroy();
+            
+            const ctx = document.getElementById('trendChart').getContext('2d');
+            charts.trend = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dailyTrend.labels || [],
+                    datasets: [{
+                        label: 'Total',
+                        data: dailyTrend.total || [],
+                        borderColor: '#1d9bf0',
+                        backgroundColor: 'rgba(29, 155, 240, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }, {
+                        label: 'Untriaged',
+                        data: dailyTrend.untriaged || [],
+                        borderColor: '#ff6b9d',
+                        backgroundColor: 'rgba(255, 107, 157, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {color: '#e1e8ed'}
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {color: '#8899a6'},
+                            grid: {color: 'rgba(255, 255, 255, 0.1)'}
+                        },
+                        x: {
+                            ticks: {color: '#8899a6'},
+                            grid: {color: 'rgba(255, 255, 255, 0.1)'}
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderPieChart(breakdown) {
+            if (charts.pie) charts.pie.destroy();
+            
+            const ctx = document.getElementById('pieChart').getContext('2d');
+            charts.pie = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: breakdown.labels || [],
+                    datasets: [{
+                        data: breakdown.total || [],
+                        backgroundColor: ['#ff6b9d', '#ffad1f', '#1d9bf0', '#00d4aa', '#a78bfa', '#fb923c']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {color: '#e1e8ed', font: {size: 11}}
+                        }
+                    }
+                }
+            });
+        }
+
+        async function loadSOEDefects() {
+            try {
+                const response = await fetch('/api/soe-defects');
+                const data = await response.json();
+                const defects = data.defects || [];
+                
+                // Filter by selected components
+                const filtered = defects.filter(d => 
+                    selectedComponents.some(comp => 
+                        (d.functionalArea || '').toLowerCase().includes(comp.toLowerCase()) ||
+                        (d.filedAgainst || '').toLowerCase().includes(comp.toLowerCase())
+                    )
+                );
+
+                const tbody = document.getElementById('soeTable');
+                if (filtered.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#00d4aa;">✅ No overdue defects found</td></tr>';
+                } else {
+                    tbody.innerHTML = filtered.map(d => `
+                        <tr>
+                            <td><a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${d.id}" target="_blank" style="color:#1d9bf0;">${d.id}</a></td>
+                            <td>${d.summary}</td>
+                            <td>${d.functionalArea}</td>
+                            <td>${d.filedAgainst}</td>
+                            <td>${d.creationDate}</td>
+                        </tr>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Error loading SOE defects:', error);
+                document.getElementById('soeTable').innerHTML = '<tr><td colspan="5" style="text-align:center;color:#ff6b9d;">Error loading defects</td></tr>';
+            }
+        }
+
+        // Initialize
+        loadComponents();
+    </script>
+</body>
+</html>

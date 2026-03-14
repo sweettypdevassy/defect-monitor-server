@@ -448,5 +448,44 @@ class DefectDatabase:
             
         except Exception as e:
             logger.error(f"Error cleaning up old data: {e}")
+    
+    def get_soe_defects(self) -> Dict:
+        """Get latest SOE Triage defects"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get latest SOE snapshot
+            cursor.execute("""
+                SELECT data, created_at
+                FROM soe_snapshots
+                ORDER BY date DESC
+                LIMIT 1
+            """)
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                data = json.loads(row[0])
+                return {
+                    "defects": data.get("defects", []),
+                    "last_fetch": row[1],
+                    "total": data.get("total", 0)
+                }
+            else:
+                return {
+                    "defects": [],
+                    "last_fetch": None,
+                    "total": 0
+                }
+                
+        except Exception as e:
+            logger.error(f"Error getting SOE defects: {e}")
+            return {
+                "defects": [],
+                "last_fetch": None,
+                "total": 0
+            }
 
 # Made with Bob

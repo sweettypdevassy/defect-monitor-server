@@ -31,9 +31,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize Flask app
-# Set template folder to parent directory's templates
+# Set template folder and static folder to parent directory
 template_dir = Path(__file__).parent.parent / 'templates'
-app = Flask(__name__, template_folder=str(template_dir))
+static_dir = Path(__file__).parent.parent / 'static'
+app = Flask(__name__,
+            template_folder=str(template_dir),
+            static_folder=str(static_dir),
+            static_url_path='/static')
 
 # Global variables
 config = None
@@ -74,10 +78,15 @@ def initialize_services():
         
         # Initialize authenticator
         ibm_config = config.get("ibm", {})
+        auth_method = ibm_config.get("auth_method", "password")
+        cookies = ibm_config.get("cookies", {})
+        
         authenticator = IBMAuthenticator(
-            username=ibm_config.get("username"),
-            password=ibm_config.get("password"),
-            session_timeout=ibm_config.get("session_timeout", 7200)
+            username=ibm_config.get("username", ""),
+            password=ibm_config.get("password", ""),
+            session_timeout=ibm_config.get("session_timeout", 7200),
+            auth_method=auth_method,
+            cookies=cookies
         )
         
         # Initialize defect checker
@@ -115,7 +124,12 @@ def index():
 
 @app.route('/dashboard')
 def dashboard():
-    """Dashboard page"""
+    """Dashboard page matching Chrome extension design"""
+    return render_template('dashboard.html')
+
+@app.route('/dashboard-old')
+def dashboard_old():
+    """Old dashboard page"""
     return render_template('dashboard.html')
 
 
@@ -208,6 +222,198 @@ def api_all_components():
         })
     except Exception as e:
         logger.error(f"Error getting all components: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/dashboard/data')
+def api_dashboard_data():
+    """Get dashboard data in the format expected by the new dashboard"""
+    try:
+        # Get latest snapshot
+        snapshot = database.get_latest_snapshot()
+        
+        if not snapshot or not snapshot.get("components"):
+            return jsonify({"error": "No data available"}), 404
+        
+        # Get weekly data for trend
+        weekly_data = database.get_weekly_data(days=7)
+        
+        # Calculate totals from components
+        components = snapshot.get("components", {})
+        total_defects = sum(c.get("total", 0) for c in components.values())
+        total_untriaged = sum(c.get("untriaged", 0) for c in components.values())
+        total_test_bugs = sum(c.get("test_bugs", 0) for c in components.values())
+        total_product_bugs = sum(c.get("product_bugs", 0) for c in components.values())
+        total_infra_bugs = sum(c.get("infra_bugs", 0) for c in components.values())
+        
+        # Build component breakdown arrays
+        component_names = list(components.keys())
+        component_totals = [components[c].get("total", 0) for c in component_names]
+        component_untriaged = [components[c].get("untriaged", 0) for c in component_names]
+        component_test_bugs = [components[c].get("test_bugs", 0) for c in component_names]
+        component_product_bugs = [components[c].get("product_bugs", 0) for c in component_names]
+        component_infra_bugs = [components[c].get("infra_bugs", 0) for c in component_names]
+        
+        # Build daily trend from weekly data
+        dates = weekly_data.get("dates", [])
+        daily_totals = []
+        daily_untriaged = []
+        
+        for date in dates:
+            date_total = 0
+            date_untriaged = 0
+            for comp_data in weekly_data.get("components", {}).values():
+                for entry in comp_data:
+                    if entry.get("date") == date:
+                        date_total += entry.get("total", 0)
+                        date_untriaged += entry.get("untriaged", 0)
+            daily_totals.append(date_total)
+            daily_untriaged.append(date_untriaged)
+        
+        # Format dates as day names
+        from datetime import datetime
+        labels = []
+        for date_str in dates:
+            try:
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                labels.append(date_obj.strftime("%a"))  # Mon, Tue, etc.
+            except:
+                labels.append(date_str)
+        
+        # Build dashboard data structure
+        dashboard_data = {
+            "summary": {
+                "totalDefects": total_defects,
+                "untriaged": total_untriaged,
+                "testBugs": total_test_bugs,
+                "productBugs": total_product_bugs,
+                "infraBugs": total_infra_bugs,
+                "trendPercentage": 0  # Calculate if we have historical data
+            },
+            "dailyTrend": {
+                "labels": labels,
+                "total": daily_totals,
+                "untriaged": daily_untriaged
+            },
+            "componentBreakdown": {
+                "labels": component_names,
+                "total": component_totals,
+                "untriaged": component_untriaged,
+                "testBugs": component_test_bugs,
+                "productBugs": component_product_bugs,
+                "infraBugs": component_infra_bugs
+            },
+            "weekComparison": {
+                "lastWeek": {"total": 0, "untriaged": 0},
+                "thisWeek": {
+                    "total": total_defects,
+                    "untriaged": total_untriaged
+                },
+                "lastWeekDate": None
+            },
+            "weekStart": dates[0] if dates else None,
+            "weekEnd": dates[-1] if dates else None,
+            "generatedAt": datetime.now().isoformat()
+        }
+        
+        return jsonify(dashboard_data)
+    except Exception as e:
+        logger.error(f"Error getting dashboard data: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/soe-defects')
+def api_soe_defects():
+    """Get SOE Triage defects"""
+    try:
+        # Get SOE defects from database
+        soe_defects = database.get_soe_defects()
+        
+        return jsonify({
+            "defects": soe_defects.get("defects", []),
+            "last_fetch": soe_defects.get("last_fetch"),
+            "count": len(soe_defects.get("defects", []))
+        })
+    except Exception as e:
+        logger.error(f"Error getting SOE defects: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/components')
+def api_components():
+    """Get list of all components"""
+    try:
+        all_components = config.get("all_components", [])
+        monitored_components = [c.get("name") for c in config.get("monitored_components", [])]
+        
+        return jsonify({
+            "all_components": all_components,
+            "monitored_components": monitored_components
+        })
+    except Exception as e:
+        logger.error(f"Error getting components: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/explorer/data', methods=['POST'])
+def api_explorer_data():
+    """Get dashboard data for selected components from defect_snapshots table"""
+    try:
+        data = request.get_json()
+        selected_components = data.get('components', [])
+        
+        if not selected_components:
+            return jsonify({"error": "No components selected"}), 400
+        
+        # Get data from defect_snapshots table (same as main dashboard)
+        days = 7
+        weekly_data = database.get_weekly_data(days=days)
+        
+        # Filter data for selected components only
+        if weekly_data and 'component_breakdown' in weekly_data:
+            # Filter component breakdown
+            filtered_breakdown = {}
+            for comp in selected_components:
+                if comp in weekly_data['component_breakdown']:
+                    filtered_breakdown[comp] = weekly_data['component_breakdown'][comp]
+            
+            # Recalculate summary for selected components only
+            total_defects = sum(comp['total'] for comp in filtered_breakdown.values())
+            untriaged_defects = sum(comp['untriaged'] for comp in filtered_breakdown.values())
+            test_bugs = sum(comp['test_bugs'] for comp in filtered_breakdown.values())
+            product_bugs = sum(comp['product_bugs'] for comp in filtered_breakdown.values())
+            infra_bugs = sum(comp['infra_bugs'] for comp in filtered_breakdown.values())
+            
+            dashboard_data = {
+                "summary": {
+                    "total": total_defects,
+                    "untriaged": untriaged_defects,
+                    "test_bugs": test_bugs,
+                    "product_bugs": product_bugs,
+                    "infra_bugs": infra_bugs,
+                    "triage_rate": round((total_defects - untriaged_defects) / total_defects * 100, 1) if total_defects > 0 else 0
+                },
+                "dailyTrend": weekly_data.get("daily_trend", {}),
+                "componentBreakdown": {
+                    "labels": list(filtered_breakdown.keys()),
+                    "total": [comp['total'] for comp in filtered_breakdown.values()],
+                    "untriaged": [comp['untriaged'] for comp in filtered_breakdown.values()]
+                },
+                "weekComparison": weekly_data.get("week_comparison", {}),
+                "soeTriageDefects": weekly_data.get("soe_triage_defects", [])
+            }
+        else:
+            dashboard_data = {
+                "summary": {},
+                "dailyTrend": {},
+                "componentBreakdown": {},
+                "weekComparison": {},
+                "soeTriageDefects": []
+            }
+        
+        return jsonify(dashboard_data)
+    except Exception as e:
+        logger.error(f"Error getting explorer data: {e}")
         return jsonify({"error": str(e)}), 500
 
 
