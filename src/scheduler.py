@@ -232,8 +232,8 @@ class DefectScheduler:
                     "trend": "N/A"  # Calculate trend if needed
                 }
                 
-                # Send dashboard notification
-                dashboard_url = f"http://{self.config.get('dashboard', {}).get('host', 'localhost')}:{self.config.get('dashboard', {}).get('port', 5000)}/dashboard"
+                # Send dashboard notification with public URL
+                dashboard_url = self.config.get('dashboard', {}).get('public_url', 'http://9.60.246.74:5001/dashboard')
                 self.slack_notifier.send_dashboard_notification(dashboard_url, summary)
                 
                 logger.info("✅ Weekly dashboard notification sent")
