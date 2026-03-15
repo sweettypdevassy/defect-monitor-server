@@ -77,17 +77,8 @@ class DefectScheduler:
             
             logger.info(f"✅ Scheduled weekly dashboard on {dashboard_day} at {dashboard_time} {self.timezone}")
             
-            # Schedule session refresh every 2 hours
-            self.scheduler.add_job(
-                self.refresh_session,
-                'interval',
-                hours=2,
-                id="session_refresh",
-                name="Session Refresh",
-                replace_existing=True
-            )
-            
-            logger.info("✅ Scheduled session refresh every 2 hours")
+            # Session refresh disabled - cookies are long-lived (8 hours)
+            # Manual refresh can be done via ./refresh_cookies_auto.sh when needed
             
             # Schedule data cleanup weekly
             self.scheduler.add_job(
@@ -243,7 +234,7 @@ class DefectScheduler:
             self.slack_notifier.send_error_notification(f"Weekly dashboard failed: {str(e)}")
     
     def refresh_session(self):
-        """Refresh IBM session"""
+        """Refresh IBM session (no error notifications)"""
         try:
             logger.info("🔄 Refreshing IBM session...")
             
@@ -259,13 +250,13 @@ class DefectScheduler:
                 if session:
                     logger.info("✅ Session recovered through re-authentication")
                 else:
-                    # Only send error if we truly can't authenticate
+                    # Log error but don't send notification (user doesn't want spam)
                     logger.error("❌ Session refresh and re-authentication both failed")
-                    self.slack_notifier.send_error_notification("IBM session refresh failed - unable to authenticate")
+                    logger.info("💡 Tip: Refresh your cookies using ./refresh_cookies_auto.sh")
                 
         except Exception as e:
             logger.error(f"Error refreshing session: {e}")
-            self.slack_notifier.send_error_notification(f"IBM session refresh error: {str(e)}")
+            logger.info("💡 Tip: Refresh your cookies using ./refresh_cookies_auto.sh")
     
     def cleanup_old_data(self):
         """Clean up old data from database"""
