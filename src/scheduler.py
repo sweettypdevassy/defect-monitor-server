@@ -26,6 +26,27 @@ class DefectScheduler:
     def start(self):
         """Start the scheduler"""
         try:
+            # Train ML model on startup
+            logger.info("")
+            logger.info("🤖 Initializing ML Tag Suggestion System...")
+            
+            # Get training components from config (or use all if not specified)
+            ml_config = self.config.get("ml_training", {})
+            training_components = ml_config.get("training_components", [])
+            
+            # If no training components specified, use all components
+            if not training_components:
+                training_components = self.config.get("all_components", [])
+            
+            if training_components and not self.defect_checker.suggester_trained:
+                logger.info(f"Training ML model on {len(training_components)} components: {', '.join(training_components)}")
+                self.defect_checker.train_ml_model_on_all_components(training_components)
+            elif self.defect_checker.suggester_trained:
+                logger.info("✅ ML model already trained (loaded from disk)")
+            else:
+                logger.warning("⚠️  No components configured for ML training")
+            logger.info("")
+            
             # Schedule daily defect check (monitored components only)
             daily_time = self.config.get("schedule", {}).get("daily_check_time", "10:00")
             hour, minute = map(int, daily_time.split(":"))

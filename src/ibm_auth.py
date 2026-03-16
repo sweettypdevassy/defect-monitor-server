@@ -6,6 +6,7 @@ Handles authentication with IBM systems and session management
 import requests
 import urllib3
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 
@@ -29,6 +30,10 @@ class IBMAuthenticator:
         self.session: Optional[requests.Session] = None
         self.last_login: Optional[datetime] = None
         self.login_url = "https://login.w3.ibm.com/login"
+        
+        # Thread lock to prevent concurrent authentication attempts
+        self._auth_lock = threading.Lock()
+        self._is_authenticating = False
         
         # If using cookies, initialize session immediately
         if self.auth_method == "cookies" and self.cookies:
@@ -70,7 +75,7 @@ class IBMAuthenticator:
         # Test session with a simple request
         try:
             test_url = "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas"
-            response = self.session.get(test_url, params={"component": "test"}, timeout=10, verify=False)
+            response = self.session.get(test_url, params={"component": "test"}, timeout=60, verify=False)
             
             # Check if we got redirected to login page
             if "login" in response.url.lower() or response.status_code == 401:
@@ -78,6 +83,9 @@ class IBMAuthenticator:
                 return False
             
             return True
+        except requests.exceptions.Timeout:
+            logger.warning("Session validation timeout - will retry authentication")
+            return False
         except Exception as e:
             logger.error(f"Session validation failed: {e}")
             return False
@@ -218,60 +226,99 @@ class IBMAuthenticator:
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return False
     
-    def _verify_authentication(self) -> bool:
-        """Verify that authentication was successful by testing API"""
-        try:
-            if not self.session:
-                logger.error("No session available for verification")
-                return False
-            
-            # Test with actual API call using correct URL format
-            test_url = "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas?fas=Messaging"
-            response = self.session.get(
-                test_url,
-                timeout=30,
-                headers={'Accept': 'application/json'},
-                verify=False  # Disable SSL verification for IBM self-signed certs
-            )
-            
-            # Check if we're redirected to login (authentication failed)
-            if "login" in response.url.lower():
-                logger.error("Authentication verification failed: redirected to login")
-                return False
-            
-            # Check if we got valid JSON response (not login redirect)
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    # Verify it's actual defect data, not error page
-                    if isinstance(data, list) or isinstance(data, dict):
-                        logger.debug("Authentication verified with valid API response")
-                        return True
-                except ValueError:
-                    logger.error("Response is not valid JSON")
+    def _verify_authentication(self, max_retries: int = 3) -> bool:
+        """Verify that authentication was successful by testing API with retry logic"""
+        import time
+        
+        for attempt in range(max_retries):
+            try:
+                if not self.session:
+                    logger.error("No session available for verification")
                     return False
-            
-            logger.error(f"Authentication verification failed: status {response.status_code}")
-            logger.debug(f"Response URL: {response.url}")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Authentication verification error: {e}")
-            import traceback
-            logger.debug(f"Traceback: {traceback.format_exc()}")
-            return False
+                
+                if attempt > 0:
+                    wait_time = 2 ** attempt  # Exponential backoff: 2s, 4s
+                    logger.info(f"Retrying authentication verification (attempt {attempt + 1}/{max_retries}) in {wait_time}s...")
+                    time.sleep(wait_time)
+                
+                # Test with actual API call using correct URL format
+                test_url = "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas?fas=Messaging"
+                response = self.session.get(
+                    test_url,
+                    timeout=60,  # Increased to 60 seconds for slow server
+                    headers={'Accept': 'application/json'},
+                    verify=False  # Disable SSL verification for IBM self-signed certs
+                )
+                
+                # Check if we're redirected to login (authentication failed)
+                if "login" in response.url.lower():
+                    logger.error("Authentication verification failed: redirected to login")
+                    return False
+                
+                # Check if we got valid JSON response (not login redirect)
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        # Verify it's actual defect data, not error page
+                        if isinstance(data, list) or isinstance(data, dict):
+                            logger.info("✅ Cookie-based authentication successful")
+                            return True
+                    except ValueError:
+                        logger.error("Response is not valid JSON")
+                        if attempt < max_retries - 1:
+                            continue
+                        return False
+                
+                logger.error(f"Authentication verification failed: status {response.status_code}")
+                logger.debug(f"Response URL: {response.url}")
+                if attempt < max_retries - 1:
+                    continue
+                return False
+                
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"Authentication verification timeout (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    continue
+                logger.error("❌ Cookie-based authentication failed - server timeout after all retries")
+                return False
+            except Exception as e:
+                logger.error(f"Authentication verification error: {e}")
+                import traceback
+                logger.debug(f"Traceback: {traceback.format_exc()}")
+                if attempt < max_retries - 1:
+                    continue
+                return False
+        
+        return False
     
     def get_session(self) -> Optional[requests.Session]:
         """
-        Get authenticated session, re-authenticating if necessary
+        Get authenticated session, re-authenticating if necessary (thread-safe)
         Returns None if authentication fails
         """
-        if not self.is_session_valid():
-            logger.info("Session invalid or expired, re-authenticating...")
-            if not self.authenticate():
-                return None
+        # Check if session is valid without lock (fast path)
+        if self.is_session_valid():
+            return self.session
         
-        return self.session
+        # Need to authenticate - acquire lock to prevent concurrent auth attempts
+        with self._auth_lock:
+            # Double-check after acquiring lock (another thread might have authenticated)
+            if self.is_session_valid():
+                return self.session
+            
+            # Check if another thread is currently authenticating
+            if self._is_authenticating:
+                logger.debug("Another thread is authenticating, waiting...")
+                return self.session  # Return current session, will retry if needed
+            
+            self._is_authenticating = True
+            try:
+                logger.info("Session invalid or expired, re-authenticating...")
+                if not self.authenticate():
+                    return None
+                return self.session
+            finally:
+                self._is_authenticating = False
     
     def refresh_session(self) -> bool:
         """Force refresh the session"""

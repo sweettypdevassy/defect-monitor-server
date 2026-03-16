@@ -1,0 +1,133 @@
+ibm:
+  auth_method: cookies  # or "password" or "browser_cookies"
+  cookies:
+    LtpaToken2: "YOUR_LTPA_TOKEN_HERE"
+    mod_auth_openidc_session: "YOUR_SESSION_ID_HERE"
+  username: "your.email@ibm.com"
+  password: "your_password_here"
+  build_break_url: "https://libh-proxy1.fyre.ibm.com/buildBreakReport"
+  soe_triage_url: "https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.runSavedQuery&id=_fJ834OXIEemRB5enIPF1MQ"
+  session_timeout: 28800  # 8 hours
+
+slack:
+  webhook_url: "https://hooks.slack.com/triggers/YOUR/WEBHOOK/URL"
+  channel: "#defect-notifications"
+  username: "Defect Monitor Bot"
+  icon_emoji: ":bug:"
+
+all_components:
+  - AdminCenter
+  - App Client
+  - Async Scheduling (Persistent Executor, CommonJ)
+  - Batch
+  - Bean Validation
+  - Build
+  - CDI
+  - Classloading
+  - Cloud/Virtualization
+  - Core Security
+  - Database (jdbc, oracle, db2, derby)
+  - Docs
+  - Dynacache
+  - EE / MP Concurrency
+  - EJB Container
+  - IIOP/ORB
+  - IBM i
+  - Install
+  - InstantOn
+  - Intelligent Management
+  - JAX-RS
+  - Jakarta Data
+  - Java EE Platform
+  - JCA
+  - JPA
+  - JSON
+  - Kernel/Bootstrap
+  - MCP
+  - Messaging
+  - MicroProfile Core (config, fault tolerance, reactive)
+  - MicroProfile GraphQL
+  - MicroProfile Observability (metrics, open tracing, health)
+  - MicroProfile Open API
+  - MicroProfile REST Client
+  - Mongo
+  - OSGi Applications
+  - Observability
+  - Real-Time Comm (WebRTC, SIP)
+  - Repository
+  - Security SSO (jwt, oauth, oidc, social, mpjwt, saml)
+  - Spring Boot
+  - Systems Management
+  - Transactions
+  - Transport (cfw, http, ssl, websockets)
+  - Usage Metering
+  - WAS on Cloud
+  - Web Comps (servlet, httpsession, jsp, jsf, etc)
+  - Web Services
+  - Web Services Security
+  - WebSphere Automation
+  - z/OS
+
+monitored_components:
+  - name: "Spring Boot"
+    notify: true
+    slack_channel: "#springboot-defects"
+  # Add more monitored components here
+  # - name: "JCA"
+  #   notify: true
+  #   slack_channel: "#jca-defects"
+
+schedule:
+  daily_check_time: "10:00"  # HH:MM format (IST)
+  weekly_dashboard_day: "monday"
+  weekly_dashboard_time: "11:00"
+  all_components_fetch_time: "09:00"
+  timezone: "Asia/Kolkata"
+
+dashboard:
+  port: 5000
+  host: "0.0.0.0"
+  public_url: "http://YOUR_VM_IP:5000/dashboard"
+  secret_key: "change-this-to-random-secret-key"
+  retention_days: 90
+  enable_component_explorer: true
+
+database:
+  type: "sqlite"
+  path: "data/defects.db"
+
+logging:
+  level: "INFO"
+  file: "logs/defect_monitor.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
+
+notifications:
+  send_on_no_defects: false
+  group_by_component: true
+  include_soe_defects: true
+  max_defects_per_notification: 50
+  only_notify_monitored: true
+
+soe_triage:
+  enabled: true
+  project_area: "WS-CD"
+  query_overdue_days: 7
+  max_results: 100
+
+health_check:
+  enabled: true
+  interval: 300
+  alert_on_failure: true
+
+ml_training:
+  training_components:
+    - "Spring Boot"
+    # Add more components for ML training
+
+features:
+  all_components_tracking: true
+  component_explorer: true
+  soe_triage_tracking: true
+  weekly_dashboard: true
+  selective_notifications: true

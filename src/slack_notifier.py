@@ -87,6 +87,36 @@ class SlackNotifier:
                 message += f"{index + 1}. Defect ID: {defect_id}\n"
                 message += f"   Link: {defect_link}\n"
                 message += f"   Summary: {defect.get('summary', 'N/A')}\n"
+                
+                # Add duplicate detection info if available
+                duplicate_info = defect.get('duplicate_info')
+                if duplicate_info and duplicate_info.get('is_duplicate'):
+                    dup_id = duplicate_info.get('duplicate_id')
+                    dup_tags = duplicate_info.get('duplicate_tags', [])
+                    similarity = duplicate_info.get('similarity', 0.0)
+                    similarity_pct = int(similarity * 100)
+                    
+                    dup_link = f"https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id={dup_id}"
+                    
+                    message += f"   🔄 Possible Duplicate: Defect #{dup_id} ({similarity_pct}% similar)\n"
+                    message += f"   🔗 Duplicate Link: {dup_link}\n"
+                    if dup_tags:
+                        message += f"   📋 Previous Tags: {dup_tags}\n"
+                
+                # Add AI-suggested tag if available
+                suggested_tag = defect.get('suggested_tag')
+                if suggested_tag and suggested_tag != 'unknown':
+                    confidence = defect.get('suggestion_confidence', 0.0)
+                    reasoning = defect.get('suggestion_reasoning', '')
+                    confidence_pct = int(confidence * 100)
+                    
+                    # Format tag name nicely
+                    tag_display = suggested_tag.replace('_', ' ').title()
+                    
+                    message += f"   🤖 Suggested Tag: {tag_display} ({confidence_pct}% confidence)\n"
+                    if reasoning:
+                        message += f"   💡 Reason: {reasoning}\n"
+                
                 message += f"   Triage Tags: {defect.get('triageTags', '[]')}\n"
                 message += f"   State: {defect.get('state', 'Open')}\n"
                 message += f"   Owner: {defect.get('owner', 'Unassigned')}\n"

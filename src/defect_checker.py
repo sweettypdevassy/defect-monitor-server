@@ -7,6 +7,10 @@ import requests
 import logging
 from typing import List, Dict, Optional
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from ml_tag_suggester import MLTagSuggester
+from duplicate_detector import DuplicateDetector
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +18,20 @@ logger = logging.getLogger(__name__)
 class DefectChecker:
     """Handles fetching and processing defects from IBM systems"""
     
-    def __init__(self, authenticator):
+    def __init__(self, authenticator, database=None):
         self.authenticator = authenticator
+        self.database = database
         self.build_break_base_url = "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas"
         self.soe_triage_url = "https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workitems.json"
+        self.tag_suggester = MLTagSuggester()
+        # Lower threshold to 0.85 for summary-only matching (was 0.7)
+        # Since we only have summaries, we need high similarity to avoid false positives
+        self.duplicate_detector = DuplicateDetector(similarity_threshold=0.85)
+    
+    @property
+    def suggester_trained(self):
+        """Check if ML suggester is trained"""
+        return self.tag_suggester.trained
     
     def fetch_defects_for_component(self, component: str, max_retries: int = 3) -> Optional[List[Dict]]:
         """
@@ -96,6 +110,96 @@ class DefectChecker:
                 return None
         
         return None
+    
+    def fetch_defect_description(self, defect_id: str, max_retries: int = 2) -> str:
+        """
+        Fetch description for a specific defect from Jazz/RTC with retry logic
+        
+        Args:
+            defect_id: The defect ID
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            Description text or empty string if not found
+        """
+        for attempt in range(max_retries):
+            try:
+                session = self.authenticator.get_session()
+                if not session:
+                    return ""
+                
+                # Jazz/RTC work item URL
+                jazz_url = f"https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workitems/{defect_id}.json"
+                
+                # Increase timeout to 30 seconds
+                response = session.get(
+                    jazz_url,
+                    timeout=30,
+                    headers={'Accept': 'application/json'},
+                    verify=False
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    # Description is in dcterms:description
+                    description = data.get('dcterms:description', data.get('description', ''))
+                    return str(description) if description else ""
+                
+                return ""
+                
+            except requests.exceptions.Timeout:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s
+                    logger.debug(f"Timeout fetching description for {defect_id}, retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    logger.debug(f"Could not fetch description for defect {defect_id}: Timeout after {max_retries} attempts")
+                    return ""
+            except Exception as e:
+                logger.debug(f"Could not fetch description for defect {defect_id}: {e}")
+                return ""
+        
+        return ""
+    
+    def fetch_descriptions_parallel(self, defect_ids: List[str], max_workers: int = 5) -> Dict[str, str]:
+        """
+        Fetch descriptions for multiple defects in parallel
+        
+        Args:
+            defect_ids: List of defect IDs
+            max_workers: Maximum number of parallel workers
+            
+        Returns:
+            Dictionary mapping defect_id to description
+        """
+        descriptions = {}
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_id = {
+                executor.submit(self.fetch_defect_description, defect_id): defect_id
+                for defect_id in defect_ids
+            }
+            
+            # Process completed tasks
+            completed = 0
+            total = len(defect_ids)
+            for future in as_completed(future_to_id):
+                defect_id = future_to_id[future]
+                try:
+                    description = future.result()
+                    descriptions[defect_id] = description
+                    completed += 1
+                    
+                    # Log progress every 10 defects
+                    if completed % 10 == 0 or completed == total:
+                        logger.info(f"📥 Fetched {completed}/{total} descriptions...")
+                        
+                except Exception as e:
+                    logger.debug(f"Error fetching description for {defect_id}: {e}")
+                    descriptions[defect_id] = ""
+        
+        return descriptions
     
     def fetch_soe_triage_defects(self, monitored_components: Optional[List[str]] = None) -> Optional[List[Dict]]:
         """
@@ -301,18 +405,29 @@ class DefectChecker:
         
         return defects
     
-    def parse_defects(self, defects: List[Dict], component: str) -> Dict:
+    def parse_defects(self, defects: List[Dict], component: str, collect_triaged: bool = False) -> Dict:
         """
         Parse and categorize defects - ONLY returns untriaged defects
         Matches the logic from defect-triaging-extension and IBM Build Break Report
+        Also checks for duplicates within the component
+        
+        Args:
+            defects: List of defects from API
+            component: Component name
+            collect_triaged: If True, also collect triaged defects for training
         """
         untriaged_defects = []
+        triaged_defects = []
+        all_defects_for_dup_check = []  # All defects for duplicate detection
         untriaged_count = 0
         test_bugs_count = 0
         product_bugs_count = 0
         infra_bugs_count = 0
         
         for defect in defects:
+            # Store all defects for duplicate checking
+            all_defects_for_dup_check.append(defect)
+            
             # Get triage tags
             triage_tags = defect.get("triageTags", defect.get("tags", []))
             
@@ -372,6 +487,157 @@ class DefectChecker:
                     test_bugs_count += 1
                 elif has_product_bug:
                     product_bugs_count += 1
+                
+                # Store triaged defects for training (if requested)
+                if collect_triaged:
+                    triaged_defects.append({
+                        "id": defect.get("id", "Unknown"),
+                        "summary": defect.get("summary", "No summary"),
+                        "description": defect.get("description", ""),
+                        "functionalArea": defect.get("functionalArea", "Unknown"),
+                        "state": defect.get("state", "Unknown"),
+                        "owner": defect.get("owner", "Unassigned"),
+                        "triageTags": triage_tags,
+                        "component": component  # Add component for caching
+                    })
+        
+        # If we're just collecting triaged defects for training, skip untriaged processing
+        if collect_triaged:
+            logger.info(f"   ✓ Found {len(triaged_defects)} triaged defects")
+            return {
+                "untriaged_defects": [],
+                "triaged_defects": triaged_defects,
+                "stats": {
+                    "total": len(defects),
+                    "untriaged": 0,
+                    "test_bugs": test_bugs_count,
+                    "product_bugs": product_bugs_count,
+                    "infra_bugs": infra_bugs_count
+                }
+            }
+        
+        # Fetch descriptions for untriaged defects and all defects (for duplicate checking)
+        # Use caching to avoid re-fetching descriptions
+        if untriaged_defects:
+            # Collect all defect IDs
+            untriaged_ids = [str(d.get('id')) for d in untriaged_defects if d.get('id')]
+            all_ids = [str(d.get('id')) for d in all_defects_for_dup_check if d.get('id')]
+            
+            # Try to get cached descriptions first
+            cached_descriptions = {}
+            ids_to_fetch = []
+            
+            if self.database:
+                logger.info(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
+                cached_descriptions = self.database.get_cached_descriptions(all_ids)
+                
+                # Determine which IDs need to be fetched
+                ids_to_fetch = [id for id in all_ids if id not in cached_descriptions]
+                
+                if cached_descriptions:
+                    logger.info(f"✅ Found {len(cached_descriptions)} cached descriptions")
+                if ids_to_fetch:
+                    logger.info(f"📥 Need to fetch {len(ids_to_fetch)} new descriptions...")
+            else:
+                # No database, fetch all
+                ids_to_fetch = all_ids
+            
+            # Fetch missing descriptions in parallel
+            newly_fetched = {}
+            if ids_to_fetch:
+                newly_fetched = self.fetch_descriptions_parallel(ids_to_fetch, max_workers=5)
+                
+                # Cache the newly fetched descriptions
+                if self.database and newly_fetched:
+                    defects_to_cache = []
+                    for defect_id, description in newly_fetched.items():
+                        # Find the defect in all_defects_for_dup_check to get full info
+                        defect_info = next((d for d in all_defects_for_dup_check if str(d.get('id')) == defect_id), None)
+                        if defect_info:
+                            defect_info['description'] = description
+                            defect_info['component'] = component
+                            defects_to_cache.append(defect_info)
+                    
+                    if defects_to_cache:
+                        self.database.cache_defect_descriptions(defects_to_cache)
+            
+            # Combine cached and newly fetched descriptions
+            all_descriptions = {**cached_descriptions, **newly_fetched}
+            
+            # Apply descriptions to untriaged defects
+            for defect in untriaged_defects:
+                defect_id = str(defect.get('id'))
+                if defect_id in all_descriptions:
+                    desc_data = all_descriptions[defect_id]
+                    # Handle both dict (from cache) and string (from fetch)
+                    if isinstance(desc_data, dict):
+                        defect['description'] = desc_data.get('description', '')
+                    else:
+                        defect['description'] = desc_data
+                else:
+                    defect['description'] = ''
+            
+            # Apply descriptions to all defects for duplicate checking
+            for defect in all_defects_for_dup_check:
+                defect_id = str(defect.get('id'))
+                if defect_id in all_descriptions:
+                    desc_data = all_descriptions[defect_id]
+                    # Handle both dict (from cache) and string (from fetch)
+                    if isinstance(desc_data, dict):
+                        defect['description'] = desc_data.get('description', '')
+                        # Update triageTags from cache if available (for duplicate detection)
+                        if 'triageTags' in desc_data and desc_data['triageTags']:
+                            # Always use cached tags if they exist (they're authoritative)
+                            defect['triageTags'] = desc_data['triageTags']
+                    else:
+                        defect['description'] = desc_data
+            
+            logger.info(f"🔍 Checking {len(untriaged_defects)} untriaged defects for duplicates and suggestions...")
+            
+            for defect in untriaged_defects:
+                # Check for duplicates FIRST
+                duplicate_info = self.duplicate_detector.check_defect_for_duplicates(
+                    defect,
+                    all_defects_for_dup_check
+                )
+                
+                if duplicate_info:
+                    defect["duplicate_info"] = duplicate_info
+                    logger.info(f"   🔄 Defect {defect.get('id')} may be duplicate of {duplicate_info['duplicate_id']} ({duplicate_info['similarity']:.0%} similar)")
+                    
+                    # Use duplicate's tags instead of ML prediction
+                    duplicate_tags = duplicate_info.get('duplicate_tags', [])
+                    if duplicate_tags:
+                        # Determine primary tag from duplicate
+                        tags_lower = [str(tag).lower().strip() for tag in duplicate_tags]
+                        
+                        # Priority: infrastructure > test > product
+                        if any('infra' in tag or 'infrastructure' in tag for tag in tags_lower):
+                            suggested_tag = 'infrastructure_bug'
+                        elif any('test' in tag for tag in tags_lower):
+                            suggested_tag = 'test_bug'
+                        elif any('product' in tag for tag in tags_lower):
+                            suggested_tag = 'product_bug'
+                        else:
+                            suggested_tag = 'unknown'
+                        
+                        defect["suggested_tag"] = suggested_tag
+                        defect["suggestion_confidence"] = duplicate_info['similarity']
+                        defect["suggestion_reasoning"] = f"Based on duplicate defect #{duplicate_info['duplicate_id']} with tags: {duplicate_tags}"
+                    else:
+                        # Duplicate has no tags, fall back to ML
+                        if self.suggester_trained:
+                            suggested_tag, confidence, reasoning = self.tag_suggester.suggest_tag(defect)
+                            defect["suggested_tag"] = suggested_tag
+                            defect["suggestion_confidence"] = confidence
+                            defect["suggestion_reasoning"] = reasoning
+                else:
+                    # No duplicate found, use ML prediction
+                    if self.suggester_trained:
+                        suggested_tag, confidence, reasoning = self.tag_suggester.suggest_tag(defect)
+                        defect["suggested_tag"] = suggested_tag
+                        defect["suggestion_confidence"] = confidence
+                        defect["suggestion_reasoning"] = reasoning
         
         result = {
             "component": component,
@@ -380,10 +646,106 @@ class DefectChecker:
             "test_bugs": test_bugs_count,  # Count of triaged test bugs
             "product_bugs": product_bugs_count,  # Count of triaged product bugs
             "infra_bugs": infra_bugs_count,  # Count of triaged infra bugs
-            "defects": untriaged_defects  # ONLY untriaged defects
+            "defects": untriaged_defects,  # ONLY untriaged defects (with suggested tags and duplicate info)
+            "triaged_defects": triaged_defects if collect_triaged else []  # Triaged defects for training
         }
         
         return result
+    
+    def train_ml_model_on_all_components(self, all_components: List[str]) -> bool:
+        """
+        Train ML model on ALL triaged defects across ALL components
+        This provides much better training data (1200+ defects) than per-component training
+        
+        Args:
+            all_components: List of all component names to fetch
+            
+        Returns:
+            True if training successful
+        """
+        try:
+            logger.info("=" * 70)
+            logger.info("🎓 TRAINING ML MODEL ON ALL COMPONENTS")
+            logger.info("=" * 70)
+            logger.info(f"Fetching triaged defects from {len(all_components)} components...")
+            
+            all_triaged_defects = []
+            
+            # Fetch defects from all components and collect triaged ones
+            for i, component in enumerate(all_components, 1):
+                try:
+                    logger.info(f"[{i}/{len(all_components)}] Fetching {component}...")
+                    defects = self.fetch_defects_for_component(component)
+                    
+                    if defects:
+                        # Parse with collect_triaged=True to get triaged defects
+                        parsed = self.parse_defects(defects, component, collect_triaged=True)
+                        triaged = parsed.get("triaged_defects", [])
+                        
+                        if triaged:
+                            all_triaged_defects.extend(triaged)
+                            logger.info(f"   ✓ Found {len(triaged)} triaged defects")
+                        else:
+                            logger.debug(f"   - No triaged defects")
+                    
+                except Exception as e:
+                    logger.warning(f"   ✗ Error fetching {component}: {e}")
+                    continue
+            
+            logger.info("=" * 70)
+            logger.info(f"📊 Collected {len(all_triaged_defects)} triaged defects across all components")
+            logger.info("=" * 70)
+            
+            # Fetch descriptions for triaged defects (for better ML training)
+            if all_triaged_defects:
+                # Collect IDs that need descriptions (check for empty or missing descriptions)
+                ids_needing_desc = [
+                    str(d.get('id')) for d in all_triaged_defects
+                    if d.get('id') and not d.get('description')  # Check if description is empty or missing
+                ]
+                
+                if ids_needing_desc:
+                    logger.info(f"📥 Fetching descriptions for {len(ids_needing_desc)} triaged defects in parallel...")
+                    logger.info("   (Using 3 parallel workers for stable authentication...)")
+                    
+                    # Fetch in parallel with 3 workers for training (balanced speed vs stability)
+                    descriptions = self.fetch_descriptions_parallel(ids_needing_desc, max_workers=3)
+                    
+                    # Apply descriptions to defects
+                    for defect in all_triaged_defects:
+                        defect_id = str(defect.get('id'))
+                        if defect_id in descriptions:
+                            defect['description'] = descriptions[defect_id]
+                    
+                    # Cache the fetched descriptions to database
+                    if self.database and descriptions:
+                        logger.info(f"   💾 Caching {len(descriptions)} descriptions to database...")
+                        self.database.cache_defect_descriptions(all_triaged_defects)
+                    
+                    logger.info(f"   ✅ Fetched descriptions for all {len(ids_needing_desc)} defects")
+                    logger.info("=" * 70)
+                else:
+                    logger.info("   ℹ️  All triaged defects already have descriptions (from cache or previous fetch)")
+            
+            if len(all_triaged_defects) < 10:
+                logger.warning(f"⚠️  Not enough triaged defects for training (need at least 10, got {len(all_triaged_defects)})")
+                return False
+            
+            # Train the ML model
+            if self.tag_suggester.train_from_defects(all_triaged_defects):
+                logger.info("=" * 70)
+                logger.info("✅ ML MODEL TRAINING COMPLETE")
+                logger.info("=" * 70)
+                return True
+            else:
+                logger.error("❌ ML model training failed")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error training ML model: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
     
     def check_all_components(self, components: List[str]) -> Dict:
         """

@@ -92,6 +92,32 @@ class DefectDatabase:
                 )
             """)
             
+            # Defect descriptions cache table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS defect_descriptions (
+                    defect_id TEXT PRIMARY KEY,
+                    description TEXT,
+                    summary TEXT,
+                    component TEXT,
+                    functional_area TEXT,
+                    state TEXT,
+                    tags TEXT,
+                    fetched_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            
+            # Create index for faster lookups
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_defect_component
+                ON defect_descriptions(component)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_defect_state
+                ON defect_descriptions(state)
+            """)
+            
             conn.commit()
             conn.close()
             
@@ -148,6 +174,122 @@ class DefectDatabase:
             logger.info(f"✅ Daily snapshot stored for {date}")
             
         except Exception as e:
+            logger.error(f"Error storing daily snapshot: {e}")
+    
+    def cache_defect_descriptions(self, defects: List[Dict]):
+        """Cache defect descriptions in database"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            timestamp = datetime.now().isoformat()
+            
+            for defect in defects:
+                defect_id = str(defect.get('id', ''))
+                if not defect_id:
+                    continue
+                
+                # Convert tags list to JSON string
+                tags = defect.get('triageTags', defect.get('tags', []))
+                tags_str = json.dumps(tags) if tags else '[]'
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO defect_descriptions
+                    (defect_id, description, summary, component, functional_area, state, tags, fetched_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    defect_id,
+                    defect.get('description', ''),
+                    defect.get('summary', ''),
+                    defect.get('component', ''),
+                    defect.get('functionalArea', ''),
+                    defect.get('state', ''),
+                    tags_str,
+                    timestamp,
+                    timestamp
+                ))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.debug(f"✅ Cached descriptions for {len(defects)} defects")
+            
+        except Exception as e:
+            logger.error(f"Error caching defect descriptions: {e}")
+    
+    def get_cached_descriptions(self, defect_ids: List[str]) -> Dict[str, Dict]:
+        """Get cached descriptions for defect IDs"""
+        try:
+            if not defect_ids:
+                return {}
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Create placeholders for SQL IN clause
+            placeholders = ','.join('?' * len(defect_ids))
+            
+            cursor.execute(f"""
+                SELECT defect_id, description, summary, component, functional_area, state, tags
+                FROM defect_descriptions
+                WHERE defect_id IN ({placeholders})
+            """, defect_ids)
+            
+            results = {}
+            for row in cursor.fetchall():
+                defect_id, description, summary, component, functional_area, state, tags_str = row
+                results[defect_id] = {
+                    'id': defect_id,
+                    'description': description or '',
+                    'summary': summary or '',
+                    'component': component or '',
+                    'functionalArea': functional_area or '',
+                    'state': state or '',
+                    'triageTags': json.loads(tags_str) if tags_str else []
+                }
+            
+            conn.close()
+            
+            logger.debug(f"✅ Retrieved {len(results)}/{len(defect_ids)} cached descriptions")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error retrieving cached descriptions: {e}")
+            return {}
+    
+    def get_all_cached_descriptions_for_component(self, component: str) -> List[Dict]:
+        """Get all cached descriptions for a component"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT defect_id, description, summary, component, functional_area, state, tags
+                FROM defect_descriptions
+                WHERE component = ?
+            """, (component,))
+            
+            results = []
+            for row in cursor.fetchall():
+                defect_id, description, summary, component, functional_area, state, tags_str = row
+                results.append({
+                    'id': defect_id,
+                    'description': description or '',
+                    'summary': summary or '',
+                    'component': component or '',
+                    'functionalArea': functional_area or '',
+                    'state': state or '',
+                    'triageTags': json.loads(tags_str) if tags_str else []
+                })
+            
+            conn.close()
+            
+            logger.debug(f"✅ Retrieved {len(results)} cached descriptions for {component}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error retrieving cached descriptions for component: {e}")
+            return []
             logger.error(f"Error storing daily snapshot: {e}")
     
     def store_all_components_snapshot(self, component: str, data: Dict, is_monitored: bool = False):

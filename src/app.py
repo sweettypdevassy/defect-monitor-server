@@ -18,15 +18,16 @@ from slack_notifier import SlackNotifier
 from database import DefectDatabase
 from scheduler import DefectScheduler
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/defect_monitor.log'),
-        logging.StreamHandler()
-    ]
-)
+# Configure logging (only if not already configured)
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/defect_monitor.log'),
+            logging.StreamHandler()
+        ]
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +90,12 @@ def initialize_services():
             cookies=cookies
         )
         
-        # Initialize defect checker
-        defect_checker = DefectChecker(authenticator)
+        # Initialize database first (needed by defect_checker)
+        db_config = config.get("database", {})
+        database = DefectDatabase(db_path=db_config.get("path", "data/defects.db"))
+        
+        # Initialize defect checker with database
+        defect_checker = DefectChecker(authenticator, database)
         
         # Initialize Slack notifier
         slack_config = config.get("slack", {})
@@ -98,10 +103,6 @@ def initialize_services():
             webhook_url=slack_config.get("webhook_url"),
             default_channel=slack_config.get("channel", "#defect-notifications")
         )
-        
-        # Initialize database
-        db_config = config.get("database", {})
-        database = DefectDatabase(db_path=db_config.get("path", "data/defects.db"))
         
         # Initialize scheduler
         scheduler = DefectScheduler(config, defect_checker, slack_notifier, database)

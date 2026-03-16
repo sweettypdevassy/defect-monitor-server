@@ -11,6 +11,7 @@ SQLAlchemy==2.0.23
 # Authentication & Security
 cryptography==41.0.7
 PyJWT==2.8.0
+browser-cookie3>=0.19.1
 
 # Utilities
 pytz==2023.3
@@ -18,6 +19,10 @@ python-dateutil==2.8.2
 
 # Logging
 colorlog==6.8.0
+
+# Machine Learning
+scikit-learn==1.3.2
+numpy==1.24.3
 
 # Production server
 gunicorn==21.2.0
