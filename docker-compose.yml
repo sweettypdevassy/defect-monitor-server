@@ -13,6 +13,10 @@ services:
       - ./src:/app/src
       - ./templates:/app/templates
       - ./static:/app/static
+      # Mount Chrome profile for cookie access (Linux)
+      - ${HOME}/.config/google-chrome:/root/.config/google-chrome:ro
+      # Mount Chrome profile for cookie access (macOS)
+      - ${HOME}/Library/Application Support/Google/Chrome:/root/Library/Application Support/Google/Chrome:ro
     environment:
       - TZ=Asia/Kolkata
     restart: unless-stopped

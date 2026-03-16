@@ -8,6 +8,7 @@ import urllib3
 import logging
 import threading
 from datetime import datetime, timedelta
+from cookie_monitor import get_cookie_monitor
 from typing import Optional, Dict
 
 # Disable SSL warnings for IBM self-signed certificates
@@ -102,7 +103,33 @@ class IBMAuthenticator:
                 return True
             else:
                 logger.error("❌ Cookie-based authentication failed - cookies may be expired")
-                return False
+                logger.warning("🔄 Attempting automatic cookie refresh...")
+                
+                # Try to refresh cookies automatically
+                cookie_monitor = get_cookie_monitor()
+                if cookie_monitor.refresh_cookies_now():
+                    logger.info("✅ Cookies refreshed successfully - reloading configuration...")
+                    # Reload config to get new cookies
+                    try:
+                        import yaml
+                        with open('config/config.yaml', 'r') as f:
+                            config = yaml.safe_load(f)
+                        self.cookies = config.get('ibm', {}).get('cookies', {})
+                        self._init_session_with_cookies()
+                        
+                        # Verify new cookies work
+                        if self._verify_authentication():
+                            logger.info("✅ Authentication successful with refreshed cookies!")
+                            return True
+                        else:
+                            logger.error("❌ Refreshed cookies still don't work")
+                            return False
+                    except Exception as e:
+                        logger.error(f"❌ Error reloading config after cookie refresh: {e}")
+                        return False
+                else:
+                    logger.error("❌ Failed to refresh cookies automatically")
+                    return False
         
         # Password-based authentication with retry
         for attempt in range(1, self.max_retries + 1):

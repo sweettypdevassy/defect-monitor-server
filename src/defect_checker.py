@@ -10,6 +10,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from ml_tag_suggester import MLTagSuggester
+from cookie_monitor import get_cookie_monitor
 from duplicate_detector import DuplicateDetector
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,20 @@ class DefectChecker:
                     },
                     verify=False  # Disable SSL verification for IBM self-signed certs
                 )
+                
+                # Check for authentication failure and auto-refresh cookies
+                cookie_monitor = get_cookie_monitor()
+                if cookie_monitor.detect_cookie_expiration(response):
+                    logger.warning(f"🔴 Cookie expiration detected for {component}")
+                    if cookie_monitor.refresh_cookies_now():
+                        logger.info("✅ Cookies refreshed - retrying request...")
+                        # Get new session with fresh cookies
+                        session = self.authenticator.get_session()
+                        if session:
+                            continue  # Retry with new cookies
+                    else:
+                        logger.error("❌ Failed to refresh cookies")
+                        return None
                 
                 if response.status_code != 200:
                     logger.error(f"Failed to fetch defects for {component}: HTTP {response.status_code}")
