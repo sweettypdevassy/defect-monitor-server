@@ -137,10 +137,18 @@ async def extract_cookies_with_playwright(url="https://libh-proxy1.fyre.ibm.com/
                         display_value = value[:50] + "..." if len(value) > 50 else value
                         print_colored(f"   {name}: {display_value}", Colors.YELLOW)
                     print()
-                    print_colored("⏸️  Browser window will stay open for verification", Colors.YELLOW)
-                    print_colored("👉 Check the cookies in browser DevTools (F12 → Application → Cookies)", Colors.YELLOW)
-                    print_colored("👉 Press Enter when you've verified the cookies match...", Colors.GREEN)
-                    input()
+                    
+                    # Check if running in interactive mode (has a terminal)
+                    import sys
+                    if sys.stdin.isatty() and not headless_mode:
+                        print_colored("⏸️  Browser window will stay open for verification", Colors.YELLOW)
+                        print_colored("👉 Check the cookies in browser DevTools (F12 → Application → Cookies)", Colors.YELLOW)
+                        print_colored("👉 Press Enter when you've verified the cookies match...", Colors.GREEN)
+                        input()
+                    else:
+                        print_colored("✅ Running in non-interactive mode (cron/headless), skipping verification", Colors.BLUE)
+                        # Wait a bit for any final cookie updates
+                        await asyncio.sleep(2)
                     
                     # Close browser after verification
                     await context.close()
