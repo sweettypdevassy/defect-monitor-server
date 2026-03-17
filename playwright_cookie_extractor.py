@@ -32,7 +32,7 @@ async def extract_cookies_with_playwright(url="https://libh-proxy1.fyre.ibm.com/
         url: URL to navigate to
         
     Returns:
-        Tuple of (ltpa_token, session_id) or (None, None) if failed
+        Tuple of (all_cookies_dict, ltpa_token, session_id) or (None, None, None) if failed
     """
     user_data_dir = os.path.expanduser("~/.playwright-chrome-profile")
     
@@ -102,27 +102,40 @@ async def extract_cookies_with_playwright(url="https://libh-proxy1.fyre.ibm.com/
                 if not cookies:
                     print_colored("❌ No cookies found", Colors.RED)
                     await context.close()
-                    return None, None
+                    return None, None, None
                 
                 print_colored(f"✅ Found {len(cookies)} cookies", Colors.GREEN)
                 
-                # Find required cookies
+                # Extract ALL cookies (we need all OpenID Connect cookies)
+                all_cookies = {}
                 ltpa_token = None
                 session_id = None
                 
                 for cookie in cookies:
-                    if cookie['name'] == 'LtpaToken2':
-                        ltpa_token = cookie['value']
-                        print_colored(f"✅ Found LtpaToken2: {ltpa_token[:50]}...", Colors.GREEN)
-                    elif cookie['name'] == 'mod_auth_openidc_session':
-                        session_id = cookie['value']
-                        print_colored(f"✅ Found mod_auth_openidc_session: {session_id}", Colors.GREEN)
+                    cookie_name = cookie['name']
+                    cookie_value = cookie['value']
+                    
+                    # Store all cookies
+                    all_cookies[cookie_name] = cookie_value
+                    
+                    # Track specific important cookies
+                    if cookie_name == 'LtpaToken2':
+                        ltpa_token = cookie_value
+                        print_colored(f"✅ Found LtpaToken2: {cookie_value[:50]}...", Colors.GREEN)
+                    elif cookie_name == 'mod_auth_openidc_session':
+                        session_id = cookie_value
+                        print_colored(f"✅ Found mod_auth_openidc_session: {cookie_value}", Colors.GREEN)
+                    elif cookie_name.startswith('mod_auth_openidc'):
+                        print_colored(f"✅ Found {cookie_name}: {cookie_value[:50]}...", Colors.GREEN)
+                    elif cookie_name.startswith('__tk'):
+                        print_colored(f"✅ Found {cookie_name}: {cookie_value[:50]}...", Colors.GREEN)
                 
                 if ltpa_token and session_id:
-                    print_colored("\n✅ Successfully extracted both required cookies!", Colors.GREEN)
-                    print_colored("\n🔍 Extracted cookies:", Colors.BLUE)
-                    print_colored(f"   LtpaToken2: {ltpa_token[:80]}...", Colors.YELLOW)
-                    print_colored(f"   mod_auth_openidc_session: {session_id}", Colors.YELLOW)
+                    print_colored(f"\n✅ Successfully extracted {len(all_cookies)} cookies!", Colors.GREEN)
+                    print_colored("\n🔍 All extracted cookies:", Colors.BLUE)
+                    for name, value in all_cookies.items():
+                        display_value = value[:50] + "..." if len(value) > 50 else value
+                        print_colored(f"   {name}: {display_value}", Colors.YELLOW)
                     print()
                     print_colored("⏸️  Browser window will stay open for verification", Colors.YELLOW)
                     print_colored("👉 Check the cookies in browser DevTools (F12 → Application → Cookies)", Colors.YELLOW)
@@ -131,7 +144,7 @@ async def extract_cookies_with_playwright(url="https://libh-proxy1.fyre.ibm.com/
                     
                     # Close browser after verification
                     await context.close()
-                    return ltpa_token, session_id
+                    return all_cookies, ltpa_token, session_id
                 else:
                     if not ltpa_token:
                         print_colored("❌ LtpaToken2 not found", Colors.RED)
@@ -140,25 +153,26 @@ async def extract_cookies_with_playwright(url="https://libh-proxy1.fyre.ibm.com/
                     
                     # Close browser
                     await context.close()
-                    return None, None
+                    return None, None, None
                     
             except PlaywrightTimeout:
                 print_colored("❌ Timeout waiting for page to load", Colors.RED)
                 await context.close()
-                return None, None
+                return None, None, None
                 
         except Exception as e:
             print_colored(f"❌ Error: {e}", Colors.RED)
             import traceback
             print(traceback.format_exc())
-            return None, None
+            return None, None, None
 
-def update_config_yaml(config_path, ltpa_token, session_id):
+def update_config_yaml(config_path, all_cookies, ltpa_token, session_id):
     """
-    Update config.yaml with new cookies
+    Update config.yaml with ALL cookies
     
     Args:
         config_path: Path to config.yaml file
+        all_cookies: Dictionary of all cookies
         ltpa_token: LtpaToken2 value
         session_id: mod_auth_openidc_session value
         
@@ -190,11 +204,10 @@ def update_config_yaml(config_path, ltpa_token, session_id):
         # Set auth method to cookies
         config['ibm']['auth_method'] = 'cookies'
         
-        if 'cookies' not in config['ibm']:
-            config['ibm']['cookies'] = {}
+        # Store ALL cookies (not just LtpaToken2 and session)
+        config['ibm']['cookies'] = all_cookies
         
-        config['ibm']['cookies']['LtpaToken2'] = ltpa_token
-        config['ibm']['cookies']['mod_auth_openidc_session'] = session_id
+        print_colored(f"📝 Storing {len(all_cookies)} cookies in config", Colors.BLUE)
         
         # Write back to file
         print_colored(f"💾 Writing updated config to: {config_path}", Colors.BLUE)
@@ -240,9 +253,9 @@ async def main():
     print_colored("-" * 70, Colors.BLUE)
     print()
     
-    ltpa_token, session_id = await extract_cookies_with_playwright()
+    all_cookies, ltpa_token, session_id = await extract_cookies_with_playwright()
     
-    if not ltpa_token or not session_id:
+    if not all_cookies or not ltpa_token or not session_id:
         print_colored("\n❌ Failed to extract cookies", Colors.RED)
         print_colored("\n💡 Tips:", Colors.YELLOW)
         print("   1. Make sure you completed the login in the browser")
@@ -251,9 +264,9 @@ async def main():
         sys.exit(1)
     
     # Update config.yaml
-    print_colored("\nStep 2: Updating config.yaml", Colors.BLUE)
+    print_colored("\nStep 2: Updating config.yaml with ALL cookies", Colors.BLUE)
     print_colored("-" * 70, Colors.BLUE)
-    success = update_config_yaml(config_path, ltpa_token, session_id)
+    success = update_config_yaml(config_path, all_cookies, ltpa_token, session_id)
     
     if not success:
         print_colored("\n❌ Failed to update config.yaml", Colors.RED)
