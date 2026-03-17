@@ -91,7 +91,7 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
         cj = Chrome(
             cookie_file=tmp_cookie,
             domain_name=domain
-            keyring=False
+          
         )
         cookies = list(cast(Iterable[http.cookiejar.Cookie], cj))
         
