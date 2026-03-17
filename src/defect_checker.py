@@ -12,6 +12,7 @@ import time
 from ml_tag_suggester import MLTagSuggester
 from cookie_monitor import get_cookie_monitor
 from duplicate_detector import DuplicateDetector
+from fetch_checkpoint import FetchCheckpoint
 
 logger = logging.getLogger(__name__)
 
@@ -806,21 +807,33 @@ class DefectChecker:
         Also fetches ALL SOE Triage defects (not filtered)
         Stores data in database but doesn't send notifications
         Returns summary of fetch operation
+        
+        Now supports checkpointing - can resume from where it stopped if interrupted
         """
-        logger.info(f"🔄 Starting background fetch for {len(all_components)} components...")
+        # Initialize checkpoint manager
+        checkpoint = FetchCheckpoint()
+        
+        # Get components to fetch (either all or remaining from checkpoint)
+        components_to_fetch = checkpoint.get_remaining_components(all_components)
+        completed_components = []
+        
+        logger.info(f"🔄 Starting background fetch for {len(components_to_fetch)} components...")
         
         fetch_summary = {
             "timestamp": datetime.now().isoformat(),
             "total_components": len(all_components),
+            "fetching": len(components_to_fetch),
             "successful": 0,
             "failed": 0,
             "components_data": {},
-            "soe_defects_count": 0
+            "soe_defects_count": 0,
+            "resumed_from_checkpoint": len(components_to_fetch) < len(all_components)
         }
         
-        # Fetch Build Break Report defects for all components
-        for component in all_components:
+        # Fetch Build Break Report defects for components
+        for idx, component in enumerate(components_to_fetch, 1):
             try:
+                logger.info(f"📥 [{idx}/{len(components_to_fetch)}] Fetching {component}...")
                 defects = self.fetch_defects_for_component(component)
                 
                 if defects is not None:
@@ -834,6 +847,12 @@ class DefectChecker:
                         "total": parsed["total"],
                         "untriaged": parsed["untriaged"]
                     }
+                    
+                    # Mark as completed
+                    completed_components.append(component)
+                    
+                    # Save checkpoint after each successful fetch
+                    checkpoint.save_checkpoint(completed_components, all_components)
                     
                     logger.info(f"✅ Fetched {component}: {parsed['total']} defects ({parsed['untriaged']} untriaged)")
                 else:
@@ -884,7 +903,13 @@ class DefectChecker:
         except Exception as e:
             logger.error(f"❌ Error fetching SOE defects for dashboard: {e}")
         
-        logger.info(f"✅ Background fetch complete: {fetch_summary['successful']}/{fetch_summary['total_components']} successful")
+        # Clear checkpoint when all components are fetched
+        if len(completed_components) == len(all_components):
+            checkpoint.clear_checkpoint()
+            logger.info(f"✅ Background fetch complete: {fetch_summary['successful']}/{fetch_summary['total_components']} successful")
+        else:
+            remaining = len(all_components) - len(completed_components)
+            logger.info(f"✅ Partial fetch complete: {fetch_summary['successful']} successful, {remaining} remaining (checkpoint saved)")
         
         return fetch_summary
     
