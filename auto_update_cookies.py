@@ -9,6 +9,8 @@ import os
 import yaml
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable, cast
+import http.cookiejar
 
 # Color codes for terminal output
 class Colors:
@@ -66,7 +68,7 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
             print_colored("❌ Cookie file not found in default locations", Colors.RED)
             print_colored("💡 Searching for Chrome cookie files...", Colors.YELLOW)
             cookie_files = glob.glob(os.path.expanduser("~/.config/google-chrome/**/Cookies"), recursive=True)
-            cookie_files += glob.glob("/home/*/. config/google-chrome/**/Cookies", recursive=True)
+            cookie_files += glob.glob("/home/*/.config/google-chrome/**/Cookies", recursive=True)
             print_colored(f"Found cookie files: {cookie_files}", Colors.YELLOW)
             if cookie_files:
                 cookie_file = cookie_files[0]
@@ -89,8 +91,9 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
         cj = Chrome(
             cookie_file=tmp_cookie,
             domain_name=domain
+            keyring=False
         )
-        cookies = list(cj.load())
+        cookies = list(cast(Iterable[http.cookiejar.Cookie], cj))
         
         # Clean up temp file
         try:
