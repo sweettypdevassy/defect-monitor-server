@@ -43,9 +43,60 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
     try:
         print_colored(f"🔍 Extracting cookies from Chrome for domain: {domain}", Colors.BLUE)
         
-        # Get cookies from Chrome
-        cj = browser_cookie3.chrome(domain_name=domain)
-        cookies = list(cj)
+        # Force specific cookie file path - use absolute path to avoid ~ expansion issues
+        from browser_cookie3 import Chrome
+        import shutil
+        import tempfile
+        import glob
+        
+        # Try multiple possible locations
+        possible_paths = [
+            "/home/abhi/.config/google-chrome/Default/Cookies",
+            os.path.expanduser("~/.config/google-chrome/Default/Cookies"),
+            os.path.join(os.path.expanduser("~"), ".config/google-chrome/Default/Cookies"),
+        ]
+        
+        cookie_file = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                cookie_file = path
+                break
+        
+        if not cookie_file:
+            print_colored("❌ Cookie file not found in default locations", Colors.RED)
+            print_colored("💡 Searching for Chrome cookie files...", Colors.YELLOW)
+            cookie_files = glob.glob(os.path.expanduser("~/.config/google-chrome/**/Cookies"), recursive=True)
+            cookie_files += glob.glob("/home/*/. config/google-chrome/**/Cookies", recursive=True)
+            print_colored(f"Found cookie files: {cookie_files}", Colors.YELLOW)
+            if cookie_files:
+                cookie_file = cookie_files[0]
+                print_colored(f"✅ Using: {cookie_file}", Colors.GREEN)
+            else:
+                raise FileNotFoundError("No Chrome cookie files found. Please ensure Chrome is installed and has been run at least once.")
+        
+        print_colored(f"📂 Using cookie file: {cookie_file}", Colors.BLUE)
+        print_colored(f"📋 File exists: {os.path.exists(cookie_file)}", Colors.GREEN)
+        
+        # Copy DB to temp to avoid lock issues - use safe method
+        print_colored("📋 Copying cookie database to temp location...", Colors.BLUE)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
+            tmp_cookie = tmp.name
+        
+        shutil.copy2(cookie_file, tmp_cookie)
+        print_colored(f"✅ Copied to: {tmp_cookie}", Colors.GREEN)
+        
+        # Get cookies from Chrome using explicit path
+        cj = Chrome(
+            cookie_file=tmp_cookie,
+            domain_name=domain
+        )
+        cookies = list(cj.load())
+        
+        # Clean up temp file
+        try:
+            os.remove(tmp_cookie)
+        except:
+            pass
         
         if not cookies:
             print_colored("⚠️  No cookies found in Chrome", Colors.YELLOW)
@@ -53,7 +104,40 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
             print("   1. Chrome is running")
             print("   2. You are logged in to: https://libh-proxy1.fyre.ibm.com/buildBreakReport/")
             print("   3. The page has fully loaded")
-            return None, None
+            print()
+            print_colored("🔄 Would you like to retry after logging in? (y/n): ", Colors.YELLOW)
+            
+            try:
+                response = input().strip().lower()
+                if response == 'y':
+                    print_colored("\n⏳ Waiting for you to login in Chrome...", Colors.BLUE)
+                    print_colored("👉 After logging in, press Enter to retry...", Colors.YELLOW)
+                    input()
+                    
+                    # Retry cookie extraction
+                    print_colored("\n🔄 Retrying cookie extraction...", Colors.BLUE)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
+                        tmp_cookie_retry = tmp.name
+                    shutil.copy2(cookie_file, tmp_cookie_retry)
+                    
+                    cj_retry = Chrome(cookie_file=tmp_cookie_retry, domain_name=domain)
+                    cookies = list(cj_retry.load())
+                    
+                    try:
+                        os.remove(tmp_cookie_retry)
+                    except:
+                        pass
+                    
+                    if not cookies:
+                        print_colored("❌ Still no cookies found", Colors.RED)
+                        return None, None
+                    
+                    print_colored(f"✅ Found {len(cookies)} cookies after retry", Colors.GREEN)
+                else:
+                    return None, None
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return None, None
         
         print_colored(f"✅ Found {len(cookies)} cookies in Chrome", Colors.GREEN)
         
@@ -80,7 +164,8 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
             return ltpa_token, session_id
         else:
             print_colored("\n⚠️  Missing required cookies", Colors.YELLOW)
-            print_colored("Please ensure you're logged into IBM site in Chrome", Colors.YELLOW)
+            print_colored("💡 Cookies found but session likely expired or not logged in", Colors.YELLOW)
+            print_colored("Please login to IBM site in Chrome and try again", Colors.YELLOW)
             return None, None
             
     except PermissionError as e:
