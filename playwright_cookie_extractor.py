@@ -41,13 +41,27 @@ async def extract_cookies_with_playwright(url="https://libh-proxy1.fyre.ibm.com/
     
     async with async_playwright() as p:
         try:
+            # Check if DISPLAY is set (GUI available)
+            display = os.environ.get('DISPLAY')
+            
+            if display:
+                print_colored(f"✅ Display found: {display}", Colors.GREEN)
+                headless_mode = False
+            else:
+                print_colored("⚠️  No display found, using headless mode", Colors.YELLOW)
+                print_colored("💡 For first-time setup, you may need to set DISPLAY or use xvfb", Colors.YELLOW)
+                headless_mode = True
+            
             # Launch browser with persistent context (saves login state)
             context = await p.chromium.launch_persistent_context(
                 user_data_dir,
-                headless=False,  # Show browser for first-time passkey auth
+                headless=headless_mode,
+                ignore_https_errors=True,  # Ignore SSL certificate errors
                 args=[
                     '--no-sandbox',
                     '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--ignore-certificate-errors',
                 ],
                 channel='chrome'  # Use system Chrome
             )
