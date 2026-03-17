@@ -8,6 +8,8 @@ import os
 import sys
 import yaml
 import asyncio
+import subprocess
+import time
 from datetime import datetime
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
@@ -286,21 +288,64 @@ async def main():
     print_colored("✅ Cookies extracted and updated successfully!", Colors.GREEN)
     print_colored("=" * 70, Colors.GREEN)
     print()
-    print_colored("📝 Next steps:", Colors.YELLOW)
+    
+    # Automatically restart Docker to apply new cookies
+    print_colored("🔄 Restarting Docker container to apply new cookies...", Colors.BLUE)
     print()
-    print("1. Restart your application:")
-    print_colored("   docker-compose restart", Colors.GREEN)
+    
+    try:
+        result = subprocess.run(
+            ["docker-compose", "restart"],
+            cwd=os.path.dirname(config_path),
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        if result.returncode == 0:
+            print_colored("✅ Docker container restarted successfully!", Colors.GREEN)
+            print()
+            print_colored("⏳ Waiting for application to start...", Colors.BLUE)
+            import time
+            time.sleep(5)
+            
+            # Check authentication status
+            print_colored("📊 Checking authentication status...", Colors.BLUE)
+            log_result = subprocess.run(
+                ["docker-compose", "logs", "--tail=20"],
+                cwd=os.path.dirname(config_path),
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if "Session initialized" in log_result.stdout:
+                print_colored("✅ Authentication successful!", Colors.GREEN)
+            else:
+                print_colored("⚠️  Check logs for authentication status", Colors.YELLOW)
+            
+            print()
+            print_colored("=" * 70, Colors.GREEN)
+            print_colored("✅ Cookie refresh and restart complete!", Colors.GREEN)
+            print_colored("=" * 70, Colors.GREEN)
+        else:
+            print_colored("⚠️  Docker restart failed, please restart manually:", Colors.YELLOW)
+            print_colored("   docker-compose restart", Colors.YELLOW)
+            print()
+            print_colored(f"Error: {result.stderr}", Colors.RED)
+    
+    except subprocess.TimeoutExpired:
+        print_colored("⚠️  Docker restart timed out, please check manually", Colors.YELLOW)
+    except FileNotFoundError:
+        print_colored("⚠️  docker-compose not found, please restart manually:", Colors.YELLOW)
+        print_colored("   docker-compose restart", Colors.YELLOW)
+    except Exception as e:
+        print_colored(f"⚠️  Could not restart Docker automatically: {e}", Colors.YELLOW)
+        print_colored("   Please restart manually: docker-compose restart", Colors.YELLOW)
+    
     print()
-    print("2. Check logs for successful authentication:")
-    print_colored("   docker-compose logs -f | grep -i auth", Colors.GREEN)
-    print()
-    print("3. Set up automated refresh (cron):")
-    print_colored("   */30 * * * * cd ~/defect-monitor-server && python3 playwright_cookie_extractor.py >> logs/cookie_refresh.log 2>&1", Colors.GREEN)
-    print()
-    print_colored("💡 Note:", Colors.YELLOW)
-    print("   - First run requires manual login (passkey)")
-    print("   - Subsequent runs use saved browser session")
-    print("   - Cookies refresh automatically every 30 minutes")
+    print_colored("📝 Monitoring:", Colors.YELLOW)
+    print("   docker-compose logs -f | grep -i auth")
     print()
 
 if __name__ == "__main__":
