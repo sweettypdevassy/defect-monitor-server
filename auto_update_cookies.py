@@ -2,15 +2,18 @@
 """
 Automatic Cookie Updater for config.yaml
 Extracts LtpaToken2 and mod_auth_openidc_session from Chrome and updates config.yaml
+Uses direct SQLite access to bypass browser-cookie3 keyring issues
 """
 
 import sys
 import os
 import yaml
+import sqlite3
+import shutil
+import tempfile
+import glob
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, cast
-import http.cookiejar
 
 # Color codes for terminal output
 class Colors:
@@ -26,7 +29,8 @@ def print_colored(message, color):
 
 def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
     """
-    Extract cookies from Chrome browser
+    Extract cookies from Chrome browser using direct SQLite access
+    This bypasses browser-cookie3 issues with keyring/DBus
     
     Args:
         domain: Domain to extract cookies from
@@ -35,23 +39,9 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
         Tuple of (ltpa_token, session_id) or (None, None) if failed
     """
     try:
-        import browser_cookie3
-    except ImportError:
-        print_colored("❌ browser-cookie3 not installed", Colors.RED)
-        print_colored("Installing browser-cookie3...", Colors.YELLOW)
-        os.system("pip3 install browser-cookie3")
-        import browser_cookie3
-    
-    try:
         print_colored(f"🔍 Extracting cookies from Chrome for domain: {domain}", Colors.BLUE)
         
-        # Force specific cookie file path - use absolute path to avoid ~ expansion issues
-        from browser_cookie3 import Chrome
-        import shutil
-        import tempfile
-        import glob
-        
-        # Try multiple possible locations
+        # Try multiple possible cookie file locations
         possible_paths = [
             "/home/abhi/.config/google-chrome/Default/Cookies",
             os.path.expanduser("~/.config/google-chrome/Default/Cookies"),
@@ -62,6 +52,7 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
         for path in possible_paths:
             if os.path.exists(path):
                 cookie_file = path
+                print_colored(f"📂 Found cookie file: {cookie_file}", Colors.GREEN)
                 break
         
         if not cookie_file:
@@ -69,17 +60,15 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
             print_colored("💡 Searching for Chrome cookie files...", Colors.YELLOW)
             cookie_files = glob.glob(os.path.expanduser("~/.config/google-chrome/**/Cookies"), recursive=True)
             cookie_files += glob.glob("/home/*/.config/google-chrome/**/Cookies", recursive=True)
-            print_colored(f"Found cookie files: {cookie_files}", Colors.YELLOW)
             if cookie_files:
                 cookie_file = cookie_files[0]
                 print_colored(f"✅ Using: {cookie_file}", Colors.GREEN)
             else:
-                raise FileNotFoundError("No Chrome cookie files found. Please ensure Chrome is installed and has been run at least once.")
+                print_colored("❌ No Chrome cookie files found", Colors.RED)
+                print_colored("💡 Please ensure Chrome is installed and has been run at least once", Colors.YELLOW)
+                return None, None
         
-        print_colored(f"📂 Using cookie file: {cookie_file}", Colors.BLUE)
-        print_colored(f"📋 File exists: {os.path.exists(cookie_file)}", Colors.GREEN)
-        
-        # Copy DB to temp to avoid lock issues - use safe method
+        # Copy DB to temp to avoid lock issues
         print_colored("📋 Copying cookie database to temp location...", Colors.BLUE)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
             tmp_cookie = tmp.name
@@ -87,13 +76,22 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
         shutil.copy2(cookie_file, tmp_cookie)
         print_colored(f"✅ Copied to: {tmp_cookie}", Colors.GREEN)
         
-        # Get cookies from Chrome using explicit path
-        cj = Chrome(
-            cookie_file=tmp_cookie,
-            domain_name=domain
-          
-        )
-        cookies = list(cast(Iterable[http.cookiejar.Cookie], cj))
+        # Read cookies directly from SQLite database
+        print_colored("🔍 Reading cookies from database...", Colors.BLUE)
+        conn = sqlite3.connect(tmp_cookie)
+        cursor = conn.cursor()
+        
+        # Query for cookies matching the domain
+        query = """
+        SELECT name, value, encrypted_value
+        FROM cookies 
+        WHERE host_key LIKE ?
+        """
+        
+        cursor.execute(query, (f"%{domain}%",))
+        rows = cursor.fetchall()
+        
+        conn.close()
         
         # Clean up temp file
         try:
@@ -101,82 +99,66 @@ def extract_cookies_from_chrome(domain="libh-proxy1.fyre.ibm.com"):
         except:
             pass
         
-        if not cookies:
-            print_colored("⚠️  No cookies found in Chrome", Colors.YELLOW)
+        if not rows:
+            print_colored("⚠️  No cookies found in Chrome for this domain", Colors.YELLOW)
             print_colored("\n💡 Please ensure:", Colors.YELLOW)
             print("   1. Chrome is running")
             print("   2. You are logged in to: https://libh-proxy1.fyre.ibm.com/buildBreakReport/")
             print("   3. The page has fully loaded")
-            print()
-            print_colored("🔄 Would you like to retry after logging in? (y/n): ", Colors.YELLOW)
-            
-            try:
-                response = input().strip().lower()
-                if response == 'y':
-                    print_colored("\n⏳ Waiting for you to login in Chrome...", Colors.BLUE)
-                    print_colored("👉 After logging in, press Enter to retry...", Colors.YELLOW)
-                    input()
-                    
-                    # Retry cookie extraction
-                    print_colored("\n🔄 Retrying cookie extraction...", Colors.BLUE)
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
-                        tmp_cookie_retry = tmp.name
-                    shutil.copy2(cookie_file, tmp_cookie_retry)
-                    
-                    cj_retry = Chrome(cookie_file=tmp_cookie_retry, domain_name=domain)
-                    cookies = list(cj_retry.load())
-                    
-                    try:
-                        os.remove(tmp_cookie_retry)
-                    except:
-                        pass
-                    
-                    if not cookies:
-                        print_colored("❌ Still no cookies found", Colors.RED)
-                        return None, None
-                    
-                    print_colored(f"✅ Found {len(cookies)} cookies after retry", Colors.GREEN)
-                else:
-                    return None, None
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return None, None
+            return None, None
         
-        print_colored(f"✅ Found {len(cookies)} cookies in Chrome", Colors.GREEN)
+        print_colored(f"✅ Found {len(rows)} cookies in database", Colors.GREEN)
         
         # Find required cookies
         ltpa_token = None
         session_id = None
         
-        for cookie in cookies:
-            if cookie.name == 'LtpaToken2':
-                ltpa_token = cookie.value
-                if ltpa_token:
+        for name, value, encrypted_value in rows:
+            # Use value if available, otherwise note that it's encrypted
+            cookie_value = value if value else None
+            
+            if name == 'LtpaToken2':
+                if cookie_value:
+                    ltpa_token = cookie_value
                     print_colored(f"✅ Found LtpaToken2: {ltpa_token[:50]}...", Colors.GREEN)
-            elif cookie.name == 'mod_auth_openidc_session':
-                session_id = cookie.value
-                if session_id:
+                elif encrypted_value:
+                    print_colored("⚠️  LtpaToken2 found but is encrypted", Colors.YELLOW)
+                    print_colored("💡 This means Chrome is using encrypted storage", Colors.YELLOW)
+                    
+            elif name == 'mod_auth_openidc_session':
+                if cookie_value:
+                    session_id = cookie_value
                     print_colored(f"✅ Found mod_auth_openidc_session: {session_id}", Colors.GREEN)
+                elif encrypted_value:
+                    print_colored("⚠️  mod_auth_openidc_session found but is encrypted", Colors.YELLOW)
         
         if not ltpa_token:
-            print_colored("❌ LtpaToken2 not found", Colors.RED)
+            print_colored("❌ LtpaToken2 not found or is encrypted", Colors.RED)
         if not session_id:
-            print_colored("❌ mod_auth_openidc_session not found", Colors.RED)
+            print_colored("❌ mod_auth_openidc_session not found or is encrypted", Colors.RED)
         
         if ltpa_token and session_id:
             return ltpa_token, session_id
         else:
-            print_colored("\n⚠️  Missing required cookies", Colors.YELLOW)
-            print_colored("💡 Cookies found but session likely expired or not logged in", Colors.YELLOW)
-            print_colored("Please login to IBM site in Chrome and try again", Colors.YELLOW)
+            print_colored("\n⚠️  Missing required cookies or cookies are encrypted", Colors.YELLOW)
+            print_colored("💡 Possible reasons:", Colors.YELLOW)
+            print("   1. Not logged in to IBM site")
+            print("   2. Session expired")
+            print("   3. Chrome is using encrypted cookie storage (v80+)")
+            print()
+            print_colored("🔧 Workaround: Extract cookies from your Mac and transfer config.yaml", Colors.YELLOW)
             return None, None
             
+    except sqlite3.Error as e:
+        print_colored(f"❌ SQLite error: {e}", Colors.RED)
+        print_colored("💡 Cookie database may be corrupted or locked", Colors.YELLOW)
+        return None, None
     except PermissionError as e:
         print_colored(f"❌ Permission denied: {e}", Colors.RED)
         print_colored("💡 Run as the same user that runs Chrome", Colors.YELLOW)
         return None, None
     except FileNotFoundError as e:
-        print_colored(f"❌ Chrome cookie database not found: {e}", Colors.RED)
+        print_colored(f"❌ File not found: {e}", Colors.RED)
         print_colored("💡 Chrome may not be installed or never run", Colors.YELLOW)
         return None, None
     except Exception as e:
