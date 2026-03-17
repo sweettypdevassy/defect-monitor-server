@@ -118,17 +118,28 @@ async def extract_cookies_with_playwright(url="https://libh-proxy1.fyre.ibm.com/
                         session_id = cookie['value']
                         print_colored(f"✅ Found mod_auth_openidc_session: {session_id}", Colors.GREEN)
                 
-                # Close browser
-                await context.close()
-                
                 if ltpa_token and session_id:
                     print_colored("\n✅ Successfully extracted both required cookies!", Colors.GREEN)
+                    print_colored("\n🔍 Extracted cookies:", Colors.BLUE)
+                    print_colored(f"   LtpaToken2: {ltpa_token[:80]}...", Colors.YELLOW)
+                    print_colored(f"   mod_auth_openidc_session: {session_id}", Colors.YELLOW)
+                    print()
+                    print_colored("⏸️  Browser window will stay open for verification", Colors.YELLOW)
+                    print_colored("👉 Check the cookies in browser DevTools (F12 → Application → Cookies)", Colors.YELLOW)
+                    print_colored("👉 Press Enter when you've verified the cookies match...", Colors.GREEN)
+                    input()
+                    
+                    # Close browser after verification
+                    await context.close()
                     return ltpa_token, session_id
                 else:
                     if not ltpa_token:
                         print_colored("❌ LtpaToken2 not found", Colors.RED)
                     if not session_id:
                         print_colored("❌ mod_auth_openidc_session not found", Colors.RED)
+                    
+                    # Close browser
+                    await context.close()
                     return None, None
                     
             except PlaywrightTimeout:
