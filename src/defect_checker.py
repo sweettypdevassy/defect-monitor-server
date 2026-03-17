@@ -921,7 +921,19 @@ class DefectChecker:
         2. Fetch SOE Triage defects (filtered by monitored components)
         3. Send single grouped Slack notification
         4. Store data for dashboard
+        
+        Now supports checkpointing - can resume if interrupted
         """
+        # Initialize checkpoint manager for monitored components
+        checkpoint = FetchCheckpoint(checkpoint_file="data/monitored_checkpoint.json")
+        
+        # Get component names
+        all_component_names = [comp.get("name") for comp in monitored_components]
+        
+        # Get components to check (either all or remaining from checkpoint)
+        components_to_check = checkpoint.get_remaining_components(all_component_names)
+        completed_components = []
+        
         results = {
             "timestamp": datetime.now().isoformat(),
             "components": {},
@@ -934,10 +946,19 @@ class DefectChecker:
         # Extract component names from monitored_components config
         component_names = [comp.get("name") for comp in monitored_components if comp.get("notify", True) and comp.get("name")]
         
-        logger.info(f"🔍 Checking {len(component_names)} monitored components...")
+        # Filter to only check components that need checking (from checkpoint)
+        components_to_check_configs = [
+            comp for comp in monitored_components
+            if comp.get("name") in components_to_check and comp.get("notify", True)
+        ]
+        
+        if len(components_to_check) < len(component_names):
+            logger.info(f"🔄 Resuming from checkpoint: {len(components_to_check)}/{len(component_names)} components to check")
+        else:
+            logger.info(f"🔍 Checking {len(component_names)} monitored components...")
         
         # Step 1: Fetch defects for each monitored component from Build Break Report
-        for comp_config in monitored_components:
+        for idx, comp_config in enumerate(components_to_check_configs, 1):
             component = comp_config.get("name")
             should_notify = comp_config.get("notify", True)
             
@@ -949,6 +970,7 @@ class DefectChecker:
                 logger.info(f"⏭️  Skipping {component} (notify=false)")
                 continue
             
+            logger.info(f"📥 [{idx}/{len(components_to_check_configs)}] Checking {component}...")
             defects = self.fetch_defects_for_component(component)
             
             if defects is not None:
@@ -960,6 +982,12 @@ class DefectChecker:
                 results["total_defects"] += parsed["total"]
                 results["total_untriaged"] += parsed["untriaged"]
                 results["monitored_components"].append(component)
+                
+                # Mark as completed
+                completed_components.append(component)
+                
+                # Save checkpoint after each successful fetch
+                checkpoint.save_checkpoint(completed_components, component_names)
                 
                 # Store in both tables
                 database.store_daily_snapshot({"components": {component: parsed}})
@@ -1000,7 +1028,13 @@ class DefectChecker:
         else:
             logger.warning("⚠️ Failed to fetch SOE Triage defects")
         
-        logger.info(f"✅ Monitored check complete: {results['total_defects']} total defects, {results['total_untriaged']} untriaged")
+        # Clear checkpoint when all components are checked
+        if len(completed_components) == len(component_names):
+            checkpoint.clear_checkpoint()
+            logger.info(f"✅ Monitored check complete: {results['total_defects']} total defects, {results['total_untriaged']} untriaged")
+        else:
+            remaining = len(component_names) - len(completed_components)
+            logger.info(f"✅ Partial check complete: {results['total_defects']} total defects, {remaining} components remaining (checkpoint saved)")
         
         return results
 
