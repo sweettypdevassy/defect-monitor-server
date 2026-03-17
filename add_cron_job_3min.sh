@@ -16,15 +16,18 @@ TEMP_CRON=$(mktemp)
 # Get existing crontab (if any)
 crontab -l > "$TEMP_CRON" 2>/dev/null || true
 
-# Check if job already exists
+# Check if job already exists and remove it
 if grep -q "playwright_cookie_extractor.py" "$TEMP_CRON"; then
     echo "⚠️  Cron job already exists. Removing old one..."
-    grep -v "playwright_cookie_extractor.py" "$TEMP_CRON" > "${TEMP_CRON}.new"
-    mv "${TEMP_CRON}.new" "$TEMP_CRON"
+    grep -v "playwright_cookie_extractor.py" "$TEMP_CRON" > "${TEMP_CRON}.tmp"
+    cat "${TEMP_CRON}.tmp" > "$TEMP_CRON"
+    rm "${TEMP_CRON}.tmp"
+    echo "✅ Old cron job removed"
 fi
 
 # Add the new cron job - EVERY 3 MINUTES
 echo "*/3 * * * * cd $SCRIPT_DIR && python3 playwright_cookie_extractor.py >> logs/cookie_refresh.log 2>&1" >> "$TEMP_CRON"
+echo "✅ New cron job added (every 3 minutes)"
 
 # Install the new crontab
 crontab "$TEMP_CRON"
