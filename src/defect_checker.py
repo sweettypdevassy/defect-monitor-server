@@ -834,6 +834,11 @@ class DefectChecker:
         for idx, component in enumerate(components_to_fetch, 1):
             try:
                 logger.info(f"📥 [{idx}/{len(components_to_fetch)}] Fetching {component}...")
+                
+                # Save checkpoint BEFORE fetching (marks as "in progress")
+                # This way if interrupted, we know to skip this component next time
+                checkpoint.save_checkpoint(completed_components, all_components)
+                
                 defects = self.fetch_defects_for_component(component)
                 
                 if defects is not None:
@@ -851,17 +856,23 @@ class DefectChecker:
                     # Mark as completed
                     completed_components.append(component)
                     
-                    # Save checkpoint after each successful fetch
+                    # Save checkpoint after successful fetch
                     checkpoint.save_checkpoint(completed_components, all_components)
                     
                     logger.info(f"✅ Fetched {component}: {parsed['total']} defects ({parsed['untriaged']} untriaged)")
                 else:
                     fetch_summary["failed"] += 1
                     logger.warning(f"❌ Failed to fetch {component}")
+                    # Still mark as completed to avoid retrying failed components
+                    completed_components.append(component)
+                    checkpoint.save_checkpoint(completed_components, all_components)
                     
             except Exception as e:
                 fetch_summary["failed"] += 1
                 logger.error(f"❌ Error fetching {component}: {e}")
+                # Mark as completed to skip on retry
+                completed_components.append(component)
+                checkpoint.save_checkpoint(completed_components, all_components)
         
         # Fetch ALL SOE Triage defects (not filtered by components) for dashboard
         logger.info("📋 Fetching ALL SOE Triage defects for dashboard...")
@@ -971,6 +982,10 @@ class DefectChecker:
                 continue
             
             logger.info(f"📥 [{idx}/{len(components_to_check_configs)}] Checking {component}...")
+            
+            # Save checkpoint BEFORE fetching
+            checkpoint.save_checkpoint(completed_components, component_names)
+            
             defects = self.fetch_defects_for_component(component)
             
             if defects is not None:
@@ -986,7 +1001,7 @@ class DefectChecker:
                 # Mark as completed
                 completed_components.append(component)
                 
-                # Save checkpoint after each successful fetch
+                # Save checkpoint after successful fetch
                 checkpoint.save_checkpoint(completed_components, component_names)
                 
                 # Store in both tables
@@ -996,6 +1011,9 @@ class DefectChecker:
                 logger.info(f"✅ {component}: {parsed['total']} defects ({parsed['untriaged']} untriaged)")
             else:
                 logger.warning(f"❌ Failed to fetch {component}")
+                # Mark as completed to skip on retry
+                completed_components.append(component)
+                checkpoint.save_checkpoint(completed_components, component_names)
         
         # Step 2: Authenticate with Jazz/RTC and fetch SOE Triage defects
         logger.info("📋 Authenticating with Jazz/RTC...")

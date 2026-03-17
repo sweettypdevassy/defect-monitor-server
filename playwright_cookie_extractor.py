@@ -324,6 +324,19 @@ async def main():
             else:
                 print_colored("⚠️  Check logs for authentication status", Colors.YELLOW)
             
+            # Trigger background fetch to resume if it was interrupted
+            print()
+            print_colored("🔄 Checking for interrupted background fetch...", Colors.BLUE)
+            try:
+                # Check if there's a checkpoint file
+                checkpoint_file = os.path.join(os.path.dirname(config_path), "data", "fetch_checkpoint.json")
+                if os.path.exists(checkpoint_file):
+                    print_colored("📂 Found checkpoint - background fetch will resume automatically", Colors.GREEN)
+                else:
+                    print_colored("ℹ️  No checkpoint found - background fetch will run at scheduled time", Colors.BLUE)
+            except Exception as e:
+                print_colored(f"⚠️  Could not check checkpoint: {e}", Colors.YELLOW)
+            
             print()
             print_colored("=" * 70, Colors.GREEN)
             print_colored("✅ Cookie refresh and restart complete!", Colors.GREEN)
