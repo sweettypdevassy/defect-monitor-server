@@ -36,10 +36,21 @@ async def extract_cookies_with_playwright(url="https://libh-proxy1.fyre.ibm.com/
     Returns:
         Tuple of (all_cookies_dict, ltpa_token, session_id) or (None, None, None) if failed
     """
-    user_data_dir = os.path.expanduser("~/.playwright-chrome-profile")
+    # Use your existing Chrome profile where 1Password is already installed
+    # Check OS to determine correct Chrome profile path
+    import platform
+    system = platform.system()
+    
+    if system == "Linux":
+        user_data_dir = os.path.expanduser("~/.config/google-chrome")
+    elif system == "Darwin":  # macOS
+        user_data_dir = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+    else:  # Windows
+        user_data_dir = os.path.expanduser("~/AppData/Local/Google/Chrome/User Data")
     
     print_colored("🚀 Starting Playwright browser...", Colors.BLUE)
-    print_colored(f"📂 Using profile: {user_data_dir}", Colors.BLUE)
+    print_colored(f"📂 Using your existing Chrome profile: {user_data_dir}", Colors.BLUE)
+    print_colored("   (This profile has your 1Password extension)", Colors.GREEN)
     
     async with async_playwright() as p:
         try:
