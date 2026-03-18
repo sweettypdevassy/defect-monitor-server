@@ -77,12 +77,15 @@ async def setup_playwright_with_1password():
                 user_data_dir,
                 headless=False,  # Must be visible for setup
                 ignore_https_errors=True,
+                viewport={'width': 1280, 'height': 800},  # Set reasonable window size
                 args=[
                     '--no-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-gpu',
                     '--ignore-certificate-errors',
                     '--disable-blink-features=AutomationControlled',  # Hide automation
+                    '--window-size=1280,800',  # Set window size
+                    '--window-position=0,0',  # Position at top-left
                 ],
                 channel='chrome'  # Use system Chrome
             )
