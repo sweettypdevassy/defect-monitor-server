@@ -26,6 +26,27 @@ class DefectChecker:
         self.build_break_base_url = "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas"
         self.soe_triage_url = "https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workitems.json"
         self.tag_suggester = MLTagSuggester()
+        
+        # Log ML model status on startup
+        ml_stats = self.tag_suggester.get_training_stats()
+        if ml_stats.get('trained'):
+            logger.info("=" * 60)
+            logger.info("🤖 ML Tag Suggester Status")
+            logger.info("=" * 60)
+            logger.info(f"✅ Model trained: Yes")
+            logger.info(f"   Training accuracy: {ml_stats.get('accuracy', 'N/A')}")
+            logger.info(f"   Total samples: {ml_stats.get('total_samples', 'N/A')}")
+            logger.info(f"   Tag distribution: {ml_stats.get('tag_distribution', {})}")
+            logger.info("=" * 60)
+        else:
+            logger.info("=" * 60)
+            logger.info("🤖 ML Tag Suggester Status")
+            logger.info("=" * 60)
+            logger.info(f"⚠️  Model trained: No")
+            logger.info(f"   ML available: {ml_stats.get('ml_available', False)}")
+            logger.info(f"   💡 Train model with: docker-compose exec defect-monitor python3 retrain_model.sh")
+            logger.info("=" * 60)
+        
         # Lower threshold to 0.85 for summary-only matching (was 0.7)
         # Since we only have summaries, we need high similarity to avoid false positives
         self.duplicate_detector = DuplicateDetector(similarity_threshold=0.85)
