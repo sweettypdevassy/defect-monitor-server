@@ -48,6 +48,18 @@ slack_notifier = None
 database = None
 scheduler = None
 
+# Initialize services when module is imported (for Gunicorn)
+def init_app():
+    """Initialize application - called at module level for Gunicorn"""
+    global config, authenticator, defect_checker, slack_notifier, database, scheduler
+    if database is None:  # Only initialize once
+        logger.info("=" * 60)
+        logger.info("🚀 Initializing Defect Monitor Server")
+        logger.info("=" * 60)
+        initialize_services()
+        logger.info("✅ All services initialized")
+        logger.info("=" * 60)
+
 
 def load_config():
     """Load configuration from YAML file"""
@@ -93,6 +105,7 @@ def initialize_services():
         # Initialize database first (needed by defect_checker)
         db_config = config.get("database", {})
         database = DefectDatabase(db_path=db_config.get("path", "data/defects.db"))
+        logger.info("✅ Database initialized")
         
         # Initialize defect checker with database
         defect_checker = DefectChecker(authenticator, database)
@@ -168,7 +181,11 @@ def api_weekly_data():
         days = request.args.get('days', 7, type=int)
         weekly_data = database.get_weekly_data(days=days)
         
-        return jsonify(weekly_data)
+        response = jsonify(weekly_data)
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
     except Exception as e:
         logger.error(f"Error getting weekly data: {e}")
         return jsonify({"error": str(e)}), 500
@@ -181,11 +198,46 @@ def api_latest_snapshot():
         snapshot = database.get_latest_snapshot()
         
         if snapshot:
+            logger.info(f"API returning snapshot with date: {snapshot.get('date')}, components: {len(snapshot.get('components', {}))}")
             return jsonify(snapshot)
         else:
             return jsonify({"message": "No data available"}), 404
     except Exception as e:
         logger.error(f"Error getting latest snapshot: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/test-direct-query')
+def api_test_direct_query():
+    """Direct database query test - bypasses everything"""
+    try:
+        import sqlite3
+        conn = sqlite3.connect('data/defects.db')
+        cursor = conn.cursor()
+        
+        # Query all_components_snapshots directly
+        cursor.execute("SELECT MAX(date) FROM all_components_snapshots")
+        max_date = cursor.fetchone()[0]
+        
+        cursor.execute("""
+            SELECT component, total, untriaged
+            FROM all_components_snapshots
+            WHERE date = ?
+            LIMIT 10
+        """, (max_date,))
+        
+        results = cursor.fetchall()
+        conn.close()
+        
+        return jsonify({
+            "max_date": max_date,
+            "sample_components": [
+                {"component": r[0], "total": r[1], "untriaged": r[2]}
+                for r in results
+            ],
+            "count": len(results)
+        })
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
@@ -239,10 +291,16 @@ def api_dashboard_data():
     """Get dashboard data in the format expected by the new dashboard"""
     try:
         # Get latest snapshot
+        logger.info(f"DEBUG: Calling database.get_latest_snapshot()")
         snapshot = database.get_latest_snapshot()
+        logger.info(f"DEBUG: Snapshot returned: date={snapshot.get('date') if snapshot else None}, components={len(snapshot.get('components', {})) if snapshot else 0}")
         
         if not snapshot or not snapshot.get("components"):
-            return jsonify({"error": "No data available"}), 404
+            response = jsonify({"error": "No data available"})
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+            return response, 404
         
         # Get weekly data for trend
         weekly_data = database.get_weekly_data(days=7)
@@ -324,6 +382,13 @@ def api_dashboard_data():
             "weekEnd": dates[-1] if dates else None,
             "generatedAt": datetime.now().isoformat()
         }
+        
+        # Add cache-control headers to prevent browser caching
+        response = jsonify(dashboard_data)
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
         
         return jsonify(dashboard_data)
     except Exception as e:
@@ -577,8 +642,6 @@ def api_fetch_components():
         })
     except Exception as e:
         logger.error(f"Error fetching components: {e}")
-        return jsonify({"error": str(e)}), 500
-
 
 @app.route('/health')
 def health():
@@ -619,6 +682,55 @@ def main():
         logger.error(f"❌ Fatal error: {e}")
         raise
 
+
+
+
+@app.route('/api/admin/reload-modules')
+def admin_reload_modules():
+    """Force reload of Python modules - EMERGENCY USE ONLY"""
+    try:
+        import importlib
+        import sys
+        
+        # Reload database module
+        if 'database' in sys.modules:
+            importlib.reload(sys.modules['database'])
+            logger.info("🔄 Reloaded database module")
+        
+        # Re-initialize database with fresh module
+        global database
+        from database import DefectDatabase
+        db_config = config.get("database", {})
+        database = DefectDatabase(db_path=db_config.get("path", "data/defects.db"))
+        logger.info("🔄 Re-initialized database instance")
+        
+        return jsonify({"status": "success", "message": "Modules reloaded"})
+    except Exception as e:
+        logger.error(f"Error reloading modules: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/latest-snapshot-fixed')
+def api_latest_snapshot_fixed():
+    """Workaround endpoint - reads from generated JSON file"""
+    try:
+        import json
+        with open('data/latest_snapshot.json', 'r') as f:
+            snapshot = json.load(f)
+        
+        response = jsonify(snapshot)
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
+    except FileNotFoundError:
+        return jsonify({"error": "Snapshot file not found. Run generate_dashboard_data.py first"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# Auto-initialize when imported by Gunicorn (must be at end after all functions defined)
+init_app()
 
 if __name__ == '__main__':
     main()

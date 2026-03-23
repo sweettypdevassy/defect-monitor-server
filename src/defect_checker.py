@@ -822,9 +822,72 @@ class DefectChecker:
         
         return results
     
+    def parse_defects_simple(self, defects: List[Dict], component: str) -> Dict:
+        """
+        Simple defect parsing for dashboard - NO ML, NO duplicate detection
+        Just counts and basic categorization for faster processing
+        """
+        untriaged_count = 0
+        test_bugs_count = 0
+        product_bugs_count = 0
+        infra_bugs_count = 0
+        
+        for defect in defects:
+            # Get triage tags
+            triage_tags = defect.get("triageTags", defect.get("tags", []))
+            
+            if not isinstance(triage_tags, list):
+                triage_tags = []
+            
+            tags_lower = [str(tag).lower().strip() for tag in triage_tags]
+            
+            # Check for triage tags
+            has_test_bug = any(
+                tag == 'test_bug' or tag == 'test' or
+                'test_bug' in tag or 'testbug' in tag
+                for tag in tags_lower
+            )
+            
+            has_product_bug = any(
+                tag == 'product_bug' or tag == 'product' or
+                'product_bug' in tag or 'productbug' in tag
+                for tag in tags_lower
+            )
+            
+            has_infra_bug = any(
+                tag == 'infrastructure_bug' or tag == 'infrastructure' or tag == 'infra' or
+                'infrastructure_bug' in tag or 'infrastructurebug' in tag or
+                'infra_bug' in tag or 'infrabug' in tag
+                for tag in tags_lower
+            )
+            
+            has_triaged_tag = has_test_bug or has_product_bug or has_infra_bug
+            
+            if not has_triaged_tag:
+                untriaged_count += 1
+            else:
+                if has_infra_bug:
+                    infra_bugs_count += 1
+                elif has_test_bug:
+                    test_bugs_count += 1
+                elif has_product_bug:
+                    product_bugs_count += 1
+        
+        return {
+            "component": component,
+            "total": len(defects),
+            "untriaged": untriaged_count,
+            "test_bugs": test_bugs_count,
+            "product_bugs": product_bugs_count,
+            "infra_bugs": infra_bugs_count,
+            "untriaged_defects": [],  # Empty for dashboard
+            "timestamp": datetime.now().isoformat()
+        }
+    
     def fetch_all_components_background(self, all_components: List[str], database) -> Dict:
         """
-        Fetch defects for ALL 51 components in background (for component explorer)
+        Fetch defects for ALL components in background (for dashboard)
+        OPTIMIZED: Uses simple parsing (no ML, no duplicate detection)
         Also fetches ALL SOE Triage defects (not filtered)
         Stores data in database but doesn't send notifications
         Returns summary of fetch operation
@@ -838,7 +901,8 @@ class DefectChecker:
         components_to_fetch = checkpoint.get_remaining_components(all_components)
         completed_components = []
         
-        logger.info(f"🔄 Starting background fetch for {len(components_to_fetch)} components...")
+        logger.info(f"🔄 Starting optimized background fetch for {len(components_to_fetch)} components...")
+        logger.info(f"   (Using simple parsing - no ML/duplicate detection for speed)")
         
         fetch_summary = {
             "timestamp": datetime.now().isoformat(),
@@ -856,14 +920,14 @@ class DefectChecker:
             try:
                 logger.info(f"📥 [{idx}/{len(components_to_fetch)}] Fetching {component}...")
                 
-                # Save checkpoint BEFORE fetching (marks as "in progress")
-                # This way if interrupted, we know to skip this component next time
+                # Save checkpoint BEFORE fetching
                 checkpoint.save_checkpoint(completed_components, all_components)
                 
                 defects = self.fetch_defects_for_component(component)
                 
                 if defects is not None:
-                    parsed = self.parse_defects(defects, component)
+                    # Use simple parsing (no ML, no duplicate detection)
+                    parsed = self.parse_defects_simple(defects, component)
                     
                     # Store in database
                     database.store_all_components_snapshot(component, parsed, is_monitored=False)
@@ -945,7 +1009,7 @@ class DefectChecker:
         
         return fetch_summary
     
-    def check_monitored_components(self, monitored_components: List[Dict], database) -> Dict:
+    def check_monitored_components(self, monitored_components: List[Dict], database, team_name: str = None) -> Dict:
         """
         Check defects for monitored components only (these will send notifications)
         Matches Chrome extension workflow:
@@ -955,9 +1019,21 @@ class DefectChecker:
         4. Store data for dashboard
         
         Now supports checkpointing - can resume if interrupted
+        
+        Args:
+            monitored_components: List of component configs to check
+            database: Database instance
+            team_name: Team name for isolated checkpoints (optional)
         """
-        # Initialize checkpoint manager for monitored components
-        checkpoint = FetchCheckpoint(checkpoint_file="data/monitored_checkpoint.json")
+        # Initialize checkpoint manager with team-specific file if team_name provided
+        if team_name:
+            # Use team-specific checkpoint file to avoid conflicts between teams
+            checkpoint_file = f"data/checkpoint_{team_name.replace(' ', '_').lower()}.json"
+        else:
+            # Fallback to generic monitored checkpoint
+            checkpoint_file = "data/monitored_checkpoint.json"
+        
+        checkpoint = FetchCheckpoint(checkpoint_file=checkpoint_file)
         
         # Get component names
         all_component_names = [comp.get("name") for comp in monitored_components]

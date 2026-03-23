@@ -15,7 +15,7 @@ find . -name "*.pyc" -delete 2>/dev/null
 
 # Rebuild the image to ensure fresh code
 echo "Rebuilding Docker image..."
-docker-compose build --no-cache defect-monitor-server
+docker-compose build --no-cache defect-monitor
 
 # Start the container
 echo "Starting container..."
@@ -29,6 +29,6 @@ sleep 5
 echo "=========================================="
 echo "Server logs:"
 echo "=========================================="
-docker-compose logs -f defect-monitor-server
+docker-compose logs -f defect-monitor
 
 # Made with Bob

@@ -460,17 +460,17 @@ class DefectDatabase:
             logger.error(f"Error storing check history: {e}")
     
     def get_weekly_data(self, days: int = 7) -> Dict:
-        """Get data for the last N days"""
+        """Get data for the last N days from all_components_snapshots (for dashboard)"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
             start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
             
-            # Get component data
+            # Get component data from all_components_snapshots (background fetch data)
             cursor.execute("""
                 SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data
-                FROM daily_snapshots
+                FROM all_components_snapshots
                 WHERE date >= ?
                 ORDER BY date ASC
             """, (start_date,))
@@ -532,15 +532,16 @@ class DefectDatabase:
             return {"dates": [], "components": {}, "soe_triage": []}
     
     def get_latest_snapshot(self) -> Optional[Dict]:
-        """Get the most recent snapshot"""
+        """Get the most recent snapshot from all_components_snapshots (for dashboard)"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Use all_components_snapshots table for dashboard (background fetch data)
             cursor.execute("""
                 SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs
-                FROM daily_snapshots
-                WHERE date = (SELECT MAX(date) FROM daily_snapshots)
+                FROM all_components_snapshots
+                WHERE date = (SELECT MAX(date) FROM all_components_snapshots)
             """)
             
             rows = cursor.fetchall()

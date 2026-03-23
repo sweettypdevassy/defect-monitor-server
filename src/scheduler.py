@@ -47,19 +47,83 @@ class DefectScheduler:
                 logger.warning("⚠️  No components configured for ML training")
             logger.info("")
             
-            # Schedule daily defect check (monitored components only)
-            daily_time = self.config.get("schedule", {}).get("daily_check_time", "10:00")
-            hour, minute = map(int, daily_time.split(":"))
+            # Schedule weekly ML model retraining (Saturday 10am IST)
+            ml_retrain_time = ml_config.get("retrain_time", "10:00")
+            ml_retrain_day = ml_config.get("retrain_day", "saturday")
+            hour, minute = map(int, ml_retrain_time.split(":"))
+            
+            day_map = {
+                "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                "friday": 4, "saturday": 5, "sunday": 6
+            }
+            retrain_day_num = day_map.get(ml_retrain_day.lower(), 5)
             
             self.scheduler.add_job(
-                self.run_daily_check,
-                CronTrigger(hour=hour, minute=minute, timezone=self.timezone),
-                id="daily_check",
-                name="Daily Defect Check",
+                self.retrain_ml_model,
+                CronTrigger(day_of_week=retrain_day_num, hour=hour, minute=minute, timezone=self.timezone),
+                id="ml_retrain",
+                name="Weekly ML Model Retraining",
                 replace_existing=True
             )
             
-            logger.info(f"✅ Scheduled daily check at {daily_time} {self.timezone}")
+            logger.info(f"✅ Scheduled ML retraining on {ml_retrain_day} at {ml_retrain_time} {self.timezone}")
+            
+            # Schedule team-based defect checks
+            teams = self.config.get("teams", [])
+            if teams:
+                logger.info(f"📋 Scheduling checks for {len(teams)} teams...")
+                for team in teams:
+                    team_name = team.get("name", "Unknown")
+                    check_time = team.get("check_time", "10:00")
+                    skip_weekends = team.get("skip_weekends", True)
+                    
+                    hour, minute = map(int, check_time.split(":"))
+                    
+                    # Schedule with or without weekend skip
+                    if skip_weekends:
+                        # Monday to Friday only (0-4)
+                        self.scheduler.add_job(
+                            lambda t=team: self.run_team_check(t),
+                            CronTrigger(day_of_week='mon-fri', hour=hour, minute=minute, timezone=self.timezone),
+                            id=f"team_check_{team_name}",
+                            name=f"Team Check: {team_name}",
+                            replace_existing=True
+                        )
+                        logger.info(f"✅ Scheduled {team_name} check at {check_time} (Mon-Fri) {self.timezone}")
+                    else:
+                        # Every day
+                        self.scheduler.add_job(
+                            lambda t=team: self.run_team_check(t),
+                            CronTrigger(hour=hour, minute=minute, timezone=self.timezone),
+                            id=f"team_check_{team_name}",
+                            name=f"Team Check: {team_name}",
+                            replace_existing=True
+                        )
+                        logger.info(f"✅ Scheduled {team_name} check at {check_time} (daily) {self.timezone}")
+            else:
+                # Fallback to old daily check if no teams configured
+                daily_time = self.config.get("schedule", {}).get("daily_check_time", "10:00")
+                skip_weekends = self.config.get("schedule", {}).get("skip_weekends", True)
+                hour, minute = map(int, daily_time.split(":"))
+                
+                if skip_weekends:
+                    self.scheduler.add_job(
+                        self.run_daily_check,
+                        CronTrigger(day_of_week='mon-fri', hour=hour, minute=minute, timezone=self.timezone),
+                        id="daily_check",
+                        name="Daily Defect Check",
+                        replace_existing=True
+                    )
+                    logger.info(f"✅ Scheduled daily check at {daily_time} (Mon-Fri) {self.timezone}")
+                else:
+                    self.scheduler.add_job(
+                        self.run_daily_check,
+                        CronTrigger(hour=hour, minute=minute, timezone=self.timezone),
+                        id="daily_check",
+                        name="Daily Defect Check",
+                        replace_existing=True
+                    )
+                    logger.info(f"✅ Scheduled daily check at {daily_time} (daily) {self.timezone}")
             
             # Schedule all components fetch (background, no notifications)
             if self.config.get("features", {}).get("all_components_tracking", True):
@@ -291,6 +355,104 @@ class DefectScheduler:
             
         except Exception as e:
             logger.error(f"Error cleaning up data: {e}")
+    
+    def retrain_ml_model(self):
+        """Retrain ML model weekly"""
+        try:
+            logger.info("=" * 60)
+            logger.info("🤖 Starting weekly ML model retraining")
+            logger.info("=" * 60)
+            
+            # Get training components from config
+            ml_config = self.config.get("ml_training", {})
+            training_components = ml_config.get("training_components", [])
+            
+            # If no training components specified, use all components
+            if not training_components:
+                training_components = self.config.get("all_components", [])
+            
+            if training_components:
+                # Delete old model to force retraining
+                import os
+                model_path = "data/tag_model.pkl"
+                if os.path.exists(model_path):
+                    os.remove(model_path)
+                    logger.info(f"🗑️  Deleted old model: {model_path}")
+                
+                # Retrain
+                logger.info(f"🎓 Retraining ML model on {len(training_components)} components...")
+                success = self.defect_checker.train_ml_model_on_all_components(training_components)
+                
+                if success:
+                    logger.info("✅ ML model retrained successfully")
+                else:
+                    logger.error("❌ ML model retraining failed")
+            else:
+                logger.warning("⚠️  No components configured for ML training")
+            
+            logger.info("=" * 60)
+            
+        except Exception as e:
+            logger.error(f"❌ Error retraining ML model: {e}")
+    
+    def run_team_check(self, team: dict):
+        """
+        Run defect check for a specific team
+        Each team has its own components, webhook, and schedule
+        """
+        try:
+            team_name = team.get("name", "Unknown Team")
+            logger.info("=" * 60)
+            logger.info(f"🔍 Starting defect check for team: {team_name}")
+            logger.info("=" * 60)
+            
+            # Get team's monitored components
+            team_components = team.get("components", [])
+            
+            if not team_components:
+                logger.warning(f"No components configured for team {team_name}")
+                return
+            
+            # Check defects for team's components (with team-specific checkpoint)
+            results = self.defect_checker.check_monitored_components(team_components, self.database, team_name=team_name)
+            
+            # Store check history
+            self.database.store_check_history(results, True)
+            
+            # Send notification to team's webhook
+            team_webhook = team.get("webhook_url")
+            team_channel = team.get("slack_channel", f"#{team_name.lower().replace(' ', '-')}")
+            
+            if team_webhook:
+                # Create a temporary notifier for this team
+                from slack_notifier import SlackNotifier
+                team_notifier = SlackNotifier(
+                    webhook_url=team_webhook,
+                    default_channel=team_channel
+                )
+                team_notifier.send_defect_notification(results)
+                logger.info(f"✅ Notification sent to {team_name} ({team_channel})")
+            else:
+                # Use default notifier
+                self.slack_notifier.send_defect_notification(results)
+                logger.info(f"✅ Notification sent using default webhook")
+            
+            logger.info("=" * 60)
+            logger.info(f"✅ Team check completed for {team_name}")
+            logger.info(f"   Components: {len(results['monitored_components'])}")
+            logger.info(f"   Total Defects: {results['total_defects']}")
+            logger.info(f"   Untriaged: {results['total_untriaged']}")
+            logger.info("=" * 60)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in team check for {team_name}: {e}")
+            if team.get("webhook_url"):
+                from slack_notifier import SlackNotifier
+                team_notifier = SlackNotifier(
+                    webhook_url=team.get("webhook_url"),
+                    default_channel=team.get("slack_channel", "#defect-notifications")
+                )
+                team_notifier.send_error_notification(f"Team check failed for {team_name}: {str(e)}")
     
     def run_manual_check(self):
         """Run manual defect check (for testing)"""
