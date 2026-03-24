@@ -374,10 +374,25 @@ class DefectScheduler:
                 total = sum(c["total"] for c in team_components_data.values())
                 untriaged = sum(c["untriaged"] for c in team_components_data.values())
                 
+                # Build component-wise breakdown with tag distribution
+                component_breakdown = []
+                for comp in components:
+                    if comp in team_components_data:
+                        comp_data = team_components_data[comp]
+                        component_breakdown.append({
+                            "name": comp,
+                            "total": comp_data.get("total", 0),
+                            "untriaged": comp_data.get("untriaged", 0),
+                            "test_bugs": comp_data.get("test_bugs", 0),
+                            "product_bugs": comp_data.get("product_bugs", 0),
+                            "infra_bugs": comp_data.get("infra_bugs", 0)
+                        })
+                
                 summary = {
                     "total": total,
                     "untriaged": untriaged,
-                    "trend": "N/A"
+                    "trend": "N/A",
+                    "components": component_breakdown  # Component-wise stats with tags
                 }
                 
                 # Fetch insights for team components
@@ -427,10 +442,11 @@ class DefectScheduler:
                 logger.error(f"Failed to send error notification: {notify_error}")
     
     def _fetch_team_insights(self, components: list) -> dict:
-        """Fetch and aggregate insights for team components"""
+        """Fetch and aggregate insights for team components, organized by component"""
         all_insights = {
             "duplicates": [],
-            "rare_defects": []
+            "rare_defects": [],
+            "by_component": {}  # NEW: Organize insights by component
         }
         
         logger.info(f"🔍 Fetching insights for {len(components)} components: {components}")
@@ -453,11 +469,16 @@ class DefectScheduler:
                     
                     logger.info(f"💡 Component '{component}': Found {len(insights.get('duplicates', []))} duplicate groups, {len(insights.get('rare_defects', []))} rare defects")
                     
-                    # Aggregate duplicates
+                    # Store component-specific insights
+                    all_insights["by_component"][component] = {
+                        "duplicates": insights.get("duplicates", []),
+                        "rare_defects": insights.get("rare_defects", [])
+                    }
+                    
+                    # Also aggregate for backward compatibility
                     if insights.get("duplicates"):
                         all_insights["duplicates"].extend(insights["duplicates"])
                     
-                    # Aggregate rare defects
                     if insights.get("rare_defects"):
                         all_insights["rare_defects"].extend(insights["rare_defects"])
             except Exception as e:

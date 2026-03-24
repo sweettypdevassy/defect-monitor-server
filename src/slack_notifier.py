@@ -247,11 +247,21 @@ class SlackNotifier:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
             
             message = f"📊 Weekly Defect Dashboard - {team_name}\n\n"
-            message += f"Components: {', '.join(components)}\n\n"
-            message += "Weekly Summary:\n"
-            message += f"• Total Defects: {summary.get('total', 0)}\n"
-            message += f"• Untriaged: {summary.get('untriaged', 0)}\n"
-            message += f"• Week-over-Week Change: {summary.get('trend', 'N/A')}\n\n"
+            
+            # Component-wise summary with tag breakdown
+            component_breakdown = summary.get('components', [])
+            if component_breakdown:
+                message += "📦 Component Summary:\n"
+                for comp in component_breakdown:
+                    # Main line with total and untriaged
+                    message += f"• {comp['name']}: {comp['total']} defects ({comp['untriaged']} untriaged)\n"
+                    
+                    # Tag breakdown on next line
+                    test = comp.get('test_bugs', 0)
+                    product = comp.get('product_bugs', 0)
+                    infra = comp.get('infra_bugs', 0)
+                    message += f"  Tags: {test} test_bug, {product} product_bug, {infra} infrastructure_bug\n"
+                message += "\n"
             
             # Add insights
             message += self._format_insights(insights)
@@ -272,33 +282,72 @@ class SlackNotifier:
             return False
     
     def _format_insights(self, insights: Dict) -> str:
-        """Format insights for Slack message"""
+        """Format insights for Slack message, organized by component"""
         message = "💡 Best Practices & Insights:\n"
         
-        # Duplicate defects
-        if insights.get("duplicates") and len(insights["duplicates"]) > 0:
-            for group in insights["duplicates"][:10]:  # Show up to 10 duplicate groups
-                defect_ids = [group["main_defect"]["id"]]
-                if group.get("similar_defects"):
-                    defect_ids.extend([d["id"] for d in group["similar_defects"]])
-                
-                defect_links = ", ".join([f"#{id}" for id in defect_ids])
-                message += f"• Defects {defect_links} are duplicates\n"
+        # Check if we have component-organized insights
+        by_component = insights.get("by_component", {})
         
-        # Rare/old defects
-        if insights.get("rare_defects") and len(insights["rare_defects"]) > 0:
-            for defect in insights["rare_defects"][:15]:  # Show up to 15 rare defects
-                age_info = defect.get("age_info", "old defect")
-                creation_date = defect.get("creation_date", "")
-                build_count = defect.get("build_count", 1)
+        if by_component:
+            # Display insights organized by component
+            for component, comp_insights in by_component.items():
+                has_insights = False
+                component_message = ""
                 
-                creation_info = f" - Created: {creation_date}" if creation_date else ""
-                build_info = f" - {build_count} build{'s' if build_count > 1 else ''}"
+                # Duplicate defects for this component
+                if comp_insights.get("duplicates") and len(comp_insights["duplicates"]) > 0:
+                    has_insights = True
+                    for group in comp_insights["duplicates"][:10]:  # Show up to 10 duplicate groups per component
+                        defect_ids = [group["main_defect"]["id"]]
+                        if group.get("similar_defects"):
+                            defect_ids.extend([d["id"] for d in group["similar_defects"]])
+                        
+                        defect_links = ", ".join([f"#{id}" for id in defect_ids])
+                        component_message += f"  • Defects {defect_links} are duplicates\n"
                 
-                message += f"• Defect #{defect['id']} ({age_info}{creation_info}{build_info})\n"
+                # Rare/old defects for this component
+                if comp_insights.get("rare_defects") and len(comp_insights["rare_defects"]) > 0:
+                    has_insights = True
+                    for defect in comp_insights["rare_defects"][:15]:  # Show up to 15 rare defects per component
+                        age_info = defect.get("age_info", "old defect")
+                        creation_date = defect.get("creation_date", "")
+                        build_count = defect.get("build_count", 1)
+                        
+                        creation_info = f" - Created: {creation_date}" if creation_date else ""
+                        build_info = f" - {build_count} build{'s' if build_count > 1 else ''}"
+                        
+                        component_message += f"  • Defect #{defect['id']} ({age_info}{creation_info}{build_info})\n"
+                
+                # Only add component section if it has insights
+                if has_insights:
+                    message += f"\n📦 {component}:\n"
+                    message += component_message
+        else:
+            # Fallback to aggregated view (backward compatibility)
+            # Duplicate defects
+            if insights.get("duplicates") and len(insights["duplicates"]) > 0:
+                for group in insights["duplicates"][:10]:  # Show up to 10 duplicate groups
+                    defect_ids = [group["main_defect"]["id"]]
+                    if group.get("similar_defects"):
+                        defect_ids.extend([d["id"] for d in group["similar_defects"]])
+                    
+                    defect_links = ", ".join([f"#{id}" for id in defect_ids])
+                    message += f"• Defects {defect_links} are duplicates\n"
+            
+            # Rare/old defects
+            if insights.get("rare_defects") and len(insights["rare_defects"]) > 0:
+                for defect in insights["rare_defects"][:15]:  # Show up to 15 rare defects
+                    age_info = defect.get("age_info", "old defect")
+                    creation_date = defect.get("creation_date", "")
+                    build_count = defect.get("build_count", 1)
+                    
+                    creation_info = f" - Created: {creation_date}" if creation_date else ""
+                    build_info = f" - {build_count} build{'s' if build_count > 1 else ''}"
+                    
+                    message += f"• Defect #{defect['id']} ({age_info}{creation_info}{build_info})\n"
         
-        # If no insights
-        if not insights.get("duplicates") and not insights.get("rare_defects"):
+        # If no insights at all
+        if not by_component and not insights.get("duplicates") and not insights.get("rare_defects"):
             message += "• No specific insights available\n"
         
         message += "\n"
