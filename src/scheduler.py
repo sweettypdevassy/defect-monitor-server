@@ -395,7 +395,8 @@ class DefectScheduler:
                 from src.slack_notifier import SlackNotifier
                 team_notifier = SlackNotifier(
                     webhook_url=webhook_url,
-                    default_channel=team.get("slack_channel", "#defect-notifications")
+                    default_channel=team.get("slack_channel", "#defect-notifications"),
+                    config=self.config
                 )
                 
                 team_notifier.send_team_dashboard_notification(
@@ -418,7 +419,8 @@ class DefectScheduler:
                     from src.slack_notifier import SlackNotifier
                     team_notifier = SlackNotifier(
                         webhook_url=webhook_url,
-                        default_channel=team.get("slack_channel", "#defect-notifications")
+                        default_channel=team.get("slack_channel", "#defect-notifications"),
+                        config=self.config
                     )
                     team_notifier.send_error_notification(f"Weekly dashboard failed for {team_name}: {str(e)}")
             except Exception as notify_error:
@@ -577,7 +579,8 @@ class DefectScheduler:
                 from slack_notifier import SlackNotifier
                 team_notifier = SlackNotifier(
                     webhook_url=team_webhook,
-                    default_channel=team_channel
+                    default_channel=team_channel,
+                    config=self.config
                 )
                 team_notifier.send_defect_notification(results)
                 logger.info(f"✅ Notification sent to {team_name} ({team_channel})")
@@ -601,7 +604,8 @@ class DefectScheduler:
                 from slack_notifier import SlackNotifier
                 team_notifier = SlackNotifier(
                     webhook_url=webhook_url,
-                    default_channel=team.get("slack_channel", "#defect-notifications")
+                    default_channel=team.get("slack_channel", "#defect-notifications"),
+                    config=self.config
                 )
                 team_notifier.send_error_notification(f"Team check failed for {team_name}: {str(e)}")
     

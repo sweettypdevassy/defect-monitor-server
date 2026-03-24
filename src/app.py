@@ -116,7 +116,8 @@ def initialize_services():
         slack_config = config.get("slack", {})
         slack_notifier = SlackNotifier(
             webhook_url=slack_config.get("webhook_url"),
-            default_channel=slack_config.get("channel", "#defect-notifications")
+            default_channel=slack_config.get("channel", "#defect-notifications"),
+            config=config
         )
         
         # Initialize scheduler

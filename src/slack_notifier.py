@@ -15,9 +15,11 @@ logger = logging.getLogger(__name__)
 class SlackNotifier:
     """Handles sending notifications to Slack (Workflow Builder compatible)"""
     
-    def __init__(self, webhook_url: str, default_channel: str = "#defect-notifications"):
+    def __init__(self, webhook_url: str, default_channel: str = "#defect-notifications", config: Dict = None):
         self.webhook_url = webhook_url
         self.default_channel = default_channel
+        self.config = config or {}
+        self.dashboard_url = self.config.get('dashboard', {}).get('public_url', '') if config else ''
     
     def send_defect_notification(self, results: Dict, component_channels: Optional[Dict] = None) -> bool:
         """
@@ -59,8 +61,35 @@ class SlackNotifier:
             self._send_no_defects_notification(results)
             return
         
-        # Calculate total defects to show
-        total_defects = total_untriaged + len(soe_defects)
+        # Get all component defect IDs to check for duplicates with SOE
+        # Convert to int to ensure type consistency
+        component_defect_ids = set()
+        for component_data in components_data.values():
+            for defect in component_data.get("defects", []):
+                if defect.get("is_untriaged", True):
+                    defect_id = defect.get('id')
+                    # Ensure consistent type (int)
+                    if isinstance(defect_id, str):
+                        defect_id = int(defect_id)
+                    component_defect_ids.add(defect_id)
+        
+        # Filter out SOE defects that are already in component defects
+        unique_soe_defects = []
+        for d in soe_defects:
+            soe_id = d.get('id')
+            # Ensure consistent type (int)
+            if isinstance(soe_id, str):
+                soe_id = int(soe_id)
+            if soe_id not in component_defect_ids:
+                unique_soe_defects.append(d)
+        
+        # Debug logging
+        logger.info(f"Component defect IDs: {component_defect_ids}")
+        logger.info(f"SOE defect IDs: {[d.get('id') for d in soe_defects]}")
+        logger.info(f"Unique SOE defects: {len(unique_soe_defects)} out of {len(soe_defects)}")
+        
+        # Calculate total unique defects
+        total_defects = total_untriaged + len(unique_soe_defects)
         defect_word = "Defect" if total_defects == 1 else "Defects"
         
         message = f"⚠️ {total_defects} Untriaged {defect_word}\n\n"
@@ -84,8 +113,7 @@ class SlackNotifier:
                 defect_id = defect.get('id', 'N/A')
                 defect_link = f"https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id={defect_id}"
                 
-                message += f"{index + 1}. Defect ID: {defect_id}\n"
-                message += f"   Link: {defect_link}\n"
+                message += f"{index + 1}. Defect #{defect_id}: {defect_link}\n"
                 message += f"   Summary: {defect.get('summary', 'N/A')}\n"
                 
                 # Add duplicate detection info if available
@@ -98,8 +126,7 @@ class SlackNotifier:
                     
                     dup_link = f"https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id={dup_id}"
                     
-                    message += f"   🔄 Possible Duplicate: Defect #{dup_id} ({similarity_pct}% similar)\n"
-                    message += f"   🔗 Duplicate Link: {dup_link}\n"
+                    message += f"   🔄 Possible Duplicate of #{dup_id} ({similarity_pct}% similar): {dup_link}\n"
                     if dup_tags:
                         message += f"   📋 Previous Tags: {dup_tags}\n"
                 
@@ -110,10 +137,8 @@ class SlackNotifier:
                     reasoning = defect.get('suggestion_reasoning', '')
                     confidence_pct = int(confidence * 100)
                     
-                    # Format tag name nicely
-                    tag_display = suggested_tag.replace('_', ' ').title()
-                    
-                    message += f"   🤖 Suggested Tag: {tag_display} ({confidence_pct}% confidence)\n"
+                    # Use raw tag name (e.g., test_bug, product_bug, infrastructure_bug)
+                    message += f"   🤖 Suggested Tag: {suggested_tag} ({confidence_pct}% confidence)\n"
                     if reasoning:
                         message += f"   💡 Reason: {reasoning}\n"
                 
@@ -131,7 +156,7 @@ class SlackNotifier:
             if component_index < len(components_data) - 1 or len(soe_defects) > 0:
                 message += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
-        # Add SOE Triage overdue defects section if available
+        # Add SOE Triage overdue defects section if available (show all, even if duplicates)
         if soe_defects and len(soe_defects) > 0:
             message += f"📋 SOE Triage Overdue Defects ({len(soe_defects)})\n\n"
             
@@ -142,8 +167,7 @@ class SlackNotifier:
                 defect_id = defect.get('id', 'N/A')
                 defect_link = f"https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id={defect_id}"
                 
-                message += f"{index + 1}. Defect ID: {defect_id}\n"
-                message += f"   Link: {defect_link}\n"
+                message += f"{index + 1}. Defect #{defect_id}: {defect_link}\n"
                 message += f"   Summary: {defect.get('summary', 'N/A')}\n"
                 message += f"   Functional Area: {defect.get('functionalArea', 'N/A')}\n"
                 message += f"   Filed Against: {defect.get('filedAgainst', 'N/A')}\n"
@@ -155,6 +179,10 @@ class SlackNotifier:
             
             if len(soe_defects) > 5:
                 message += f"\n... and {len(soe_defects) - 5} more SOE overdue defect(s)\n"
+        
+        # Add dashboard link if available
+        if self.dashboard_url:
+            message += f"\n\n📊 View Dashboard: {self.dashboard_url}"
         
         message += f"\n\nLast checked: {timestamp}"
         
