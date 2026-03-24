@@ -17,6 +17,7 @@ from defect_checker import DefectChecker
 from slack_notifier import SlackNotifier
 from database import DefectDatabase
 from scheduler import DefectScheduler
+from insights_analyzer import InsightsAnalyzer
 
 # Configure logging (only if not already configured)
 if not logging.getLogger().handlers:
@@ -47,11 +48,12 @@ defect_checker = None
 slack_notifier = None
 database = None
 scheduler = None
+insights_analyzer = None
 
 # Initialize services when module is imported (for Gunicorn)
 def init_app():
     """Initialize application - called at module level for Gunicorn"""
-    global config, authenticator, defect_checker, slack_notifier, database, scheduler
+    global config, authenticator, defect_checker, slack_notifier, database, scheduler, insights_analyzer
     if database is None:  # Only initialize once
         logger.info("=" * 60)
         logger.info("🚀 Initializing Defect Monitor Server")
@@ -80,7 +82,7 @@ def load_config():
 
 def initialize_services():
     """Initialize all services"""
-    global authenticator, defect_checker, slack_notifier, database, scheduler
+    global authenticator, defect_checker, slack_notifier, database, scheduler, insights_analyzer
     
     try:
         # Load configuration
@@ -120,6 +122,12 @@ def initialize_services():
         # Initialize scheduler
         scheduler = DefectScheduler(config, defect_checker, slack_notifier, database)
         scheduler.start()
+        
+        # Initialize insights analyzer with defect_checker for Jazz/RTC access
+        insights_analyzer = InsightsAnalyzer(database, defect_checker)
+        insights_analyzer.set_duplicate_detector(defect_checker.duplicate_detector)
+        insights_analyzer.set_defect_checker(defect_checker)
+        logger.info("✅ Insights analyzer initialized")
         
         logger.info("✅ All services initialized successfully")
         
@@ -284,6 +292,74 @@ def api_all_components():
     except Exception as e:
         logger.error(f"Error getting all components: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/insights/<component_name>')
+def api_component_insights(component_name):
+    """Get insights and recommendations for a specific component"""
+    try:
+        # Get the component's defects from the latest snapshot
+        snapshot = database.get_latest_snapshot()
+        if not snapshot or component_name not in snapshot.get('components', {}):
+            return jsonify({"error": "Component not found"}), 404
+        
+        component_data = snapshot['components'][component_name]
+        
+        # Get defects with descriptions from cache
+        defects = []
+        
+        # Try to get cached descriptions for this component
+        cached_defects = database.get_all_cached_descriptions_for_component(component_name)
+        
+        if cached_defects:
+            # Use cached defects with real IDs and descriptions
+            defects = cached_defects
+            logger.info(f"✅ Using {len(defects)} cached defects for insights")
+        else:
+            # Try to get from historical data
+            history = database.get_component_history(component_name, days=30)
+            if history:
+                for hist in history:
+                    if hist.get('defects'):
+                        defects = hist['defects']
+                        break
+        
+        # If still no defects, return empty insights
+        if not defects:
+            logger.warning(f"No defects found for {component_name} - returning empty insights")
+            return jsonify({
+                'component': component_name,
+                'duplicates': [],
+                'rare_defects': [],
+                'recurring_patterns': [],
+                'recommendations': [],
+                'summary': {
+                    'total_defects': component_data.get('total', 0),
+                    'untriaged': component_data.get('untriaged', 0),
+                    'test_bugs': component_data.get('test_bugs', 0),
+                    'product_bugs': component_data.get('product_bugs', 0),
+                    'infra_bugs': component_data.get('infra_bugs', 0)
+                }
+            })
+        
+        # Analyze the component with real defect data
+        insights = insights_analyzer.analyze_component(component_name, defects)
+        
+        # Add component summary
+        insights['component'] = component_name
+        insights['summary'] = {
+            'total_defects': component_data.get('total', 0),
+            'untriaged': component_data.get('untriaged', 0),
+            'test_bugs': component_data.get('test_bugs', 0),
+            'product_bugs': component_data.get('product_bugs', 0),
+            'infra_bugs': component_data.get('infra_bugs', 0)
+        }
+        
+        return jsonify(insights)
+        
+    except Exception as e:
+        logger.error(f"Error getting insights for {component_name}: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 
 @app.route('/api/dashboard/data')
@@ -589,24 +665,35 @@ def api_all_components_data():
 
 @app.route('/api/fetch-all-components', methods=['POST'])
 def api_fetch_all_components():
-    """Trigger background fetch for all 51 components"""
+    """Trigger background fetch for components (respects test_components config)"""
     try:
-        logger.info("Background fetch for all components triggered via API")
+        logger.info("Background fetch for components triggered via API")
         
-        all_components = config.get("all_components", [])
+        # Check if test_components is configured (for testing)
+        test_components = config.get("schedule", {}).get("test_components", [])
         
-        if not all_components:
+        if test_components:
+            # Use test components for testing
+            components_to_fetch = test_components
+            logger.info(f"📝 Using test_components: {len(components_to_fetch)} components")
+            logger.info(f"   Components: {', '.join(components_to_fetch)}")
+        else:
+            # Use all components for production
+            components_to_fetch = config.get("all_components", [])
+            logger.info(f"📋 Using all_components: {len(components_to_fetch)} components")
+        
+        if not components_to_fetch:
             return jsonify({"error": "No components configured"}), 400
         
         # Run fetch in background
-        summary = defect_checker.fetch_all_components_background(all_components, database)
+        summary = defect_checker.fetch_all_components_background(components_to_fetch, database)
         
         return jsonify({
             "message": "Background fetch completed",
             "summary": summary
         })
     except Exception as e:
-        logger.error(f"Error fetching all components: {e}")
+        logger.error(f"Error fetching components: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -626,6 +713,16 @@ def api_fetch_components():
         for component in component_names:
             defects = defect_checker.fetch_defects_for_component(component)
             if defects is not None:
+                logger.info(f"📝 About to cache {len(defects)} defects for {component}")
+                # Add component field to each defect for caching
+                for defect in defects:
+                    defect['component'] = component
+                
+                # Cache defect descriptions with creation_date and number_builds
+                logger.info(f"📝 Calling database.cache_defect_descriptions with {len(defects)} defects")
+                database.cache_defect_descriptions(defects)
+                logger.info(f"📝 Finished caching defects for {component}")
+                    
                 parsed = defect_checker.parse_defects(defects, component)
                 database.store_all_components_snapshot(component, parsed, is_monitored=False)
                 results[component] = {

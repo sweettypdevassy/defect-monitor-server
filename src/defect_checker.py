@@ -121,6 +121,15 @@ class DefectChecker:
                     logger.error(f"Unexpected response format for {component}")
                     return None
                 
+                # Extract creation_date from reported_builds for each defect
+                for defect in defects:
+                    reported_builds = defect.get('reported_builds', '')
+                    if reported_builds:
+                        creation_date = self.extract_creation_date_from_builds(reported_builds)
+                        defect['creation_date'] = creation_date
+                    else:
+                        defect['creation_date'] = ''
+                
                 # Debug: Log first defect structure to understand the data
                 if defects and len(defects) > 0:
                     logger.info(f"DEBUG - Sample defect for {component}: {defects[0]}")
@@ -148,22 +157,59 @@ class DefectChecker:
         
         return None
     
-    def fetch_defect_description(self, defect_id: str, max_retries: int = 2) -> str:
+    def extract_creation_date_from_builds(self, reported_builds: str) -> str:
         """
-        Fetch description for a specific defect from Jazz/RTC with retry logic
+        Extract creation date from the first build in reported_builds string.
+        Example: "[Liberty z/OS Platform Build 20231208-1940, ...]" -> "2023-12-08"
+        Example: "[No longer available was:2026-02-12 22:09 ...]" -> "2026-02-12"
+        """
+        import re
+        from datetime import datetime
+        
+        if not reported_builds:
+            return ''
+        
+        # First try to match YYYY-MM-DD format (with hyphens)
+        match = re.search(r'(\d{4}-\d{2}-\d{2})', reported_builds)
+        if match:
+            date_str = match.group(1)
+            try:
+                # Validate it's a real date
+                dt = datetime.strptime(date_str, '%Y-%m-%d')
+                return dt.strftime('%Y-%m-%d')
+            except ValueError:
+                pass
+        
+        # Fall back to YYYYMMDD format (8 consecutive digits)
+        match = re.search(r'(\d{8})', reported_builds)
+        if match:
+            date_str = match.group(1)
+            try:
+                # Parse YYYYMMDD format
+                dt = datetime.strptime(date_str, '%Y%m%d')
+                # Return in ISO format
+                return dt.strftime('%Y-%m-%d')
+            except ValueError:
+                pass
+        
+        return ''
+    
+    def fetch_defect_details(self, defect_id: str, max_retries: int = 2) -> Dict:
+        """
+        Fetch complete details for a specific defect from Jazz/RTC with retry logic
         
         Args:
             defect_id: The defect ID
             max_retries: Maximum number of retry attempts
             
         Returns:
-            Description text or empty string if not found
+            Dictionary with defect details including description and creation date
         """
         for attempt in range(max_retries):
             try:
                 session = self.authenticator.get_session()
                 if not session:
-                    return ""
+                    return {}
                 
                 # Jazz/RTC work item URL
                 jazz_url = f"https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workitems/{defect_id}.json"
@@ -178,43 +224,82 @@ class DefectChecker:
                 
                 if response.status_code == 200:
                     data = response.json()
-                    # Description is in dcterms:description
-                    description = data.get('dcterms:description', data.get('description', ''))
-                    return str(description) if description else ""
+                    
+                    # Try multiple field name variations for creation date
+                    created = (data.get('dcterms:created') or
+                              data.get('created') or
+                              data.get('rtc_cm:created') or
+                              data.get('creationDate') or
+                              data.get('creation_date') or
+                              '')
+                    
+                    # Debug: Log the keys to see what fields are available
+                    if defect_id == '308598':  # Log for one sample defect
+                        logger.info(f"DEBUG - API response keys for defect {defect_id}: {list(data.keys())[:30]}")
+                        logger.info(f"DEBUG - created field value: {created}")
+                        # Log all keys containing 'creat' or 'date'
+                        date_keys = [k for k in data.keys() if 'creat' in k.lower() or 'date' in k.lower()]
+                        logger.info(f"DEBUG - Keys with 'creat' or 'date': {date_keys}")
+                        for key in date_keys:
+                            logger.info(f"DEBUG - {key}: {data.get(key)}")
+                    
+                    # Extract relevant fields
+                    return {
+                        'description': str(data.get('dcterms:description', data.get('description', ''))),
+                        'created': created,
+                        'modified': data.get('dcterms:modified', data.get('modified', '')),
+                        'creator': data.get('dcterms:creator', {}).get('foaf:name', ''),
+                        'state': data.get('rtc_cm:state', {}).get('dcterms:title', '')
+                    }
                 
-                return ""
+                return {}
                 
             except requests.exceptions.Timeout:
                 if attempt < max_retries - 1:
                     wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s
-                    logger.debug(f"Timeout fetching description for {defect_id}, retrying in {wait_time}s...")
+                    logger.debug(f"Timeout fetching details for {defect_id}, retrying in {wait_time}s...")
                     time.sleep(wait_time)
                 else:
-                    logger.debug(f"Could not fetch description for defect {defect_id}: Timeout after {max_retries} attempts")
-                    return ""
+                    logger.debug(f"Could not fetch details for defect {defect_id}: Timeout after {max_retries} attempts")
+                    return {}
             except Exception as e:
-                logger.debug(f"Could not fetch description for defect {defect_id}: {e}")
-                return ""
+                logger.debug(f"Could not fetch details for defect {defect_id}: {e}")
+                return {}
         
-        return ""
+        return {}
     
-    def fetch_descriptions_parallel(self, defect_ids: List[str], max_workers: int = 5) -> Dict[str, str]:
+    def fetch_defect_description(self, defect_id: str, max_retries: int = 2) -> str:
         """
-        Fetch descriptions for multiple defects in parallel
+        Fetch description for a specific defect from Jazz/RTC with retry logic
+        (Backward compatibility wrapper)
+        
+        Args:
+            defect_id: The defect ID
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            Description text or empty string if not found
+        """
+        details = self.fetch_defect_details(defect_id, max_retries)
+        return details.get('description', '')
+    
+    def fetch_details_parallel(self, defect_ids: List[str], max_workers: int = 5) -> Dict[str, Dict]:
+        """
+        Fetch full details (description + creation date) for multiple defects in parallel
         
         Args:
             defect_ids: List of defect IDs
             max_workers: Maximum number of parallel workers
             
         Returns:
-            Dictionary mapping defect_id to description
+            Dictionary mapping defect_id to details dict
         """
-        descriptions = {}
+        details_map = {}
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
             future_to_id = {
-                executor.submit(self.fetch_defect_description, defect_id): defect_id
+                executor.submit(self.fetch_defect_details, defect_id): defect_id
                 for defect_id in defect_ids
             }
             
@@ -224,19 +309,33 @@ class DefectChecker:
             for future in as_completed(future_to_id):
                 defect_id = future_to_id[future]
                 try:
-                    description = future.result()
-                    descriptions[defect_id] = description
+                    details = future.result()
+                    details_map[defect_id] = details
                     completed += 1
                     
                     # Log progress every 10 defects
                     if completed % 10 == 0 or completed == total:
-                        logger.info(f"📥 Fetched {completed}/{total} descriptions...")
+                        logger.info(f"📥 Fetched {completed}/{total} defect details...")
                         
                 except Exception as e:
-                    logger.debug(f"Error fetching description for {defect_id}: {e}")
-                    descriptions[defect_id] = ""
+                    logger.debug(f"Error fetching details for {defect_id}: {e}")
+                    details_map[defect_id] = {}
         
-        return descriptions
+        return details_map
+    
+    def fetch_descriptions_parallel(self, defect_ids: List[str], max_workers: int = 5) -> Dict[str, str]:
+        """
+        Fetch descriptions for multiple defects in parallel (backward compatibility)
+        
+        Args:
+            defect_ids: List of defect IDs
+            max_workers: Maximum number of parallel workers
+            
+        Returns:
+            Dictionary mapping defect_id to description
+        """
+        details_map = self.fetch_details_parallel(defect_ids, max_workers)
+        return {defect_id: details.get('description', '') for defect_id, details in details_map.items()}
     
     def fetch_soe_triage_defects(self, monitored_components: Optional[List[str]] = None) -> Optional[List[Dict]]:
         """
@@ -579,24 +678,28 @@ class DefectChecker:
                 # No database, fetch all
                 ids_to_fetch = all_ids
             
-            # Fetch missing descriptions in parallel
-            newly_fetched = {}
+            # Fetch missing details (description + creation date) in parallel
+            newly_fetched_details = {}
             if ids_to_fetch:
-                newly_fetched = self.fetch_descriptions_parallel(ids_to_fetch, max_workers=5)
+                newly_fetched_details = self.fetch_details_parallel(ids_to_fetch, max_workers=5)
                 
-                # Cache the newly fetched descriptions
-                if self.database and newly_fetched:
+                # Cache the newly fetched details
+                if self.database and newly_fetched_details:
                     defects_to_cache = []
-                    for defect_id, description in newly_fetched.items():
+                    for defect_id, details in newly_fetched_details.items():
                         # Find the defect in all_defects_for_dup_check to get full info
                         defect_info = next((d for d in all_defects_for_dup_check if str(d.get('id')) == defect_id), None)
                         if defect_info:
-                            defect_info['description'] = description
+                            defect_info['description'] = details.get('description', '')
+                            defect_info['creation_date'] = details.get('created', '')
                             defect_info['component'] = component
                             defects_to_cache.append(defect_info)
                     
                     if defects_to_cache:
                         self.database.cache_defect_descriptions(defects_to_cache)
+            
+            # Convert newly_fetched_details to description format for backward compatibility
+            newly_fetched = {defect_id: details.get('description', '') for defect_id, details in newly_fetched_details.items()}
             
             # Combine cached and newly fetched descriptions
             all_descriptions = {**cached_descriptions, **newly_fetched}
@@ -733,7 +836,7 @@ class DefectChecker:
             logger.info(f"📊 Collected {len(all_triaged_defects)} triaged defects across all components")
             logger.info("=" * 70)
             
-            # Fetch descriptions for triaged defects (for better ML training)
+            # Fetch descriptions AND creation dates for triaged defects (for better ML training)
             if all_triaged_defects:
                 # Collect IDs that need descriptions (check for empty or missing descriptions)
                 ids_needing_desc = [
@@ -742,24 +845,29 @@ class DefectChecker:
                 ]
                 
                 if ids_needing_desc:
-                    logger.info(f"📥 Fetching descriptions for {len(ids_needing_desc)} triaged defects in parallel...")
+                    logger.info(f"📥 Fetching descriptions + creation dates for {len(ids_needing_desc)} triaged defects in parallel...")
                     logger.info("   (Using 3 parallel workers for stable authentication...)")
                     
-                    # Fetch in parallel with 3 workers for training (balanced speed vs stability)
-                    descriptions = self.fetch_descriptions_parallel(ids_needing_desc, max_workers=3)
+                    # Fetch full details (description + creation_date) in parallel
+                    details_map = self.fetch_details_parallel(ids_needing_desc, max_workers=3)
                     
-                    # Apply descriptions to defects
+                    # Apply descriptions and creation dates to defects
                     for defect in all_triaged_defects:
                         defect_id = str(defect.get('id'))
-                        if defect_id in descriptions:
-                            defect['description'] = descriptions[defect_id]
+                        if defect_id in details_map:
+                            details = details_map[defect_id]
+                            defect['description'] = details.get('description', '')
+                            defect['creation_date'] = details.get('created', '')
+                            # Add component for caching
+                            if 'component' not in defect:
+                                defect['component'] = defect.get('functional_area', 'Unknown')
                     
-                    # Cache the fetched descriptions to database
-                    if self.database and descriptions:
-                        logger.info(f"   💾 Caching {len(descriptions)} descriptions to database...")
+                    # Cache the fetched descriptions + creation dates to database
+                    if self.database and details_map:
+                        logger.info(f"   💾 Caching {len(details_map)} descriptions + creation dates to database...")
                         self.database.cache_defect_descriptions(all_triaged_defects)
                     
-                    logger.info(f"   ✅ Fetched descriptions for all {len(ids_needing_desc)} defects")
+                    logger.info(f"   ✅ Fetched descriptions + creation dates for all {len(ids_needing_desc)} defects")
                     logger.info("=" * 70)
                 else:
                     logger.info("   ℹ️  All triaged defects already have descriptions (from cache or previous fetch)")
@@ -926,8 +1034,15 @@ class DefectChecker:
                 defects = self.fetch_defects_for_component(component)
                 
                 if defects is not None:
+                    # Add component field to each defect for caching
+                    for defect in defects:
+                        defect['component'] = component
+                    
                     # Use simple parsing (no ML, no duplicate detection)
                     parsed = self.parse_defects_simple(defects, component)
+                    
+                    # Cache defect descriptions with creation_date and number_builds
+                    database.cache_defect_descriptions(defects)
                     
                     # Store in database
                     database.store_all_components_snapshot(component, parsed, is_monitored=False)

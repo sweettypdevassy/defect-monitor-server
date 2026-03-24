@@ -26,28 +26,19 @@ class DefectScheduler:
     def start(self):
         """Start the scheduler"""
         try:
-            # Train ML model on startup
+            # Check ML model status (but don't train on startup to avoid worker timeout)
             logger.info("")
-            logger.info("🤖 Initializing ML Tag Suggestion System...")
+            logger.info("🤖 ML Tag Suggestion System Status...")
             
-            # Get training components from config (or use all if not specified)
-            ml_config = self.config.get("ml_training", {})
-            training_components = ml_config.get("training_components", [])
-            
-            # If no training components specified, use all components
-            if not training_components:
-                training_components = self.config.get("all_components", [])
-            
-            if training_components and not self.defect_checker.suggester_trained:
-                logger.info(f"Training ML model on {len(training_components)} components: {', '.join(training_components)}")
-                self.defect_checker.train_ml_model_on_all_components(training_components)
-            elif self.defect_checker.suggester_trained:
-                logger.info("✅ ML model already trained (loaded from disk)")
+            if self.defect_checker.suggester_trained:
+                logger.info("✅ ML model loaded and ready")
             else:
-                logger.warning("⚠️  No components configured for ML training")
+                logger.info("⚠️  ML model not trained yet")
+                logger.info("   Run 'docker-compose exec defect-monitor python3 retrain_model.sh' to train")
             logger.info("")
             
             # Schedule weekly ML model retraining (Saturday 10am IST)
+            ml_config = self.config.get("ml_training", {})
             ml_retrain_time = ml_config.get("retrain_time", "10:00")
             ml_retrain_day = ml_config.get("retrain_day", "saturday")
             hour, minute = map(int, ml_retrain_time.split(":"))
@@ -255,21 +246,31 @@ class DefectScheduler:
             self.database.store_check_history({}, False, str(e))
     
     def run_all_components_fetch(self):
-        """Fetch ALL 51 components in background (no notifications)"""
+        """Fetch components in background (no notifications)"""
         try:
             logger.info("=" * 60)
-            logger.info("🔄 Starting background fetch for all components")
+            logger.info("🔄 Starting background fetch for components")
             logger.info("=" * 60)
             
-            # Get all components list
-            all_components = self.config.get("all_components", [])
+            # Check if test_components is configured (for testing)
+            test_components = self.config.get("schedule", {}).get("test_components", [])
             
-            if not all_components:
+            if test_components:
+                # Use test components for testing
+                components_to_fetch = test_components
+                logger.info(f"📝 Using test_components: {len(components_to_fetch)} components")
+                logger.info(f"   Components: {', '.join(components_to_fetch)}")
+            else:
+                # Use all components for production
+                components_to_fetch = self.config.get("all_components", [])
+                logger.info(f"📋 Using all_components: {len(components_to_fetch)} components")
+            
+            if not components_to_fetch:
                 logger.warning("No components configured for background fetch")
                 return
             
-            # Fetch all components
-            summary = self.defect_checker.fetch_all_components_background(all_components, self.database)
+            # Fetch components
+            summary = self.defect_checker.fetch_all_components_background(components_to_fetch, self.database)
             
             logger.info("=" * 60)
             logger.info("✅ Background fetch completed")

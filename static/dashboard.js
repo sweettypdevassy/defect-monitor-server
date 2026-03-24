@@ -700,9 +700,6 @@ function initializeComponentExplorer() {
         checkbox.addEventListener('change', updateSelectedComponents);
     });
     
-    // Fetch Data button
-    document.getElementById('fetchDataBtn').addEventListener('click', fetchAllComponentsData);
-    
     // Select All button
     document.getElementById('selectAllBtn').addEventListener('click', () => {
         checkboxes.forEach(cb => cb.checked = true);
@@ -724,46 +721,6 @@ function initializeComponentExplorer() {
         document.querySelector('.component-explorer').style.display = 'block';
         document.getElementById('explorerDashboard').style.display = 'none';
     });
-}
-
-// Fetch all components data from Flask API using check-now endpoint
-async function fetchAllComponentsData() {
-    const fetchBtn = document.getElementById('fetchDataBtn');
-    const originalText = fetchBtn.innerHTML;
-    
-    // Disable button and show loading
-    fetchBtn.disabled = true;
-    fetchBtn.innerHTML = '⏳ Fetching data for all 51 components...';
-    
-    try {
-        // Call Flask API to trigger check-now (fetches all components)
-        const response = await fetch('/api/check-now', {
-            method: 'POST'
-        });
-        const result = await response.json();
-        
-        if (result.message && result.message.includes('completed')) {
-            fetchBtn.innerHTML = '✅ Data fetched successfully!';
-            setTimeout(() => {
-                fetchBtn.innerHTML = originalText;
-                fetchBtn.disabled = false;
-            }, 2000);
-        } else {
-            fetchBtn.innerHTML = '❌ Failed to fetch data';
-            console.error('Fetch error:', result.error || result);
-            setTimeout(() => {
-                fetchBtn.innerHTML = originalText;
-                fetchBtn.disabled = false;
-            }, 3000);
-        }
-    } catch (error) {
-        fetchBtn.innerHTML = '❌ Error occurred';
-        console.error('Fetch error:', error);
-        setTimeout(() => {
-            fetchBtn.innerHTML = originalText;
-            fetchBtn.disabled = false;
-        }, 3000);
-    }
 }
 
 // Update selected components
@@ -820,12 +777,52 @@ async function generateExplorerDashboard() {
         window.scrollTo({ top: 0, behavior: 'smooth' });
         
         // Render explorer dashboard with the data
-        renderExplorerKPICards(data.summary);
-        renderExplorerLineChart(data.dailyTrend);
-        renderExplorerPieChart(data.componentBreakdown, data.summary);
-        renderExplorerBarChart(data.componentBreakdown);
-        renderExplorerComparisonChart(data.weekComparison);
-        renderExplorerSOETriageTable(data.soeTriageDefects || []);
+        try {
+            renderExplorerKPICards(data.summary);
+        } catch (e) {
+            console.error('Error rendering KPI cards:', e);
+        }
+        
+        try {
+            renderExplorerLineChart(data.dailyTrend);
+        } catch (e) {
+            console.error('Error rendering line chart:', e);
+        }
+        
+        try {
+            renderExplorerPieChart(data.componentBreakdown, data.summary);
+        } catch (e) {
+            console.error('Error rendering pie chart:', e);
+        }
+        
+        try {
+            renderExplorerBarChart(data.componentBreakdown);
+        } catch (e) {
+            console.error('Error rendering bar chart:', e);
+        }
+        
+        try {
+            renderExplorerComparisonChart(data.weekComparison);
+        } catch (e) {
+            console.error('Error rendering comparison chart:', e);
+        }
+        
+        try {
+            renderExplorerSOETriageTable(data.soeTriageDefects || []);
+        } catch (e) {
+            console.error('Error rendering SOE triage table:', e);
+        }
+        
+        // Render insights for selected components
+        try {
+            console.log('🚀 About to call renderComponentInsights with:', selectedComponents);
+            renderComponentInsights(selectedComponents);
+            console.log('✅ renderComponentInsights called successfully');
+        } catch (e) {
+            console.error('❌ Error rendering insights:', e);
+            console.error('Error stack:', e.stack);
+            alert('Insights error: ' + e.message);
+        }
         
     } catch (error) {
         console.error('Error generating explorer dashboard:', error);
@@ -1046,6 +1043,143 @@ async function renderExplorerSOETriageTable(defectsArray) {
                 <td>${defect.ownedBy}</td>
             </tr>
         `).join('');
+    }
+}
+
+// Fetch and render insights for selected components
+async function renderComponentInsights(selectedComponents) {
+    console.log('🔍 renderComponentInsights called with:', selectedComponents);
+    
+    const insightsBox = document.getElementById('insightsBox');
+    const insightsContent = document.getElementById('insightsContent');
+    
+    console.log('📦 insightsBox element:', insightsBox);
+    console.log('📦 insightsContent element:', insightsContent);
+    
+    if (!insightsBox || !insightsContent) {
+        console.error('❌ Insights elements not found in DOM');
+        return;
+    }
+    
+    // Show insights box with loading state
+    insightsBox.style.display = 'block';
+    insightsContent.innerHTML = '<div class="loading-spinner" style="margin: 20px auto;"></div>';
+    
+    try {
+        // Fetch insights for all selected components and aggregate them
+        console.log('🎯 Fetching insights for components:', selectedComponents);
+        
+        const allInsights = {
+            duplicates: [],
+            rare_defects: []
+        };
+        
+        // Fetch insights for each component
+        for (const componentName of selectedComponents) {
+            try {
+                const response = await fetch(`/api/insights/${encodeURIComponent(componentName)}`);
+                if (!response.ok) {
+                    console.warn(`Failed to fetch insights for ${componentName}`);
+                    continue;
+                }
+                
+                const insights = await response.json();
+                console.log(`Insights received for ${componentName}:`, insights);
+                
+                // Aggregate duplicates
+                if (insights.duplicates && insights.duplicates.length > 0) {
+                    allInsights.duplicates.push(...insights.duplicates);
+                }
+                
+                // Aggregate rare defects
+                if (insights.rare_defects && insights.rare_defects.length > 0) {
+                    allInsights.rare_defects.push(...insights.rare_defects);
+                }
+            } catch (error) {
+                console.error(`Error fetching insights for ${componentName}:`, error);
+            }
+        }
+        
+        console.log('Aggregated insights:', allInsights);
+        
+        // Render insights
+        let html = '';
+        
+        // Simple bullet-point format
+        html += '<ul style="list-style: none; padding: 0; margin: 0;">';
+        
+        // Duplicate defects with clickable links
+        if (allInsights.duplicates && allInsights.duplicates.length > 0) {
+            allInsights.duplicates.forEach(group => {
+                const defectIds = [group.main_defect.id];
+                if (group.similar_defects) {
+                    group.similar_defects.forEach(d => defectIds.push(d.id));
+                }
+                
+                // Create clickable links for each defect ID
+                const defectLinks = defectIds.map(id =>
+                    `<a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${id}"
+                       target="_blank"
+                       style="color: #4fc3f7; text-decoration: none; font-weight: 500;"
+                       onmouseover="this.style.textDecoration='underline'"
+                       onmouseout="this.style.textDecoration='none'">#${id}</a>`
+                ).join(', ');
+                
+                html += `
+                    <li style="padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                        • Defects ${defectLinks} are duplicates
+                    </li>
+                `;
+            });
+        }
+        
+        // Rare/Old defects with creation date and build count
+        if (allInsights.rare_defects && allInsights.rare_defects.length > 0) {
+            allInsights.rare_defects.forEach(defect => {
+                const defectLink = `<a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${defect.id}"
+                   target="_blank"
+                   style="color: #4fc3f7; text-decoration: none; font-weight: 500;"
+                   onmouseover="this.style.textDecoration='underline'"
+                   onmouseout="this.style.textDecoration='none'">#${defect.id}</a>`;
+                
+                // Format creation date if available
+                let creationInfo = '';
+                if (defect.creation_date) {
+                    try {
+                        const date = new Date(defect.creation_date);
+                        creationInfo = ` - Created: ${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+                    } catch (e) {
+                        creationInfo = '';
+                    }
+                }
+                
+                // Build count info
+                const buildInfo = defect.build_count ? ` - ${defect.build_count} build${defect.build_count > 1 ? 's' : ''}` : '';
+                
+                html += `
+                    <li style="padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                        • Defect ${defectLink} (${defect.age_info || 'old defect'}${creationInfo}${buildInfo})
+                    </li>
+                `;
+            });
+        }
+        
+        html += '</ul>';
+        
+        // If no insights
+        if (!html) {
+            html = '<div class="no-insights">✅ No specific insights available for this component</div>';
+        }
+        
+        insightsContent.innerHTML = html;
+        
+    } catch (error) {
+        console.error('Error loading insights:', error);
+        insightsContent.innerHTML = `
+            <div class="no-insights" style="color: #ff6b9d;">
+                ❌ Error loading insights: ${error.message}
+            </div>
+        `;
     }
 }
 

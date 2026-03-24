@@ -102,10 +102,26 @@ class DefectDatabase:
                     functional_area TEXT,
                     state TEXT,
                     tags TEXT,
+                    creation_date TEXT,
+                    number_builds INTEGER,
                     fetched_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
             """)
+            
+            # Add creation_date column if it doesn't exist (for existing databases)
+            try:
+                cursor.execute("ALTER TABLE defect_descriptions ADD COLUMN creation_date TEXT")
+                logger.info("Added creation_date column to defect_descriptions table")
+            except Exception:
+                pass  # Column already exists
+            
+            # Add number_builds column if it doesn't exist (for existing databases)
+            try:
+                cursor.execute("ALTER TABLE defect_descriptions ADD COLUMN number_builds INTEGER")
+                logger.info("Added number_builds column to defect_descriptions table")
+            except Exception:
+                pass  # Column already exists
             
             # Create index for faster lookups
             cursor.execute("""
@@ -184,7 +200,12 @@ class DefectDatabase:
             
             timestamp = datetime.now().isoformat()
             
+            logger.debug(f"🔍 Caching {len(defects)} defects")
+            
             for defect in defects:
+                # Debug log the first defect
+                if defect.get('id') == 308598:
+                    logger.debug(f"🔍 Defect 308598 data: component={defect.get('component')}, functional_area={defect.get('functional_area')}, functionalArea={defect.get('functionalArea')}")
                 defect_id = str(defect.get('id', ''))
                 if not defect_id:
                     continue
@@ -193,18 +214,26 @@ class DefectDatabase:
                 tags = defect.get('triageTags', defect.get('tags', []))
                 tags_str = json.dumps(tags) if tags else '[]'
                 
+                # Get creation date if available
+                creation_date = defect.get('created') or defect.get('creationDate') or defect.get('creation_date')
+                
+                # Get number_builds if available
+                number_builds = defect.get('number_builds', defect.get('numberBuilds', 0))
+                
                 cursor.execute("""
                     INSERT OR REPLACE INTO defect_descriptions
-                    (defect_id, description, summary, component, functional_area, state, tags, fetched_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, fetched_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     defect_id,
                     defect.get('description', ''),
                     defect.get('summary', ''),
                     defect.get('component', ''),
-                    defect.get('functionalArea', ''),
+                    defect.get('functionalArea', defect.get('functional_area', '')),
                     defect.get('state', ''),
                     tags_str,
+                    creation_date,
+                    number_builds,
                     timestamp,
                     timestamp
                 ))
@@ -264,14 +293,14 @@ class DefectDatabase:
             cursor = conn.cursor()
             
             cursor.execute("""
-                SELECT defect_id, description, summary, component, functional_area, state, tags
+                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds
                 FROM defect_descriptions
                 WHERE component = ?
             """, (component,))
             
             results = []
             for row in cursor.fetchall():
-                defect_id, description, summary, component, functional_area, state, tags_str = row
+                defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds = row
                 results.append({
                     'id': defect_id,
                     'description': description or '',
@@ -279,7 +308,9 @@ class DefectDatabase:
                     'component': component or '',
                     'functionalArea': functional_area or '',
                     'state': state or '',
-                    'triageTags': json.loads(tags_str) if tags_str else []
+                    'triageTags': json.loads(tags_str) if tags_str else [],
+                    'creation_date': creation_date or '',
+                    'number_builds': number_builds or 0
                 })
             
             conn.close()
@@ -570,6 +601,54 @@ class DefectDatabase:
         except Exception as e:
             logger.error(f"Error getting latest snapshot: {e}")
             return None
+    def get_component_history(self, component_name: str, start_date: Optional[str] = None, days: int = 30) -> List[Dict]:
+        """Get historical data for a specific component"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            if not start_date:
+                start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            cursor.execute("""
+                SELECT date, total, untriaged, test_bugs, product_bugs, infra_bugs, data
+                FROM all_components_snapshots
+                WHERE component = ? AND date >= ?
+                ORDER BY date DESC
+            """, (component_name, start_date))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            history = []
+            for row in rows:
+                date, total, untriaged, test_bugs, product_bugs, infra_bugs, data_json = row
+                
+                # Parse the JSON data to get individual defects
+                defects = []
+                if data_json:
+                    try:
+                        data = json.loads(data_json)
+                        defects = data.get('defects', [])
+                    except:
+                        pass
+                
+                history.append({
+                    'date': date,
+                    'total': total,
+                    'untriaged': untriaged,
+                    'test_bugs': test_bugs,
+                    'product_bugs': product_bugs,
+                    'infra_bugs': infra_bugs,
+                    'defects': defects
+                })
+            
+            return history
+            
+        except Exception as e:
+            logger.error(f"Error getting component history: {e}")
+            return []
+    
     
     def cleanup_old_data(self, retention_days: int = 90):
         """Remove data older than retention period"""
