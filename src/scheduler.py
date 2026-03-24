@@ -91,6 +91,23 @@ class DefectScheduler:
                             replace_existing=True
                         )
                         logger.info(f"✅ Scheduled {team_name} check at {check_time} (daily) {self.timezone}")
+                    
+                    # Schedule team-specific weekly dashboard if configured
+                    weekly_day = team.get("weekly_dashboard_day")
+                    weekly_time = team.get("weekly_dashboard_time")
+                    
+                    if weekly_day and weekly_time:
+                        hour, minute = map(int, weekly_time.split(":"))
+                        day_of_week = day_map.get(weekly_day.lower(), 0)
+                        
+                        self.scheduler.add_job(
+                            lambda t=team: self.run_team_weekly_dashboard(t),
+                            CronTrigger(day_of_week=day_of_week, hour=hour, minute=minute, timezone=self.timezone),
+                            id=f"team_weekly_dashboard_{team_name}",
+                            name=f"Weekly Dashboard: {team_name}",
+                            replace_existing=True
+                        )
+                        logger.info(f"✅ Scheduled {team_name} weekly dashboard on {weekly_day} at {weekly_time} {self.timezone}")
             else:
                 # Fallback to old daily check if no teams configured
                 daily_time = self.config.get("schedule", {}).get("daily_check_time", "10:00")
@@ -283,7 +300,7 @@ class DefectScheduler:
             logger.error(f"❌ Error in background fetch: {e}")
     
     def run_weekly_dashboard(self):
-        """Generate and send weekly dashboard"""
+        """Generate and send weekly dashboard with insights"""
         try:
             logger.info("=" * 60)
             logger.info("📊 Generating weekly dashboard")
@@ -309,15 +326,146 @@ class DefectScheduler:
                     "trend": "N/A"  # Calculate trend if needed
                 }
                 
-                # Send dashboard notification with public URL
+                # Fetch insights for all components
+                all_components = list(latest_snapshot["components"].keys())
+                insights_data = self._fetch_team_insights(all_components)
+                
+                # Send dashboard notification with public URL and insights
                 dashboard_url = self.config.get('dashboard', {}).get('public_url', 'http://9.60.246.74:5001/dashboard')
-                self.slack_notifier.send_dashboard_notification(dashboard_url, summary)
+                self.slack_notifier.send_dashboard_notification(dashboard_url, summary, insights_data)
                 
                 logger.info("✅ Weekly dashboard notification sent")
             
         except Exception as e:
             logger.error(f"❌ Error generating weekly dashboard: {e}")
             self.slack_notifier.send_error_notification(f"Weekly dashboard failed: {str(e)}")
+    
+    def run_team_weekly_dashboard(self, team: dict):
+        """Generate and send team-specific weekly dashboard with insights"""
+        try:
+            team_name = team.get("name", "Unknown")
+            logger.info("=" * 60)
+            logger.info(f"📊 Generating weekly dashboard for {team_name}")
+            logger.info("=" * 60)
+            
+            # Get team components
+            components = [c.get("name") for c in team.get("components", [])]
+            if not components:
+                logger.warning(f"No components configured for {team_name}")
+                return
+            
+            # Get weekly data for team components
+            weekly_data = self.database.get_weekly_data(days=7)
+            
+            if not weekly_data["dates"]:
+                logger.warning(f"No data available for {team_name} weekly dashboard")
+                return
+            
+            # Calculate summary for team components
+            latest_snapshot = self.database.get_latest_snapshot()
+            
+            if latest_snapshot:
+                # Filter for team components only
+                team_components_data = {
+                    comp: data for comp, data in latest_snapshot["components"].items()
+                    if comp in components
+                }
+                
+                total = sum(c["total"] for c in team_components_data.values())
+                untriaged = sum(c["untriaged"] for c in team_components_data.values())
+                
+                summary = {
+                    "total": total,
+                    "untriaged": untriaged,
+                    "trend": "N/A"
+                }
+                
+                # Fetch insights for team components
+                insights_data = self._fetch_team_insights(components)
+                
+                # Send dashboard notification with insights
+                dashboard_url = self.config.get('dashboard', {}).get('public_url', 'http://9.60.246.74:5001/dashboard')
+                
+                # Create team-specific notifier
+                webhook_url = team.get("webhook_url")
+                if not webhook_url:
+                    logger.warning(f"No webhook URL configured for {team_name}")
+                    return
+                
+                from src.slack_notifier import SlackNotifier
+                team_notifier = SlackNotifier(
+                    webhook_url=webhook_url,
+                    default_channel=team.get("slack_channel", "#defect-notifications")
+                )
+                
+                team_notifier.send_team_dashboard_notification(
+                    dashboard_url=dashboard_url,
+                    summary=summary,
+                    insights=insights_data,
+                    team_name=team_name,
+                    components=components
+                )
+                
+                logger.info(f"✅ Weekly dashboard notification sent for {team_name}")
+            
+        except Exception as e:
+            team_name = team.get('name', 'Unknown')
+            logger.error(f"❌ Error generating weekly dashboard for {team_name}: {e}")
+            # Send error notification to team's webhook
+            try:
+                webhook_url = team.get("webhook_url")
+                if webhook_url:
+                    from src.slack_notifier import SlackNotifier
+                    team_notifier = SlackNotifier(
+                        webhook_url=webhook_url,
+                        default_channel=team.get("slack_channel", "#defect-notifications")
+                    )
+                    team_notifier.send_error_notification(f"Weekly dashboard failed for {team_name}: {str(e)}")
+            except Exception as notify_error:
+                logger.error(f"Failed to send error notification: {notify_error}")
+    
+    def _fetch_team_insights(self, components: list) -> dict:
+        """Fetch and aggregate insights for team components"""
+        all_insights = {
+            "duplicates": [],
+            "rare_defects": []
+        }
+        
+        logger.info(f"🔍 Fetching insights for {len(components)} components: {components}")
+        
+        for component in components:
+            try:
+                # Get cached defects for the component
+                cached_defects = self.database.get_all_cached_descriptions_for_component(component)
+                
+                logger.info(f"📊 Component '{component}': Found {len(cached_defects) if cached_defects else 0} cached defects")
+                
+                if cached_defects:
+                    # Use insights analyzer to get insights
+                    from src.insights_analyzer import InsightsAnalyzer
+                    analyzer = InsightsAnalyzer(self.database, self.defect_checker)
+                    # Set the duplicate detector so it can find duplicates
+                    analyzer.set_duplicate_detector(self.defect_checker.duplicate_detector)
+                    analyzer.set_defect_checker(self.defect_checker)
+                    insights = analyzer.analyze_component(component, cached_defects)
+                    
+                    logger.info(f"💡 Component '{component}': Found {len(insights.get('duplicates', []))} duplicate groups, {len(insights.get('rare_defects', []))} rare defects")
+                    
+                    # Aggregate duplicates
+                    if insights.get("duplicates"):
+                        all_insights["duplicates"].extend(insights["duplicates"])
+                    
+                    # Aggregate rare defects
+                    if insights.get("rare_defects"):
+                        all_insights["rare_defects"].extend(insights["rare_defects"])
+            except Exception as e:
+                logger.error(f"Error fetching insights for {component}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        logger.info(f"✅ Total aggregated insights: {len(all_insights['duplicates'])} duplicate groups, {len(all_insights['rare_defects'])} rare defects")
+        
+        return all_insights
     
     def refresh_session(self):
         """Refresh IBM session (no error notifications)"""
@@ -446,11 +594,13 @@ class DefectScheduler:
             logger.info("=" * 60)
             
         except Exception as e:
+            team_name = team.get("name", "Unknown Team")
             logger.error(f"❌ Error in team check for {team_name}: {e}")
-            if team.get("webhook_url"):
+            webhook_url = team.get("webhook_url")
+            if webhook_url:
                 from slack_notifier import SlackNotifier
                 team_notifier = SlackNotifier(
-                    webhook_url=team.get("webhook_url"),
+                    webhook_url=webhook_url,
                     default_channel=team.get("slack_channel", "#defect-notifications")
                 )
                 team_notifier.send_error_notification(f"Team check failed for {team_name}: {str(e)}")

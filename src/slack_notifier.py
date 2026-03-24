@@ -183,8 +183,8 @@ class SlackNotifier:
         response.raise_for_status()
         logger.info("✅ Sent 'no defects' notification")
     
-    def send_dashboard_notification(self, dashboard_url: str, summary: Dict):
-        """Send weekly dashboard notification"""
+    def send_dashboard_notification(self, dashboard_url: str, summary: Dict, insights: Optional[Dict] = None):
+        """Send weekly dashboard notification with optional insights"""
         try:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
             
@@ -193,6 +193,11 @@ class SlackNotifier:
             message += f"• Total Defects: {summary.get('total', 0)}\n"
             message += f"• Untriaged: {summary.get('untriaged', 0)}\n"
             message += f"• Week-over-Week Change: {summary.get('trend', 'N/A')}\n\n"
+            
+            # Add insights if provided
+            if insights:
+                message += self._format_insights(insights)
+            
             message += f"📊 View Full Dashboard: {dashboard_url}\n\n"
             message += f"Generated: {timestamp}"
             
@@ -207,6 +212,69 @@ class SlackNotifier:
         except Exception as e:
             logger.error(f"Error sending dashboard notification: {e}")
             return False
+    
+    def send_team_dashboard_notification(self, dashboard_url: str, summary: Dict, insights: Dict, team_name: str, components: list):
+        """Send team-specific weekly dashboard notification with insights"""
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
+            
+            message = f"📊 Weekly Defect Dashboard - {team_name}\n\n"
+            message += f"Components: {', '.join(components)}\n\n"
+            message += "Weekly Summary:\n"
+            message += f"• Total Defects: {summary.get('total', 0)}\n"
+            message += f"• Untriaged: {summary.get('untriaged', 0)}\n"
+            message += f"• Week-over-Week Change: {summary.get('trend', 'N/A')}\n\n"
+            
+            # Add insights
+            message += self._format_insights(insights)
+            
+            message += f"📊 View Full Dashboard: {dashboard_url}\n\n"
+            message += f"Generated: {timestamp}"
+            
+            payload = {"message": message}
+            
+            response = requests.post(self.webhook_url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            logger.info(f"✅ Team dashboard notification sent for {team_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending team dashboard notification: {e}")
+            return False
+    
+    def _format_insights(self, insights: Dict) -> str:
+        """Format insights for Slack message"""
+        message = "💡 Best Practices & Insights:\n"
+        
+        # Duplicate defects
+        if insights.get("duplicates") and len(insights["duplicates"]) > 0:
+            for group in insights["duplicates"][:10]:  # Show up to 10 duplicate groups
+                defect_ids = [group["main_defect"]["id"]]
+                if group.get("similar_defects"):
+                    defect_ids.extend([d["id"] for d in group["similar_defects"]])
+                
+                defect_links = ", ".join([f"#{id}" for id in defect_ids])
+                message += f"• Defects {defect_links} are duplicates\n"
+        
+        # Rare/old defects
+        if insights.get("rare_defects") and len(insights["rare_defects"]) > 0:
+            for defect in insights["rare_defects"][:15]:  # Show up to 15 rare defects
+                age_info = defect.get("age_info", "old defect")
+                creation_date = defect.get("creation_date", "")
+                build_count = defect.get("build_count", 1)
+                
+                creation_info = f" - Created: {creation_date}" if creation_date else ""
+                build_info = f" - {build_count} build{'s' if build_count > 1 else ''}"
+                
+                message += f"• Defect #{defect['id']} ({age_info}{creation_info}{build_info})\n"
+        
+        # If no insights
+        if not insights.get("duplicates") and not insights.get("rare_defects"):
+            message += "• No specific insights available\n"
+        
+        message += "\n"
+        return message
     
     def send_error_notification(self, error_message: str):
         """Send error notification to Slack"""
