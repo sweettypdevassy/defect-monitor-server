@@ -150,7 +150,8 @@ class SlackNotifier:
                     message += "\n"
             
             if component_defect_count > 5:
-                message += f"\n... and {component_defect_count - 5} more defect(s) for {component_name}\n"
+                remaining = component_defect_count - 5
+                message += f"\n... and {remaining} more defect(s) for {component_name}\n"
             
             # Add separator between components
             if component_index < len(components_data) - 1 or len(soe_defects) > 0:

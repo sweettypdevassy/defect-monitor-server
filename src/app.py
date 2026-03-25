@@ -503,6 +503,38 @@ def api_soe_defects():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/untriaged-defects')
+def api_untriaged_defects():
+    """Get all untriaged defects with full details including duplicates and suggested tags"""
+    try:
+        # Get component filter from query parameter
+        components_param = request.args.get('components')
+        component_names = None
+        if components_param:
+            component_names = [c.strip() for c in components_param.split(',')]
+        
+        # Get all untriaged defects from database
+        untriaged_defects = database.get_all_untriaged_defects(component_names)
+        
+        # Group by component for better organization
+        defects_by_component = {}
+        for defect in untriaged_defects:
+            component = defect.get('component', 'Unknown')
+            if component not in defects_by_component:
+                defects_by_component[component] = []
+            defects_by_component[component].append(defect)
+        
+        return jsonify({
+            "defects": untriaged_defects,
+            "defects_by_component": defects_by_component,
+            "total_count": len(untriaged_defects),
+            "component_count": len(defects_by_component)
+        })
+    except Exception as e:
+        logger.error(f"Error getting untriaged defects: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/components')
 def api_components():
     """Get list of all components"""

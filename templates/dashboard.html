@@ -719,6 +719,29 @@
                         </table>
                     </div>
                 </div>
+                
+                <!-- All Untriaged Defects Table -->
+                <div class="chart-card" style="margin-top: 12px;">
+                    <div class="chart-title">🔍 All Untriaged Defects</div>
+                    <div class="table-wrapper" style="max-height: 400px; overflow-y: auto; display: block;">
+                        <table class="defects-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 80px;">ID</th>
+                                    <th style="width: 120px;">Component</th>
+                                    <th style="min-width: 300px;">Summary</th>
+                                    <th style="width: 100px;">Owner</th>
+                                    <th style="width: 100px;">State</th>
+                                    <th style="width: 150px;">Suggested Tag</th>
+                                    <th style="width: 150px;">Duplicate Of</th>
+                                </tr>
+                            </thead>
+                            <tbody id="untriagedDefectsTableBody">
+                                <!-- Untriaged defects will be inserted here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
         <!-- End Explorer Tab -->

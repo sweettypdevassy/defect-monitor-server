@@ -668,6 +668,173 @@ async function renderRecentDefects(data) {
     }
 }
 
+// Render all untriaged defects
+async function renderUntriagedDefects(selectedComponents = null) {
+    const tbody = document.getElementById('untriagedDefectsTableBody');
+    
+    if (!tbody) {
+        console.log('Untriaged defects table not found');
+        return;
+    }
+    
+    try {
+        // Show loading state
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="7" style="text-align: center; padding: 20px; color: #8899a6;">
+                    <div style="display: flex; align-items: center; justify-content: center; gap: 10px;">
+                        <div class="loading-spinner" style="width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.1); border-top-color: #1d9bf0; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                        <span>Loading untriaged defects...</span>
+                    </div>
+                </td>
+            </tr>
+        `;
+        
+        // Build API URL with component filter if provided
+        let apiUrl = '/api/untriaged-defects';
+        if (selectedComponents && selectedComponents.length > 0) {
+            apiUrl += '?components=' + encodeURIComponent(selectedComponents.join(','));
+        }
+        
+        // Fetch untriaged defects from Flask API
+        const response = await fetch(apiUrl);
+        const result = await response.json();
+        const allDefects = result.defects || [];
+        
+        console.log('=== Untriaged Defects ===');
+        console.log('Total defects:', allDefects.length);
+        console.log('Components:', result.component_count);
+        
+        if (allDefects.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="7" style="text-align: center; padding: 20px; color: #8899a6;">
+                        ✅ No untriaged defects found
+                    </td>
+                </tr>
+            `;
+        } else {
+            tbody.innerHTML = allDefects.map(defect => {
+                // Extract duplicate info from duplicate_info object
+                const duplicateInfo = defect.duplicate_info || {};
+                const isDuplicate = duplicateInfo.is_duplicate || false;
+                const duplicateId = duplicateInfo.duplicate_id || '';
+                const similarity = duplicateInfo.similarity || 0;
+                const similarityPercent = Math.round(similarity * 100);
+                const duplicateTags = duplicateInfo.duplicate_tags || [];
+                
+                // Extract suggested tag info
+                let suggestedTag = defect.suggested_tag || '';
+                let confidence = defect.suggestion_confidence || 0;
+                let confidencePercent = Math.round(confidence * 100);
+                const reasoning = defect.suggestion_reasoning || '';
+                
+                // Determine what to show based on available data
+                let finalTag = suggestedTag;
+                let tagFromDuplicate = false;
+                
+                // If tag is "unknown" but duplicate has valid ML tags, extract and use them
+                if (suggestedTag === 'unknown' && duplicateTags.length > 0) {
+                    const standardTags = ['test_bug', 'product_bug', 'infrastructure_bug'];
+                    const validTag = duplicateTags.find(tag => standardTags.includes(tag));
+                    
+                    if (validTag) {
+                        finalTag = validTag;
+                        tagFromDuplicate = true; // Tag came from duplicate
+                    }
+                }
+                
+                // Check if tag came from duplicate (not from ML prediction)
+                if (reasoning && reasoning.includes('Based on duplicate defect') && !reasoning.includes('ML prediction')) {
+                    tagFromDuplicate = true;
+                }
+                
+                // Show duplicate ONLY if tag came from it, otherwise hide (insights will show duplicates)
+                const duplicateDisplay = (tagFromDuplicate && isDuplicate && duplicateId) ?
+                    `<a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${duplicateId}"
+                        target="_blank"
+                        style="color: #1d9bf0; text-decoration: none;"
+                        title="${similarityPercent}% similar - Tags: ${duplicateTags.join(', ')}">
+                        #${duplicateId} (${similarityPercent}%)
+                    </a>` :
+                    '<span style="color: #8899a6;">-</span>';
+                
+                // Build tag display with source indicator
+                let tagDisplay = '<span style="color: #8899a6;">-</span>';
+                if (finalTag && finalTag !== 'unknown') {
+                    const tagColor = finalTag === 'test_bug' ? '#ffad1f' :
+                                   finalTag === 'product_bug' ? '#1d9bf0' :
+                                   finalTag === 'infrastructure_bug' ? '#00d4aa' : '#8899a6';
+                    
+                    // Determine source and icon
+                    let sourceIcon = '';
+                    let sourceText = '';
+                    if (suggestedTag === 'unknown' && finalTag !== 'unknown') {
+                        // Tag extracted from duplicate
+                        sourceIcon = '🔄';
+                        sourceText = 'From duplicate';
+                    } else if (reasoning && reasoning.includes('ML prediction')) {
+                        // ML prediction (duplicate had non-ML tags)
+                        sourceIcon = '🤖';
+                        sourceText = 'ML prediction';
+                    } else if (reasoning && reasoning.includes('duplicate defect')) {
+                        // From duplicate with valid tag
+                        sourceIcon = '🔄';
+                        sourceText = 'From duplicate';
+                    } else {
+                        // Pure ML prediction (no duplicate)
+                        sourceIcon = '🤖';
+                        sourceText = 'ML prediction';
+                    }
+                    
+                    tagDisplay = `<span style="color: ${tagColor}; font-weight: 600;" title="${sourceText}: ${reasoning}">
+                        ${sourceIcon} ${finalTag} (${confidencePercent}%)
+                    </span>`;
+                } else if (finalTag === 'unknown') {
+                    // Show "Needs Review" instead of "unknown"
+                    tagDisplay = `<span style="color: #ffad1f; font-weight: 600;" title="No ML tag available - check duplicate for context">
+                        ⚠️ Needs Review
+                    </span>`;
+                }
+                
+                return `
+                    <tr>
+                        <td>
+                            <a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${defect.id}"
+                               target="_blank"
+                               class="defect-id"
+                               style="color: #1d9bf0; text-decoration: none;">
+                                ${defect.id}
+                            </a>
+                        </td>
+                        <td style="font-size: 11px;">${defect.component || 'Unknown'}</td>
+                        <td title="${defect.summary}" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            ${defect.summary || 'No summary'}
+                        </td>
+                        <td style="font-size: 11px;">${defect.owner || 'Unassigned'}</td>
+                        <td>
+                            <span class="status-badge ${defect.state === 'In Progress' ? 'status-progress' : 'status-review'}">
+                                ${defect.state || 'Unknown'}
+                            </span>
+                        </td>
+                        <td style="font-size: 11px;">${tagDisplay}</td>
+                        <td style="font-size: 11px;">${duplicateDisplay}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+    } catch (error) {
+        console.error('Error loading untriaged defects:', error);
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="7" style="text-align: center; padding: 20px; color: #ff6b9d;">
+                    ❌ Error loading untriaged defects
+                </td>
+            </tr>
+        `;
+    }
+}
+
 // No auto-load for monitored components - user selects components first
 
 // Add keyboard shortcut for refresh (R key)
@@ -811,6 +978,13 @@ async function generateExplorerDashboard() {
             renderExplorerSOETriageTable(data.soeTriageDefects || []);
         } catch (e) {
             console.error('Error rendering SOE triage table:', e);
+        }
+        
+        // Render all untriaged defects for selected components
+        try {
+            renderUntriagedDefects(selectedComponents);
+        } catch (e) {
+            console.error('Error rendering untriaged defects:', e);
         }
         
         // Render insights for selected components

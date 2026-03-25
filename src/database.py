@@ -321,7 +321,94 @@ class DefectDatabase:
         except Exception as e:
             logger.error(f"Error retrieving cached descriptions for component: {e}")
             return []
-            logger.error(f"Error storing daily snapshot: {e}")
+    
+    def get_all_untriaged_defects(self, component_names: Optional[List[str]] = None) -> List[Dict]:
+        """Get all untriaged defects from latest snapshot with full details"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Try daily_snapshots first (has full details from monitored component checks)
+            cursor.execute("SELECT MAX(date) FROM daily_snapshots")
+            latest_date_daily = cursor.fetchone()[0]
+            
+            # Also check all_components_snapshots
+            cursor.execute("SELECT MAX(date) FROM all_components_snapshots")
+            latest_date_all = cursor.fetchone()[0]
+            
+            all_untriaged = []
+            
+            # Get from daily_snapshots (monitored components with full details)
+            if latest_date_daily:
+                if component_names:
+                    placeholders = ','.join('?' * len(component_names))
+                    query = f"""
+                        SELECT component, data
+                        FROM daily_snapshots
+                        WHERE date = ? AND untriaged > 0 AND component IN ({placeholders})
+                        ORDER BY untriaged DESC, component ASC
+                    """
+                    cursor.execute(query, (latest_date_daily, *component_names))
+                else:
+                    cursor.execute("""
+                        SELECT component, data
+                        FROM daily_snapshots
+                        WHERE date = ? AND untriaged > 0
+                        ORDER BY untriaged DESC, component ASC
+                    """, (latest_date_daily,))
+                
+                rows = cursor.fetchall()
+                for component, data_json in rows:
+                    data = json.loads(data_json)
+                    # The key is 'defects' not 'untriaged_defects' in daily_snapshots
+                    untriaged_defects = data.get('defects', [])
+                    
+                    # Add component name to each defect
+                    for defect in untriaged_defects:
+                        defect['component'] = component
+                        all_untriaged.append(defect)
+                
+                logger.info(f"✅ Retrieved {len(all_untriaged)} untriaged defects from daily_snapshots ({len(rows)} components)")
+            
+            # Also check all_components_snapshots for any additional components
+            if latest_date_all and component_names:
+                # Only check components not already in daily_snapshots
+                components_already_fetched = set(d['component'] for d in all_untriaged)
+                remaining_components = [c for c in component_names if c not in components_already_fetched]
+                
+                if remaining_components:
+                    placeholders = ','.join('?' * len(remaining_components))
+                    query = f"""
+                        SELECT component, data
+                        FROM all_components_snapshots
+                        WHERE date = ? AND untriaged > 0 AND component IN ({placeholders})
+                        ORDER BY untriaged DESC, component ASC
+                    """
+                    cursor.execute(query, (latest_date_all, *remaining_components))
+                    
+                    rows = cursor.fetchall()
+                    for component, data_json in rows:
+                        data = json.loads(data_json)
+                        # Try both keys for compatibility
+                        untriaged_defects = data.get('defects', data.get('untriaged_defects', []))
+                        
+                        for defect in untriaged_defects:
+                            defect['component'] = component
+                            all_untriaged.append(defect)
+                    
+                    if rows:
+                        logger.info(f"✅ Retrieved {len(rows)} additional components from all_components_snapshots")
+            
+            conn.close()
+            
+            logger.info(f"✅ Total: {len(all_untriaged)} untriaged defects")
+            return all_untriaged
+            
+        except Exception as e:
+            logger.error(f"Error retrieving all untriaged defects: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
     
     def store_all_components_snapshot(self, component: str, data: Dict, is_monitored: bool = False):
         """Store snapshot for any component (all 51 components)"""
