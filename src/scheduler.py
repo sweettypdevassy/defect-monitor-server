@@ -263,10 +263,15 @@ class DefectScheduler:
             self.database.store_check_history({}, False, str(e))
     
     def run_all_components_fetch(self):
-        """Fetch components in background (no notifications)"""
+        """
+        Fetch components in background with FULL processing (ML + duplicate detection)
+        This runs at 9:00 AM to pre-process data for team notifications at 10:00 AM+
+        NO notifications sent - just data preparation
+        """
         try:
             logger.info("=" * 60)
-            logger.info("🔄 Starting background fetch for components")
+            logger.info("🔄 Starting FULL background fetch for components")
+            logger.info("   (Pre-processing data for team notifications)")
             logger.info("=" * 60)
             
             # Check if test_components is configured (for testing)
@@ -286,7 +291,7 @@ class DefectScheduler:
                 logger.warning("No components configured for background fetch")
                 return
             
-            # Fetch components
+            # Fetch components with FULL processing
             summary = self.defect_checker.fetch_all_components_background(components_to_fetch, self.database)
             
             logger.info("=" * 60)
@@ -294,6 +299,7 @@ class DefectScheduler:
             logger.info(f"   Total Components: {summary['total_components']}")
             logger.info(f"   Successful: {summary['successful']}")
             logger.info(f"   Failed: {summary['failed']}")
+            logger.info(f"   Data ready for team notifications")
             logger.info("=" * 60)
             
         except Exception as e:

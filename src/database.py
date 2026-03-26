@@ -322,6 +322,84 @@ class DefectDatabase:
             logger.error(f"Error retrieving cached descriptions for component: {e}")
             return []
     
+    def get_all_triaged_defects_from_cache(self, component_names: Optional[List[str]] = None) -> List[Dict]:
+        """
+        Get all TRIAGED defects from cache for ML training
+        This eliminates the need to re-fetch from IBM APIs every week
+        
+        Args:
+            component_names: Optional list of components to filter by
+            
+        Returns:
+            List of triaged defects with descriptions and tags
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get all defects that have valid ML tags (test_bug, product_bug, infrastructure_bug)
+            if component_names:
+                placeholders = ','.join('?' * len(component_names))
+                query = f"""
+                    SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds
+                    FROM defect_descriptions
+                    WHERE component IN ({placeholders})
+                    AND tags IS NOT NULL
+                    AND tags != '[]'
+                    ORDER BY component, defect_id
+                """
+                cursor.execute(query, component_names)
+            else:
+                cursor.execute("""
+                    SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds
+                    FROM defect_descriptions
+                    WHERE tags IS NOT NULL
+                    AND tags != '[]'
+                    ORDER BY component, defect_id
+                """)
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            triaged_defects = []
+            for row in rows:
+                defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds = row
+                
+                # Parse tags
+                tags = json.loads(tags_str) if tags_str else []
+                
+                # Only include defects with valid ML tags
+                tags_lower = [str(tag).lower().strip() for tag in tags]
+                has_ml_tag = any(
+                    'test' in tag or 'product' in tag or 'infra' in tag or 'infrastructure' in tag
+                    for tag in tags_lower
+                )
+                
+                if has_ml_tag:
+                    triaged_defects.append({
+                        'id': defect_id,
+                        'description': description or '',
+                        'summary': summary or '',
+                        'component': component or '',
+                        'functionalArea': functional_area or '',
+                        'state': state or '',
+                        'triageTags': tags,
+                        'creation_date': creation_date or '',
+                        'number_builds': number_builds or 0
+                    })
+            
+            logger.info(f"✅ Retrieved {len(triaged_defects)} triaged defects from cache")
+            if component_names:
+                logger.info(f"   Filtered by {len(component_names)} components")
+            
+            return triaged_defects
+            
+        except Exception as e:
+            logger.error(f"Error retrieving triaged defects from cache: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
     def get_all_untriaged_defects(self, component_names: Optional[List[str]] = None) -> List[Dict]:
         """Get all untriaged defects from latest snapshot with full details"""
         try:
@@ -409,6 +487,74 @@ class DefectDatabase:
             import traceback
             logger.error(traceback.format_exc())
             return []
+    
+    def get_component_from_daily_snapshot(self, component: str) -> Optional[Dict]:
+        """Get pre-processed component data from daily_snapshots"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get latest date
+            cursor.execute("SELECT MAX(date) FROM daily_snapshots WHERE component = ?", (component,))
+            latest_date = cursor.fetchone()[0]
+            
+            if not latest_date:
+                conn.close()
+                return None
+            
+            # Get component data
+            cursor.execute("""
+                SELECT data
+                FROM daily_snapshots
+                WHERE date = ? AND component = ?
+            """, (latest_date, component))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                data = json.loads(row[0])
+                return data
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error retrieving component from daily snapshot: {e}")
+            return None
+    
+    def get_latest_soe_snapshot(self) -> Optional[Dict]:
+        """Get latest SOE Triage snapshot"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get latest date
+            cursor.execute("SELECT MAX(date) FROM soe_snapshots")
+            latest_date = cursor.fetchone()[0]
+            
+            if not latest_date:
+                conn.close()
+                return None
+            
+            # Get SOE data
+            cursor.execute("""
+                SELECT data
+                FROM soe_snapshots
+                WHERE date = ?
+            """, (latest_date,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                data = json.loads(row[0])
+                return data
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error retrieving latest SOE snapshot: {e}")
+            return None
     
     def store_all_components_snapshot(self, component: str, data: Dict, is_monitored: bool = False):
         """Store snapshot for any component (all 51 components)"""

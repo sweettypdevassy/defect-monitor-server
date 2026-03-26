@@ -841,7 +841,7 @@ class DefectChecker:
                             logger.info(f"   ✓ Found {len(triaged)} triaged defects")
                         else:
                             logger.debug(f"   - No triaged defects")
-                    
+                
                 except Exception as e:
                     logger.warning(f"   ✗ Error fetching {component}: {e}")
                     continue
@@ -852,39 +852,39 @@ class DefectChecker:
             
             # Fetch descriptions AND creation dates for triaged defects (for better ML training)
             if all_triaged_defects:
-                # Collect IDs that need descriptions (check for empty or missing descriptions)
-                ids_needing_desc = [
-                    str(d.get('id')) for d in all_triaged_defects
-                    if d.get('id') and not d.get('description')  # Check if description is empty or missing
-                ]
-                
-                if ids_needing_desc:
-                    logger.info(f"📥 Fetching descriptions + creation dates for {len(ids_needing_desc)} triaged defects in parallel...")
-                    logger.info("   (Using 3 parallel workers for stable authentication...)")
+                    # Collect IDs that need descriptions (check for empty or missing descriptions)
+                    ids_needing_desc = [
+                        str(d.get('id')) for d in all_triaged_defects
+                        if d.get('id') and not d.get('description')  # Check if description is empty or missing
+                    ]
                     
-                    # Fetch full details (description + creation_date) in parallel
-                    details_map = self.fetch_details_parallel(ids_needing_desc, max_workers=3)
-                    
-                    # Apply descriptions and creation dates to defects
-                    for defect in all_triaged_defects:
-                        defect_id = str(defect.get('id'))
-                        if defect_id in details_map:
-                            details = details_map[defect_id]
-                            defect['description'] = details.get('description', '')
-                            defect['creation_date'] = details.get('created', '')
-                            # Add component for caching
-                            if 'component' not in defect:
-                                defect['component'] = defect.get('functional_area', 'Unknown')
-                    
-                    # Cache the fetched descriptions + creation dates to database
-                    if self.database and details_map:
-                        logger.info(f"   💾 Caching {len(details_map)} descriptions + creation dates to database...")
-                        self.database.cache_defect_descriptions(all_triaged_defects)
-                    
-                    logger.info(f"   ✅ Fetched descriptions + creation dates for all {len(ids_needing_desc)} defects")
-                    logger.info("=" * 70)
-                else:
-                    logger.info("   ℹ️  All triaged defects already have descriptions (from cache or previous fetch)")
+                    if ids_needing_desc:
+                        logger.info(f"📥 Fetching descriptions + creation dates for {len(ids_needing_desc)} triaged defects in parallel...")
+                        logger.info("   (Using 3 parallel workers for stable authentication...)")
+                        
+                        # Fetch full details (description + creation_date) in parallel
+                        details_map = self.fetch_details_parallel(ids_needing_desc, max_workers=3)
+                        
+                        # Apply descriptions and creation dates to defects
+                        for defect in all_triaged_defects:
+                            defect_id = str(defect.get('id'))
+                            if defect_id in details_map:
+                                details = details_map[defect_id]
+                                defect['description'] = details.get('description', '')
+                                defect['creation_date'] = details.get('created', '')
+                                # Add component for caching
+                                if 'component' not in defect:
+                                    defect['component'] = defect.get('functional_area', 'Unknown')
+                        
+                        # Cache the fetched descriptions + creation dates to database
+                        if self.database and details_map:
+                            logger.info(f"   💾 Caching {len(details_map)} descriptions + creation dates to database...")
+                            self.database.cache_defect_descriptions(all_triaged_defects)
+                        
+                        logger.info(f"   ✅ Fetched descriptions + creation dates for all {len(ids_needing_desc)} defects")
+                        logger.info("=" * 70)
+                    else:
+                        logger.info("   ℹ️  All triaged defects already have descriptions (from cache or previous fetch)")
             
             if len(all_triaged_defects) < 10:
                 logger.warning(f"⚠️  Not enough triaged defects for training (need at least 10, got {len(all_triaged_defects)})")
@@ -1008,8 +1008,9 @@ class DefectChecker:
     
     def fetch_all_components_background(self, all_components: List[str], database) -> Dict:
         """
-        Fetch defects for ALL components in background (for dashboard)
-        OPTIMIZED: Uses simple parsing (no ML, no duplicate detection)
+        Fetch defects for ALL components in background (for dashboard AND notifications)
+        NEW OPTIMIZATION: Uses FULL parsing with ML and duplicate detection
+        This runs at 9:00 AM, so team notifications at 10:00 AM+ can use pre-processed data
         Also fetches ALL SOE Triage defects (not filtered)
         Stores data in database but doesn't send notifications
         Returns summary of fetch operation
@@ -1023,8 +1024,9 @@ class DefectChecker:
         components_to_fetch = checkpoint.get_remaining_components(all_components)
         completed_components = []
         
-        logger.info(f"🔄 Starting optimized background fetch for {len(components_to_fetch)} components...")
-        logger.info(f"   (Using simple parsing - no ML/duplicate detection for speed)")
+        logger.info(f"🔄 Starting FULL background fetch for {len(components_to_fetch)} components...")
+        logger.info(f"   (Using FULL parsing with ML & duplicate detection)")
+        logger.info(f"   This pre-processes data for team notifications to eliminate lag")
         
         fetch_summary = {
             "timestamp": datetime.now().isoformat(),
@@ -1052,14 +1054,12 @@ class DefectChecker:
                     for defect in defects:
                         defect['component'] = component
                     
-                    # Use simple parsing (no ML, no duplicate detection)
-                    parsed = self.parse_defects_simple(defects, component)
+                    # Use FULL parsing with ML and duplicate detection
+                    parsed = self.parse_defects(defects, component)
                     
-                    # Cache defect descriptions with creation_date and number_builds
-                    database.cache_defect_descriptions(defects)
-                    
-                    # Store in database
+                    # Store in BOTH tables for dashboard and notifications
                     database.store_all_components_snapshot(component, parsed, is_monitored=False)
+                    database.store_daily_snapshot({"components": {component: parsed}})
                     
                     fetch_summary["successful"] += 1
                     fetch_summary["components_data"][component] = {
@@ -1140,36 +1140,18 @@ class DefectChecker:
     
     def check_monitored_components(self, monitored_components: List[Dict], database, team_name: str = None) -> Dict:
         """
-        Check defects for monitored components only (these will send notifications)
-        Matches Chrome extension workflow:
-        1. Fetch Build Break Report defects for monitored components
-        2. Fetch SOE Triage defects (filtered by monitored components)
-        3. Send single grouped Slack notification
-        4. Store data for dashboard
+        OPTIMIZED: Read pre-processed data from daily_snapshots (processed at 9:00 AM)
+        Just retrieve data and prepare for notification - NO heavy processing
         
-        Now supports checkpointing - can resume if interrupted
+        This eliminates notification lag since all ML predictions and duplicate detection
+        were already done during the 9:00 AM all_components_fetch
         
         Args:
             monitored_components: List of component configs to check
             database: Database instance
-            team_name: Team name for isolated checkpoints (optional)
+            team_name: Team name for logging (optional)
         """
-        # Initialize checkpoint manager with team-specific file if team_name provided
-        if team_name:
-            # Use team-specific checkpoint file to avoid conflicts between teams
-            checkpoint_file = f"data/checkpoint_{team_name.replace(' ', '_').lower()}.json"
-        else:
-            # Fallback to generic monitored checkpoint
-            checkpoint_file = "data/monitored_checkpoint.json"
-        
-        checkpoint = FetchCheckpoint(checkpoint_file=checkpoint_file)
-        
-        # Get component names
-        all_component_names = [comp.get("name") for comp in monitored_components]
-        
-        # Get components to check (either all or remaining from checkpoint)
-        components_to_check = checkpoint.get_remaining_components(all_component_names)
-        completed_components = []
+        logger.info(f"📖 Reading pre-processed data from daily_snapshots...")
         
         results = {
             "timestamp": datetime.now().isoformat(),
@@ -1183,19 +1165,10 @@ class DefectChecker:
         # Extract component names from monitored_components config
         component_names = [comp.get("name") for comp in monitored_components if comp.get("notify", True) and comp.get("name")]
         
-        # Filter to only check components that need checking (from checkpoint)
-        components_to_check_configs = [
-            comp for comp in monitored_components
-            if comp.get("name") in components_to_check and comp.get("notify", True)
-        ]
+        logger.info(f"🔍 Retrieving data for {len(component_names)} monitored components...")
         
-        if len(components_to_check) < len(component_names):
-            logger.info(f"🔄 Resuming from checkpoint: {len(components_to_check)}/{len(component_names)} components to check")
-        else:
-            logger.info(f"🔍 Checking {len(component_names)} monitored components...")
-        
-        # Step 1: Fetch defects for each monitored component from Build Break Report
-        for idx, comp_config in enumerate(components_to_check_configs, 1):
+        # Step 1: Read pre-processed data from daily_snapshots
+        for idx, comp_config in enumerate(monitored_components, 1):
             component = comp_config.get("name")
             should_notify = comp_config.get("notify", True)
             
@@ -1207,53 +1180,35 @@ class DefectChecker:
                 logger.info(f"⏭️  Skipping {component} (notify=false)")
                 continue
             
-            logger.info(f"📥 [{idx}/{len(components_to_check_configs)}] Checking {component}...")
+            logger.info(f"📖 [{idx}/{len(component_names)}] Reading {component} from cache...")
             
-            # Save checkpoint BEFORE fetching
-            checkpoint.save_checkpoint(completed_components, component_names)
+            # Get pre-processed data from daily_snapshots
+            cached_data = database.get_component_from_daily_snapshot(component)
             
-            defects = self.fetch_defects_for_component(component)
-            
-            if defects is not None:
-                parsed = self.parse_defects(defects, component)
-                parsed["slack_channel"] = comp_config.get("slack_channel", "#defect-notifications")
-                parsed["notify"] = should_notify
+            if cached_data:
+                # Add slack channel info
+                cached_data["slack_channel"] = comp_config.get("slack_channel", "#defect-notifications")
+                cached_data["notify"] = should_notify
                 
-                results["components"][component] = parsed
-                results["total_defects"] += parsed["total"]
-                results["total_untriaged"] += parsed["untriaged"]
+                results["components"][component] = cached_data
+                results["total_defects"] += cached_data.get("total", 0)
+                results["total_untriaged"] += cached_data.get("untriaged", 0)
                 results["monitored_components"].append(component)
                 
-                # Mark as completed
-                completed_components.append(component)
-                
-                # Save checkpoint after successful fetch
-                checkpoint.save_checkpoint(completed_components, component_names)
-                
-                # Store in both tables
-                database.store_daily_snapshot({"components": {component: parsed}})
-                database.store_all_components_snapshot(component, parsed, is_monitored=True)
-                
-                logger.info(f"✅ {component}: {parsed['total']} defects ({parsed['untriaged']} untriaged)")
+                logger.info(f"✅ {component}: {cached_data.get('total', 0)} defects ({cached_data.get('untriaged', 0)} untriaged) [from cache]")
             else:
-                logger.warning(f"❌ Failed to fetch {component}")
-                # Mark as completed to skip on retry
-                completed_components.append(component)
-                checkpoint.save_checkpoint(completed_components, component_names)
+                logger.warning(f"⚠️  No cached data for {component} - may need to wait for 9:00 AM fetch")
         
-        # Step 2: Authenticate with Jazz/RTC and fetch SOE Triage defects
-        logger.info("📋 Authenticating with Jazz/RTC...")
-        if self.authenticator.authenticate_jazz_rtc():
-            logger.info("📋 Fetching SOE Triage defects...")
-            soe_defects = self.fetch_soe_triage_defects(monitored_components=component_names)
-        else:
-            logger.warning("⚠️ Jazz/RTC authentication failed, skipping SOE defects")
-            soe_defects = []
+        # Step 2: Get SOE Triage defects from cache
+        logger.info("📋 Reading SOE Triage defects from cache...")
+        soe_data = database.get_latest_soe_snapshot()
         
-        if soe_defects is not None:
-            # Filter SOE defects to only include monitored components (double-check)
+        if soe_data:
+            all_soe_defects = soe_data.get("defects", [])
+            
+            # Filter SOE defects to only include monitored components
             filtered_soe = [
-                defect for defect in soe_defects
+                defect for defect in all_soe_defects
                 if any(
                     (monitored and monitored.lower() in defect.get('functionalArea', '').lower()) or
                     (monitored and defect.get('functionalArea', '').lower() in monitored.lower())
@@ -1264,21 +1219,16 @@ class DefectChecker:
             results["soe_triage"] = {
                 "total": len(filtered_soe),
                 "defects": filtered_soe,
-                "all_defects": len(soe_defects)  # Total before filtering
+                "all_defects": len(all_soe_defects)  # Total before filtering
             }
             results["total_defects"] += len(filtered_soe)
             
-            logger.info(f"✅ SOE Triage: {len(filtered_soe)} overdue defects (filtered from {len(soe_defects)} total)")
+            logger.info(f"✅ SOE Triage: {len(filtered_soe)} overdue defects (filtered from {len(all_soe_defects)} total) [from cache]")
         else:
-            logger.warning("⚠️ Failed to fetch SOE Triage defects")
+            logger.warning("⚠️ No cached SOE data - may need to wait for 9:00 AM fetch")
         
-        # Clear checkpoint when all components are checked
-        if len(completed_components) == len(component_names):
-            checkpoint.clear_checkpoint()
-            logger.info(f"✅ Monitored check complete: {results['total_defects']} total defects, {results['total_untriaged']} untriaged")
-        else:
-            remaining = len(component_names) - len(completed_components)
-            logger.info(f"✅ Partial check complete: {results['total_defects']} total defects, {remaining} components remaining (checkpoint saved)")
+        logger.info(f"✅ Data retrieval complete: {results['total_defects']} total defects, {results['total_untriaged']} untriaged")
+        logger.info(f"   ⚡ Using pre-processed data - NO lag!")
         
         return results
 
