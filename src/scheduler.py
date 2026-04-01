@@ -535,10 +535,10 @@ class DefectScheduler:
             logger.error(f"Error cleaning up data: {e}")
     
     def retrain_ml_model(self):
-        """Retrain ML model weekly"""
+        """Retrain ML model weekly with incremental learning (keeps existing training data)"""
         try:
             logger.info("=" * 60)
-            logger.info("🤖 Starting weekly ML model retraining")
+            logger.info("🤖 Starting weekly ML model incremental training")
             logger.info("=" * 60)
             
             # Get training components from config
@@ -550,28 +550,24 @@ class DefectScheduler:
                 training_components = self.config.get("all_components", [])
             
             if training_components:
-                # Delete old model to force retraining
-                import os
-                model_path = "data/tag_model.pkl"
-                if os.path.exists(model_path):
-                    os.remove(model_path)
-                    logger.info(f"🗑️  Deleted old model: {model_path}")
+                # NO DELETION - Keep existing model and training data
+                # The train_ml_model_on_all_components will load old data and combine with new
+                logger.info(f"🎓 Incremental training on {len(training_components)} components...")
+                logger.info("   (Keeping existing training data + adding new defects)")
                 
-                # Retrain
-                logger.info(f"🎓 Retraining ML model on {len(training_components)} components...")
                 success = self.defect_checker.train_ml_model_on_all_components(training_components)
                 
                 if success:
-                    logger.info("✅ ML model retrained successfully")
+                    logger.info("✅ ML model incrementally trained successfully")
                 else:
-                    logger.error("❌ ML model retraining failed")
+                    logger.error("❌ ML model training failed")
             else:
                 logger.warning("⚠️  No components configured for ML training")
             
             logger.info("=" * 60)
             
         except Exception as e:
-            logger.error(f"❌ Error retraining ML model: {e}")
+            logger.error(f"❌ Error training ML model: {e}")
     
     def run_team_check(self, team: dict):
         """

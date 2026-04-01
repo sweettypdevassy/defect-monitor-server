@@ -1,24 +1,22 @@
 #!/bin/bash
 
-# Retrain ML Model Script
-# Deletes old model and forces retraining with new feature weights
+# Incremental ML Model Training Script
+# Keeps existing model and adds new training data
 
-echo "🔄 Retraining ML Model with Updated Feature Weights"
+echo "🔄 Incremental ML Model Training"
 echo "===================================================="
 echo ""
 
 # Check if model exists
 if [ -f "data/tag_model.pkl" ]; then
     echo "📦 Found existing model: data/tag_model.pkl"
-    echo "🗑️  Deleting old model..."
-    rm data/tag_model.pkl
-    echo "✅ Old model deleted"
+    echo "✅ Will keep existing training data and add new defects"
 else
-    echo "ℹ️  No existing model found"
+    echo "ℹ️  No existing model found - will create new one"
 fi
 
 echo ""
-echo "🚀 Restarting server to retrain model..."
+echo "🚀 Restarting server to trigger incremental training..."
 echo ""
 
 # Restart Docker container
@@ -27,13 +25,14 @@ docker-compose restart
 echo ""
 echo "✅ Server restarted!"
 echo ""
-echo "📊 The model will retrain automatically with:"
-echo "   - Summary: Equal weight"
-echo "   - Description: Equal weight (now includes error patterns!)"
-echo "   - Functional Area: Equal weight"
+echo "📊 Incremental training will:"
+echo "   ✅ Keep all previous training data"
+echo "   ✅ Add new triaged defects"
+echo "   ✅ Retrain on combined dataset"
+echo "   ✅ Improve accuracy over time"
 echo ""
 echo "🔍 Monitor training progress:"
-echo "   docker logs -f defect-monitor-server | grep -E 'Training|Accuracy'"
+echo "   docker logs -f defect-monitor-server | grep -E 'Incremental|Training|Accuracy'"
 echo ""
 
 # Made with Bob

@@ -556,6 +556,68 @@ class DefectDatabase:
             logger.error(f"Error retrieving latest SOE snapshot: {e}")
             return None
     
+    def store_component_snapshot_single(self, component: str, data: Dict):
+        """
+        Store snapshot for a single component refresh
+        Updates both all_components_snapshots and daily_snapshots if monitored
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            date = datetime.now().strftime("%Y-%m-%d")
+            created_at = datetime.now().isoformat()
+            
+            # Store in all_components_snapshots
+            cursor.execute("""
+                INSERT OR REPLACE INTO all_components_snapshots
+                (date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data, created_at, is_monitored)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                date,
+                component,
+                data.get("total", 0),
+                data.get("untriaged", 0),
+                data.get("test_bugs", 0),
+                data.get("product_bugs", 0),
+                data.get("infra_bugs", 0),
+                json.dumps(data),
+                created_at,
+                0  # Not necessarily monitored
+            ))
+            
+            # Also update daily_snapshots if it exists (for monitored components)
+            cursor.execute("""
+                SELECT COUNT(*) FROM daily_snapshots WHERE date = ? AND component = ?
+            """, (date, component))
+            
+            if cursor.fetchone()[0] > 0:
+                # Component exists in daily_snapshots, update it
+                cursor.execute("""
+                    INSERT OR REPLACE INTO daily_snapshots
+                    (date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    date,
+                    component,
+                    data.get("total", 0),
+                    data.get("untriaged", 0),
+                    data.get("test_bugs", 0),
+                    data.get("product_bugs", 0),
+                    data.get("infra_bugs", 0),
+                    json.dumps(data),
+                    created_at
+                ))
+                logger.info(f"✅ Updated both all_components_snapshots and daily_snapshots for {component}")
+            else:
+                logger.info(f"✅ Updated all_components_snapshots for {component}")
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error storing component snapshot: {e}")
+    
     def store_all_components_snapshot(self, component: str, data: Dict, is_monitored: bool = False):
         """Store snapshot for any component (all 51 components)"""
         try:

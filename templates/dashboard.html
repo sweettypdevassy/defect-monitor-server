@@ -646,11 +646,15 @@
 
             <!-- Explorer Dashboard Content (hidden initially) -->
             <div id="explorerDashboard" style="display: none;">
-                <!-- Back Button -->
-                <div style="margin-bottom: 12px;">
+                <!-- Back Button and Refresh Button -->
+                <div style="margin-bottom: 12px; display: flex; gap: 10px; align-items: center;">
                     <button class="explorer-button" id="backToSelectionBtn" style="background: linear-gradient(135deg, #8899a6 0%, #657786 100%);">
                         ← Back to Component Selection
                     </button>
+                    <button class="explorer-button" id="refresh-selected-btn" onclick="refreshSelectedComponents()" style="background: linear-gradient(135deg, #00d4aa 0%, #00b894 100%);">
+                        🔄 Refresh Selected Components
+                    </button>
+                    <span id="refresh-status" style="color: #8899a6; font-size: 12px; margin-left: 10px;"></span>
                 </div>
                 
                 <!-- KPI Cards -->

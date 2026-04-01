@@ -67,8 +67,13 @@ class MLTagSuggester:
         
         return False
     
-    def _save_model(self) -> bool:
-        """Save trained model to disk"""
+    def _save_model(self, training_data: List[Dict] = None) -> bool:
+        """
+        Save trained model to disk with training data for incremental learning
+        
+        Args:
+            training_data: Optional training data to save with model
+        """
         if not ML_AVAILABLE or not self.model:
             return False
         
@@ -76,11 +81,14 @@ class MLTagSuggester:
             os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
             data = {
                 'model': self.model,
-                'stats': self.training_stats
+                'stats': self.training_stats,
+                'training_data': training_data or []  # Store training data for incremental learning
             }
             with open(self.model_path, 'wb') as f:
                 pickle.dump(data, f)
             logger.info(f"✅ Saved trained model to {self.model_path}")
+            if training_data:
+                logger.info(f"   Stored {len(training_data)} training samples for incremental learning")
             return True
         except Exception as e:
             logger.error(f"Error saving model: {e}")
@@ -111,13 +119,14 @@ class MLTagSuggester:
         text = f"{summary} {description} {functional_area}"
         return text
     
-    def train_from_defects(self, triaged_defects: List[Dict], min_samples: int = 10) -> bool:
+    def train_from_defects(self, triaged_defects: List[Dict], min_samples: int = 10, incremental: bool = True) -> bool:
         """
-        Train ML model using historical triaged defects
+        Train ML model using historical triaged defects with incremental learning
         
         Args:
-            triaged_defects: List of defects with triage tags
+            triaged_defects: List of NEW defects with triage tags
             min_samples: Minimum samples needed per class
+            incremental: If True, load and combine with previous training data
             
         Returns:
             True if training successful
@@ -127,14 +136,39 @@ class MLTagSuggester:
             return False
         
         try:
-            logger.info(f"🎓 Training ML model with {len(triaged_defects)} triaged defects...")
+            # INCREMENTAL LEARNING: Load previous training data if it exists
+            previous_training_data = []
+            if incremental and os.path.exists(self.model_path):
+                try:
+                    with open(self.model_path, 'rb') as f:
+                        data = pickle.load(f)
+                        previous_training_data = data.get('training_data', [])
+                    
+                    if previous_training_data:
+                        logger.info(f"📚 Loaded {len(previous_training_data)} previous training samples")
+                except Exception as e:
+                    logger.warning(f"Could not load previous training data: {e}")
             
-            # Prepare training data
+            # Combine old and new training data
+            all_training_data = previous_training_data + triaged_defects
+            
+            # Remove duplicates based on defect ID
+            seen_ids = set()
+            unique_training_data = []
+            for defect in all_training_data:
+                defect_id = defect.get('id')
+                if defect_id and defect_id not in seen_ids:
+                    seen_ids.add(defect_id)
+                    unique_training_data.append(defect)
+            
+            logger.info(f"🎓 Incremental training: {len(previous_training_data)} old + {len(triaged_defects)} new = {len(unique_training_data)} total unique samples")
+            
+            # Prepare training data from combined dataset
             X_texts = []
             y_labels = []
             tag_counts = Counter()
             
-            for defect in triaged_defects:
+            for defect in unique_training_data:
                 triage_tags = defect.get('triageTags', [])
                 if not triage_tags:
                     continue
@@ -225,8 +259,8 @@ class MLTagSuggester:
             
             self.trained = True
             
-            # Save model
-            self._save_model()
+            # Save model WITH training data for incremental learning
+            self._save_model(training_data=unique_training_data)
             
             return True
             

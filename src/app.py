@@ -8,6 +8,7 @@ import yaml
 import logging
 from pathlib import Path
 import sys
+from datetime import datetime
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -292,6 +293,111 @@ def api_all_components():
         })
     except Exception as e:
         logger.error(f"Error getting all components: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/refresh-component/<component_name>', methods=['POST'])
+def api_refresh_component(component_name):
+    """
+    Refresh data for a single component from IBM system
+    This fetches fresh data, processes it (ML + duplicates), and updates the database
+    """
+    try:
+        logger.info(f"🔄 Component refresh triggered for: {component_name}")
+        
+        # Fetch fresh data from IBM for this component
+        defects = defect_checker.fetch_defects_for_component(component_name)
+        
+        if defects is None:
+            return jsonify({"error": f"Failed to fetch defects for {component_name}"}), 500
+        
+        # Process defects (parse, categorize, ML tagging, duplicate detection)
+        result = defect_checker.parse_defects(defects, component_name, collect_triaged=False)
+        
+        # Update database with new data
+        database.store_component_snapshot_single(component_name, result)
+        
+        logger.info(f"✅ Component {component_name} refreshed successfully")
+        logger.info(f"   Total: {result['total']}, Untriaged: {result['untriaged']}")
+        
+        return jsonify({
+            "message": f"Component {component_name} refreshed successfully",
+            "component": component_name,
+            "total": result.get('total', 0),
+            "untriaged": result.get('untriaged', 0),
+            "test_bugs": result.get('test_bugs', 0),
+            "product_bugs": result.get('product_bugs', 0),
+            "infra_bugs": result.get('infra_bugs', 0),
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"❌ Error refreshing component {component_name}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/refresh-components', methods=['POST'])
+def api_refresh_components():
+    """
+    Refresh data for multiple components from IBM system
+    Accepts JSON body with 'components' array
+    """
+    try:
+        data = request.get_json()
+        component_names = data.get('components', [])
+        
+        if not component_names:
+            return jsonify({"error": "No components specified"}), 400
+        
+        logger.info(f"🔄 Batch refresh triggered for {len(component_names)} components")
+        
+        results = []
+        errors = []
+        
+        for component_name in component_names:
+            try:
+                # Fetch fresh data from IBM
+                defects = defect_checker.fetch_defects_for_component(component_name)
+                
+                if defects is None:
+                    errors.append({"component": component_name, "error": "Failed to fetch defects"})
+                    continue
+                
+                # Process defects
+                result = defect_checker.parse_defects(defects, component_name, collect_triaged=False)
+                
+                # Update database
+                database.store_component_snapshot_single(component_name, result)
+                
+                results.append({
+                    "component": component_name,
+                    "total": result.get('total', 0),
+                    "untriaged": result.get('untriaged', 0),
+                    "test_bugs": result.get('test_bugs', 0),
+                    "product_bugs": result.get('product_bugs', 0),
+                    "infra_bugs": result.get('infra_bugs', 0)
+                })
+                
+                logger.info(f"✅ {component_name}: Total={result['total']}, Untriaged={result['untriaged']}")
+                
+            except Exception as e:
+                logger.error(f"❌ Error refreshing {component_name}: {e}")
+                errors.append({"component": component_name, "error": str(e)})
+        
+        logger.info(f"✅ Batch refresh completed: {len(results)} successful, {len(errors)} failed")
+        
+        return jsonify({
+            "message": f"Refreshed {len(results)} components",
+            "results": results,
+            "errors": errors,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Error in batch refresh: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/insights/<component_name>')

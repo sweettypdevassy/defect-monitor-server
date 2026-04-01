@@ -1659,6 +1659,119 @@ function renderExplorerComparisonChart(weekComparison) {
     });
 }
 
+// Component Refresh Functions
+async function refreshComponent(componentName) {
+    const btn = document.getElementById('refresh-component-btn');
+    if (!btn) return;
+    
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Refreshing...';
+    btn.style.opacity = '0.6';
+    
+    try {
+        console.log(`🔄 Refreshing component: ${componentName}`);
+        
+        const response = await fetch(`/api/refresh-component/${encodeURIComponent(componentName)}`, {
+            method: 'POST'
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        console.log('✅ Component refreshed:', data);
+        
+        // Show success message
+        btn.textContent = '✅ Refreshed!';
+        btn.style.opacity = '1';
+        
+        // Reload the dashboard data after 1 second
+        setTimeout(async () => {
+            await generateExplorerDashboard();
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }, 1000);
+        
+    } catch (error) {
+        console.error('❌ Error refreshing component:', error);
+        btn.textContent = '❌ Failed';
+        btn.style.opacity = '1';
+        alert(`Failed to refresh ${componentName}: ${error.message}`);
+        
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }, 2000);
+    }
+}
+
+async function refreshSelectedComponents() {
+    if (selectedComponents.length === 0) {
+        alert('Please select at least one component to refresh');
+        return;
+    }
+    
+    const btn = document.getElementById('refresh-selected-btn');
+    if (!btn) return;
+    
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = `⏳ Refreshing ${selectedComponents.length} component(s)...`;
+    btn.style.opacity = '0.6';
+    
+    try {
+        console.log(`🔄 Refreshing ${selectedComponents.length} components:`, selectedComponents);
+        
+        const response = await fetch('/api/refresh-components', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                components: selectedComponents
+            })
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        console.log('✅ Components refreshed:', data);
+        
+        // Show success message
+        const successCount = data.results ? data.results.length : 0;
+        const errorCount = data.errors ? data.errors.length : 0;
+        
+        btn.textContent = `✅ Refreshed ${successCount}/${selectedComponents.length}`;
+        btn.style.opacity = '1';
+        
+        if (errorCount > 0) {
+            console.warn(`⚠️ ${errorCount} component(s) failed to refresh:`, data.errors);
+        }
+        
+        // Reload the dashboard data after 1 second
+        setTimeout(async () => {
+            await generateExplorerDashboard();
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }, 1500);
+        
+    } catch (error) {
+        console.error('❌ Error refreshing components:', error);
+        btn.textContent = '❌ Failed';
+        btn.style.opacity = '1';
+        alert(`Failed to refresh components: ${error.message}`);
+        
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }, 2000);
+    }
+}
+
 // Initialize component explorer on page load (no tabs, direct access)
 document.addEventListener('DOMContentLoaded', () => {
     const grid = document.getElementById('componentGrid');
