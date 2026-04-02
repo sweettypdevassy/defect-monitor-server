@@ -27,25 +27,10 @@ class DefectChecker:
         self.soe_triage_url = "https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workitems.json"
         self.tag_suggester = MLTagSuggester()
         
-        # Log ML model status on startup
+        # ML model status logged only if not trained
         ml_stats = self.tag_suggester.get_training_stats()
-        if ml_stats.get('trained'):
-            logger.info("=" * 60)
-            logger.info("🤖 ML Tag Suggester Status")
-            logger.info("=" * 60)
-            logger.info(f"✅ Model trained: Yes")
-            logger.info(f"   Training accuracy: {ml_stats.get('accuracy', 'N/A')}")
-            logger.info(f"   Total samples: {ml_stats.get('total_samples', 'N/A')}")
-            logger.info(f"   Tag distribution: {ml_stats.get('tag_distribution', {})}")
-            logger.info("=" * 60)
-        else:
-            logger.info("=" * 60)
-            logger.info("🤖 ML Tag Suggester Status")
-            logger.info("=" * 60)
-            logger.info(f"⚠️  Model trained: No")
-            logger.info(f"   ML available: {ml_stats.get('ml_available', False)}")
-            logger.info(f"   💡 Train model with: docker-compose exec defect-monitor python3 retrain_model.sh")
-            logger.info("=" * 60)
+        if not ml_stats.get('trained'):
+            logger.warning("⚠️  ML model not trained. Run: docker-compose exec defect-monitor python3 retrain_model.sh")
         
         # Lower threshold to 0.85 for summary-only matching (was 0.7)
         # Since we only have summaries, we need high similarity to avoid false positives
@@ -64,6 +49,9 @@ class DefectChecker:
         """
         import time
         
+        # Track if we just re-authenticated to avoid immediate re-check
+        just_authenticated = False
+        
         for attempt in range(max_retries):
             try:
                 session = self.authenticator.get_session()
@@ -72,9 +60,7 @@ class DefectChecker:
                     return None
                 
                 if attempt > 0:
-                    logger.info(f"🔄 Retry {attempt}/{max_retries-1} for {component}...")
-                else:
-                    logger.info(f"Fetching defects for component: {component}")
+                    logger.warning(f"🔄 Retry {attempt}/{max_retries-1} for {component}")
                 
                 # Build URL with component as query parameter
                 api_url = f"{self.build_break_base_url}?fas={component}"
@@ -92,26 +78,36 @@ class DefectChecker:
                     verify=False  # Disable SSL verification for IBM self-signed certs
                 )
                 
-                # Check for authentication failure and auto-refresh cookies
+                # Check for authentication failure and re-authenticate
+                # Skip check if we just authenticated (avoid immediate re-auth loop)
                 cookie_monitor = get_cookie_monitor()
-                if cookie_monitor.detect_cookie_expiration(response):
-                    logger.warning(f"🔴 Cookie expiration detected for {component}")
-                    if cookie_monitor.refresh_cookies_now():
-                        logger.info("✅ Cookies refreshed - retrying request...")
-                        # Get new session with fresh cookies
+                if not just_authenticated and cookie_monitor.detect_cookie_expiration(response):
+                    logger.warning(f"🔴 Authentication failure for {component}, re-authenticating...")
+                    
+                    # Force re-authentication
+                    if self.authenticator.authenticate():
+                        time.sleep(3)  # Wait for cookies to propagate
+                        # Get new session
                         session = self.authenticator.get_session()
                         if session:
-                            continue  # Retry with new cookies
+                            just_authenticated = True  # Mark that we just authenticated
+                            continue  # Retry with new session
                     else:
-                        logger.error("❌ Failed to refresh cookies")
+                        logger.error("❌ Re-authentication failed")
+                        if attempt < max_retries - 1:
+                            time.sleep(2 ** attempt)
+                            continue
                         return None
+                elif just_authenticated and cookie_monitor.detect_cookie_expiration(response):
+                    # If we just authenticated and still getting 401, it's likely a slow API response
+                    # Log but don't re-authenticate immediately
+                    logger.warning(f"⚠️  Got 401 right after re-auth for {component} - likely slow API, continuing...")
+                    just_authenticated = False  # Reset flag
                 
                 if response.status_code != 200:
                     logger.error(f"Failed to fetch defects for {component}: HTTP {response.status_code}")
                     if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                        logger.info(f"⏳ Waiting {wait_time}s before retry...")
-                        time.sleep(wait_time)
+                        time.sleep(2 ** attempt)
                         continue
                     return None
                 
@@ -131,27 +127,19 @@ class DefectChecker:
                         defect['creation_date'] = ''
                 
                 # Debug: Log first defect structure to understand the data
-                if defects and len(defects) > 0:
-                    logger.info(f"DEBUG - Sample defect for {component}: {defects[0]}")
-                
-                logger.info(f"✅ Fetched {len(defects)} defects for {component}")
                 return defects
                 
             except requests.exceptions.Timeout as e:
                 logger.warning(f"⏱️ Timeout fetching {component} (attempt {attempt+1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                    logger.info(f"⏳ Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
+                    time.sleep(2 ** attempt)
                 else:
                     logger.error(f"❌ All {max_retries} retries exhausted for {component}")
                     return None
             except Exception as e:
                 logger.error(f"Error fetching defects for {component}: {e}")
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    logger.info(f"⏳ Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
+                    time.sleep(2 ** attempt)
                     continue
                 return None
         
@@ -217,7 +205,7 @@ class DefectChecker:
                 # Increase timeout to 30 seconds
                 response = session.get(
                     jazz_url,
-                    timeout=30,
+                    timeout=60,  # Increased to 60 seconds for slow defects
                     headers={'Accept': 'application/json'},
                     verify=False
                 )
@@ -296,30 +284,59 @@ class DefectChecker:
         """
         details_map = {}
         
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
-            future_to_id = {
-                executor.submit(self.fetch_defect_details, defect_id): defect_id
-                for defect_id in defect_ids
-            }
-            
-            # Process completed tasks
-            completed = 0
-            total = len(defect_ids)
-            for future in as_completed(future_to_id):
-                defect_id = future_to_id[future]
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
+                future_to_id = {
+                    executor.submit(self.fetch_defect_details, defect_id): defect_id
+                    for defect_id in defect_ids
+                }
+                
+                # Process completed tasks with timeout
+                completed = 0
+                total = len(defect_ids)
+                
+                # Use as_completed with timeout to prevent infinite waiting
+                # Timeout = 600 seconds (10 minutes) to fetch all defects
                 try:
-                    details = future.result()
-                    details_map[defect_id] = details
-                    completed += 1
-                    
-                    # Log progress every 10 defects
-                    if completed % 10 == 0 or completed == total:
-                        logger.info(f"📥 Fetched {completed}/{total} defect details...")
-                        
-                except Exception as e:
-                    logger.debug(f"Error fetching details for {defect_id}: {e}")
-                    details_map[defect_id] = {}
+                    for future in as_completed(future_to_id, timeout=600):
+                        defect_id = future_to_id[future]
+                        try:
+                            details = future.result(timeout=5)  # Additional safety timeout
+                            details_map[defect_id] = details
+                            completed += 1
+                            
+                            # Log progress every 100 defects
+                            if completed % 100 == 0 or completed == total:
+                                logger.info(f"📥 Fetched {completed}/{total} defect details...")
+                                
+                        except Exception as e:
+                            logger.debug(f"Error fetching details for {defect_id}: {e}")
+                            details_map[defect_id] = {}
+                            completed += 1
+                            
+                except TimeoutError:
+                    logger.warning(f"⚠️  Timeout waiting for defect details. Fetched {completed}/{total} defects.")
+                    # Cancel remaining futures
+                    for future in future_to_id:
+                        if not future.done():
+                            future.cancel()
+                            defect_id = future_to_id[future]
+                            logger.debug(f"Cancelled fetch for {defect_id}")
+                            details_map[defect_id] = {}
+        except RuntimeError as e:
+            if "cannot schedule new futures after interpreter shutdown" in str(e):
+                logger.warning("⚠️  Interpreter shutting down, skipping parallel fetch")
+                # Fall back to sequential fetch
+                for defect_id in defect_ids:
+                    try:
+                        details = self.fetch_defect_details(defect_id)
+                        if details:
+                            details_map[defect_id] = details
+                    except Exception as ex:
+                        logger.warning(f"Failed to fetch details for defect {defect_id}: {ex}")
+            else:
+                raise
         
         return details_map
     
@@ -349,7 +366,6 @@ class DefectChecker:
                 logger.error("No valid session for fetching SOE Triage defects")
                 return None
             
-            logger.info("Fetching SOE Triage defects from Jazz/RTC...")
             
             # Jazz/RTC saved query URL (matches Chrome extension)
             jazz_base_url = 'https://wasrtc.hursley.ibm.com:9443/jazz'
@@ -358,7 +374,6 @@ class DefectChecker:
             # Use OSLC Query API with inline properties
             query_url = f"{jazz_base_url}/oslc/queries/{query_id}/rtc_cm:results?oslc.select=*,rtc_cm:filedAgainst{{dcterms:title}}"
             
-            logger.info(f"Fetching from: {query_url}")
             
             response = session.get(
                 query_url,
@@ -394,7 +409,6 @@ class DefectChecker:
             # Parse Jazz/RTC response
             defects = self._parse_jazz_workitems(data, monitored_components)
             
-            logger.info(f"✅ Fetched {len(defects)} SOE Triage defects")
             return defects
             
         except Exception as e:
@@ -414,7 +428,6 @@ class DefectChecker:
             if isinstance(data, list):
                 results = data
             
-            logger.info(f"Parsing {len(results)} Jazz/RTC work items...")
             
             # First pass: collect all functional area URLs that need to be resolved
             functional_area_urls = set()
@@ -639,7 +652,6 @@ class DefectChecker:
         
         # If we're just collecting triaged defects for training, skip untriaged processing
         if collect_triaged:
-            logger.info(f"   ✓ Found {len(triaged_defects)} triaged defects")
             return {
                 "untriaged_defects": [],
                 "triaged_defects": triaged_defects,
@@ -732,7 +744,6 @@ class DefectChecker:
                     else:
                         defect['description'] = desc_data
             
-            logger.info(f"🔍 Checking {len(untriaged_defects)} untriaged defects for duplicates and suggestions...")
             
             for defect in untriaged_defects:
                 # Check for duplicates FIRST
@@ -940,7 +951,6 @@ class DefectChecker:
             }
             results["total_defects"] += len(soe_defects)
         
-        logger.info(f"✅ Check complete: {results['total_defects']} total defects, {results['total_untriaged']} untriaged")
         
         return results
     
@@ -1127,6 +1137,13 @@ class DefectChecker:
                 logger.warning("⚠️ Jazz/RTC authentication failed, skipping SOE defects for dashboard")
         except Exception as e:
             logger.error(f"❌ Error fetching SOE defects for dashboard: {e}")
+        
+        # Calculate aggregate totals
+        total_defects = sum(comp_data.get('total', 0) for comp_data in fetch_summary['components_data'].values())
+        total_untriaged = sum(comp_data.get('untriaged', 0) for comp_data in fetch_summary['components_data'].values())
+        
+        fetch_summary['total_defects'] = total_defects
+        fetch_summary['total_untriaged'] = total_untriaged
         
         # Clear checkpoint when all components are fetched
         if len(completed_components) == len(all_components):

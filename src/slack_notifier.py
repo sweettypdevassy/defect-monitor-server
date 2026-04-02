@@ -373,5 +373,77 @@ class SlackNotifier:
             
         except Exception as e:
             logger.error(f"Error sending error notification: {e}")
+    
+    def send_ml_training_notification(self, num_components: int, accuracy: str, total_defects: int, success: bool = True) -> bool:
+        """
+        Send ML training completion notification to Slack
+        
+        Args:
+            num_components: Number of components trained
+            accuracy: Training accuracy (e.g., "56.25%")
+            total_defects: Total number of defects used for training
+            success: Whether training was successful
+        """
+        try:
+            if success:
+                message_text = (f"🤖 *ML Model Training Complete for {num_components} components*\n"
+                               f"• Accuracy: {accuracy}\n"
+                               f"• Training Defects: {total_defects}\n"
+                               f"• Status: ✅ Success")
+            else:
+                message_text = (f"🤖 *ML Model Training Failed*\n"
+                               f"• Components: {num_components}\n"
+                               f"• Training Defects: {total_defects}\n"
+                               f"• Status: ❌ Failed")
+            
+            payload = {"message": message_text}
+            response = requests.post(self.webhook_url, json=payload, timeout=10)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Error sending ML training notification: {e}")
+            return False
+    
+    def send_fetch_completion_notification(self, num_components: int, total_defects: int, total_untriaged: int) -> bool:
+        """
+        Send component fetch completion notification to Slack
+        
+        Args:
+            num_components: Number of components fetched
+            total_defects: Total defects across all components
+            total_untriaged: Total untriaged defects
+        """
+        try:
+            message_text = (f"📥 *Component Fetch Complete for {num_components} components*\n"
+                           f"• Total Defects: {total_defects}\n"
+                           f"• Untriaged: {total_untriaged}")
+            
+            payload = {"message": message_text}
+            response = requests.post(self.webhook_url, json=payload, timeout=10)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Error sending fetch completion notification: {e}")
+            return False
+    
+    def send_notification_sent_confirmation(self, num_components: int, total_untriaged: int) -> bool:
+        """
+        Send confirmation that notification was sent
+        
+        Args:
+            num_components: Number of components notified
+            total_untriaged: Total untriaged defects
+        """
+        try:
+            message_text = (f"📬 *Defect Notification Sent for {num_components} components*\n"
+                           f"• Total Untriaged: {total_untriaged}")
+            
+            payload = {"message": message_text}
+            response = requests.post(self.webhook_url, json=payload, timeout=10)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Error sending notification confirmation: {e}")
+            return False
 
 # Made with Bob

@@ -8,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 import pytz
+from cache_cleaner import clean_chrome_cache
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +27,9 @@ class DefectScheduler:
     def start(self):
         """Start the scheduler"""
         try:
-            # Check ML model status (but don't train on startup to avoid worker timeout)
-            logger.info("")
-            logger.info("🤖 ML Tag Suggestion System Status...")
-            
-            if self.defect_checker.suggester_trained:
-                logger.info("✅ ML model loaded and ready")
-            else:
-                logger.info("⚠️  ML model not trained yet")
-                logger.info("   Run 'docker-compose exec defect-monitor python3 retrain_model.sh' to train")
-            logger.info("")
+            # Check ML model status
+            if not self.defect_checker.suggester_trained:
+                logger.warning("⚠️  ML model not trained. Run: docker-compose exec defect-monitor python3 retrain_model.sh")
             
             # Schedule weekly ML model retraining (Saturday 10am IST)
             ml_config = self.config.get("ml_training", {})
@@ -58,6 +52,16 @@ class DefectScheduler:
             )
             
             logger.info(f"✅ Scheduled ML retraining on {ml_retrain_day} at {ml_retrain_time} {self.timezone}")
+            
+            # Schedule daily cache cleanup (2am IST)
+            self.scheduler.add_job(
+                self.clean_cache,
+                CronTrigger(hour=2, minute=0, timezone=self.timezone),
+                id="cache_cleanup",
+                name="Daily Chrome Cache Cleanup",
+                replace_existing=True
+            )
+            logger.info(f"✅ Scheduled daily cache cleanup at 02:00 {self.timezone}")
             
             # Schedule team-based defect checks
             teams = self.config.get("teams", [])
@@ -262,6 +266,26 @@ class DefectScheduler:
             # Store failed check in history
             self.database.store_check_history({}, False, str(e))
     
+    def clean_cache(self):
+        """Clean Chrome profile cache to prevent unbounded growth"""
+        try:
+            logger.info("=" * 60)
+            logger.info("🧹 Starting scheduled cache cleanup")
+            logger.info("=" * 60)
+            
+            result = clean_chrome_cache()
+            
+            logger.info("=" * 60)
+            logger.info("✅ Cache cleanup completed")
+            logger.info(f"   Files/dirs deleted: {result['files_deleted']}")
+            logger.info(f"   Space freed: {result['bytes_freed'] / 1024 / 1024:.2f} MB")
+            if result['errors'] > 0:
+                logger.warning(f"   Errors: {result['errors']}")
+            logger.info("=" * 60)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in cache cleanup: {e}")
+    
     def run_all_components_fetch(self):
         """
         Fetch components in background with FULL processing (ML + duplicate detection)
@@ -294,6 +318,10 @@ class DefectScheduler:
             # Fetch components with FULL processing
             summary = self.defect_checker.fetch_all_components_background(components_to_fetch, self.database)
             
+            # Calculate total defects and untriaged from summary
+            total_defects = summary.get('total_defects', 0)
+            total_untriaged = summary.get('total_untriaged', 0)
+            
             logger.info("=" * 60)
             logger.info("✅ Background fetch completed")
             logger.info(f"   Total Components: {summary['total_components']}")
@@ -301,6 +329,16 @@ class DefectScheduler:
             logger.info(f"   Failed: {summary['failed']}")
             logger.info(f"   Data ready for team notifications")
             logger.info("=" * 60)
+            
+            # Send fetch completion notification
+            try:
+                self.slack_notifier.send_fetch_completion_notification(
+                    num_components=summary['successful'],
+                    total_defects=total_defects,
+                    total_untriaged=total_untriaged
+                )
+            except Exception as notify_error:
+                logger.error(f"Error sending fetch completion notification: {notify_error}")
             
         except Exception as e:
             logger.error(f"❌ Error in background fetch: {e}")
@@ -559,8 +597,40 @@ class DefectScheduler:
                 
                 if success:
                     logger.info("✅ ML model incrementally trained successfully")
+                    
+                    # Extract ML stats and send notification
+                    try:
+                        # Get training stats from the suggester
+                        stats = self.defect_checker.tag_suggester.get_training_stats()
+                        
+                        if stats.get('trained'):
+                            # Accuracy is already formatted as string (e.g., "58.67%")
+                            accuracy_str = stats.get('accuracy', '0.00%')
+                            total_samples = stats.get('total_samples', 0)
+                            
+                            # Send Slack notification
+                            self.slack_notifier.send_ml_training_notification(
+                                num_components=len(training_components),
+                                accuracy=accuracy_str,
+                                total_defects=total_samples,
+                                success=True
+                            )
+                        else:
+                            logger.warning("ML model trained but stats not available")
+                    except Exception as notify_error:
+                        logger.error(f"Error sending ML training notification: {notify_error}")
                 else:
                     logger.error("❌ ML model training failed")
+                    # Send failure notification
+                    try:
+                        self.slack_notifier.send_ml_training_notification(
+                            num_components=len(training_components),
+                            accuracy="N/A",
+                            total_defects=0,
+                            success=False
+                        )
+                    except Exception as notify_error:
+                        logger.error(f"Error sending ML training failure notification: {notify_error}")
             else:
                 logger.warning("⚠️  No components configured for ML training")
             
@@ -605,12 +675,15 @@ class DefectScheduler:
                     default_channel=team_channel,
                     config=self.config
                 )
+                # Send defect notification to team's webhook
                 team_notifier.send_defect_notification(results)
-                logger.info(f"✅ Notification sent to {team_name} ({team_channel})")
             else:
-                # Use default notifier
+                # Use default notifier for defect notification
                 self.slack_notifier.send_defect_notification(results)
-                logger.info(f"✅ Notification sent using default webhook")
+            
+            # ALWAYS send confirmation to main system webhook (not team webhook)
+            num_components = len(team_components)
+            self.slack_notifier.send_notification_sent_confirmation(num_components, results['total_untriaged'])
             
             logger.info("=" * 60)
             logger.info(f"✅ Team check completed for {team_name}")

@@ -23,10 +23,11 @@ class DuplicateDetector:
             similarity_threshold: Minimum similarity score (0-1) to consider as duplicate
         """
         self.similarity_threshold = similarity_threshold
+        self._similarity_cache = {}  # Cache for similarity calculations
     
     def calculate_similarity(self, text1: str, text2: str) -> float:
         """
-        Calculate similarity between two texts using SequenceMatcher
+        Calculate similarity between two texts using SequenceMatcher with caching
         
         Args:
             text1: First text
@@ -39,8 +40,20 @@ class DuplicateDetector:
         text1_norm = text1.lower().strip()
         text2_norm = text2.lower().strip()
         
+        # Create cache key (order-independent)
+        cache_key = tuple(sorted([text1_norm, text2_norm]))
+        
+        # Check cache
+        if cache_key in self._similarity_cache:
+            return self._similarity_cache[cache_key]
+        
         # Calculate similarity
-        return SequenceMatcher(None, text1_norm, text2_norm).ratio()
+        similarity = SequenceMatcher(None, text1_norm, text2_norm).ratio()
+        
+        # Cache result
+        self._similarity_cache[cache_key] = similarity
+        
+        return similarity
     
     def extract_key_info(self, defect: Dict) -> Tuple[str, str]:
         """

@@ -67,28 +67,42 @@ class IBMAuthenticator:
         if not self.session or not self.last_login:
             return False
         
-        # Check if session has expired
+        # Check if session has expired based on time
         elapsed = (datetime.now() - self.last_login).total_seconds()
         if elapsed > self.session_timeout:
-            logger.info("Session expired, needs re-authentication")
+            logger.info("Session expired based on timeout, needs re-authentication")
             return False
         
-        # Test session with a simple request
+        # If session is less than 5 minutes old, assume it's valid (skip validation)
+        if elapsed < 300:  # 5 minutes
+            return True
+        
+        # For older sessions, test with a simple request
         try:
             test_url = "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas"
             response = self.session.get(test_url, params={"component": "test"}, timeout=60, verify=False)
             
             # Check if we got redirected to login page
             if "login" in response.url.lower() or response.status_code == 401:
-                logger.info("Session invalid, needs re-authentication")
+                logger.info("Session invalid (got 401 or redirect), needs re-authentication")
                 return False
             
             return True
         except requests.exceptions.Timeout:
-            logger.warning("Session validation timeout - will retry authentication")
-            return False
+            # On timeout, assume session is still valid if not too old
+            # This prevents unnecessary re-authentication when server is slow
+            if elapsed < 600:  # Less than 10 minutes old
+                logger.debug("Session validation timeout, but session is recent - assuming valid")
+                return True
+            else:
+                logger.debug("Session validation timeout and session is old - will re-authenticate")
+                return False
         except Exception as e:
-            logger.error(f"Session validation failed: {e}")
+            logger.debug(f"Session validation failed: {e}")
+            # On other errors, assume valid if session is recent
+            if elapsed < 600:
+                logger.debug("Session validation error, but session is recent - assuming valid")
+                return True
             return False
     
     def _authenticate_with_retry(self) -> bool:
@@ -162,89 +176,49 @@ class IBMAuthenticator:
     
     def _do_authenticate(self) -> bool:
         """
-        Authenticate with IBM W3ID using improved flow
+        Authenticate with IBM Build Break Report using Playwright
+        Since cookies expire in 10 minutes and W3ID uses JavaScript auth,
+        we must use browser automation for every authentication
         Returns True if successful, False otherwise
         """
         try:
-            logger.info(f"Authenticating with IBM W3ID for user: {self.username}")
+            logger.info(f"Authenticating with IBM Build Break Report using Playwright for user: {self.username}")
             
-            # Create new session with persistent cookies
+            # Use Playwright to login and get cookies
+            cookies = self._playwright_login()
+            
+            if not cookies:
+                logger.error("❌ Playwright login failed")
+                return False
+            
+            # Create session with cookies from Playwright
             self.session = requests.Session()
             
-            # Set comprehensive headers to mimic browser
+            # Set headers
             self.session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
             })
             
-            # Step 1: Access the protected resource to trigger SSO redirect
-            logger.debug("Step 1: Accessing protected resource to trigger SSO")
-            initial_response = self.session.get(
-                "https://libh-proxy1.fyre.ibm.com/buildBreakReport/",
-                timeout=30,
-                allow_redirects=True,
-                verify=False
-            )
-            
-            # Step 2: Check if we're already authenticated (session might be cached)
-            if "login" not in initial_response.url.lower():
-                logger.debug("Already authenticated, verifying session")
-                if self._verify_authentication():
-                    self.last_login = datetime.now()
-                    logger.info("✅ IBM authentication successful (cached session)")
-                    return True
-            
-            # Step 3: Submit credentials to W3ID login
-            logger.debug("Step 2: Submitting credentials to W3ID")
-            
-            # Prepare form data with all required fields
-            auth_data = {
-                'username': self.username,
-                'password': self.password,
-                'login-form-type': 'pwd',
-            }
-            
-            # Post to W3ID login endpoint
-            auth_response = self.session.post(
-                "https://login.w3.ibm.com/oidc/endpoint/default/authorize",
-                data=auth_data,
-                timeout=30,
-                allow_redirects=True,
-                verify=False,
-                headers={
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Referer': 'https://login.w3.ibm.com/',
-                }
-            )
-            
-            # Step 4: Follow any additional redirects to complete SSO flow
-            logger.debug("Step 3: Completing SSO flow")
-            if auth_response.status_code in [200, 302, 303]:
-                # Try to access the original resource again
-                final_response = self.session.get(
-                    "https://libh-proxy1.fyre.ibm.com/buildBreakReport/",
-                    timeout=30,
-                    allow_redirects=True,
-                    verify=False
+            # Add cookies to session
+            for cookie in cookies:
+                self.session.cookies.set(
+                    cookie['name'],
+                    cookie['value'],
+                    domain=cookie.get('domain', ''),
+                    path=cookie.get('path', '/')
                 )
-                
-                # Step 5: Verify authentication
-                logger.debug("Step 4: Verifying authentication")
-                if self._verify_authentication():
-                    self.last_login = datetime.now()
-                    logger.info("✅ IBM authentication successful")
-                    return True
-                else:
-                    logger.error("❌ IBM authentication failed - verification failed")
-                    logger.debug(f"Final URL: {final_response.url}")
-                    logger.debug(f"Status: {final_response.status_code}")
-                    return False
+            
+            logger.info(f"✅ Added {len(cookies)} cookies to session")
+            
+            # Verify authentication
+            if self._verify_authentication():
+                self.last_login = datetime.now()
+                logger.info("✅ IBM Build Break Report authentication successful")
+                return True
             else:
-                logger.error(f"❌ IBM authentication failed - auth response status: {auth_response.status_code}")
+                logger.error("❌ Authentication verification failed")
                 return False
                 
         except Exception as e:
@@ -252,6 +226,191 @@ class IBMAuthenticator:
             import traceback
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return False
+    
+    def _playwright_login(self):
+        """Use Playwright to login and extract cookies"""
+        try:
+            from playwright.sync_api import sync_playwright
+            import re
+            import os
+            
+            logger.info("🌐 Launching Playwright browser...")
+            
+            # Use persistent browser profile to avoid repeated 2FA
+            user_data_dir = "/app/data/chrome_profile"
+            os.makedirs(user_data_dir, exist_ok=True)
+            
+            with sync_playwright() as p:
+                # Launch browser with persistent context (remembers login state)
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir,
+                    headless=True,
+                    ignore_https_errors=True,
+                    args=['--disable-blink-features=AutomationControlled']
+                )
+                page = context.pages[0] if context.pages else context.new_page()
+                
+                try:
+                    # Navigate to IBM page (will redirect to login)
+                    logger.info("📍 Navigating to Build Break Report...")
+                    page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/", wait_until="networkidle", timeout=30000)
+                    
+                    # Wait for page to load
+                    page.wait_for_timeout(2000)
+                    
+                    current_url = page.url
+                    logger.info(f"Current URL: {current_url}")
+                    
+                    # Check if on login page
+                    if "login" in current_url.lower() or "auth" in current_url.lower():
+                        logger.info("🔑 On IBM login page...")
+                        
+                        # IMPORTANT: Click on "w3id Password" link first
+                        logger.info("Step 1: Looking for 'w3id Password' link...")
+                        try:
+                            w3id_link = page.get_by_text("w3id Password")
+                            w3id_link.wait_for(state="visible", timeout=10000)
+                            w3id_link.click()
+                            logger.info("✅ Clicked 'w3id Password' link")
+                            
+                            # Wait for login form to load
+                            page.wait_for_load_state("networkidle")
+                            page.wait_for_timeout(2000)
+                        except Exception as e:
+                            logger.warning(f"Could not find 'w3id Password' link: {e}")
+                            logger.info("Continuing with direct login attempt...")
+                        
+                        # Step 2: Fill in email/username
+                        logger.info("Step 2: Filling email/username...")
+                        email_input = page.locator('input[type="email"], input[name="email"], input[id*="email"], input[name="username"]').first
+                        email_input.wait_for(state="visible", timeout=10000)
+                        email_input.fill(self.username)
+                        logger.info("✅ Filled email field")
+                        
+                        # Step 3: Fill in password
+                        logger.info("Step 3: Filling password...")
+                        password_input = page.locator('input[type="password"], input[name="password"], input[id*="password"]').first
+                        password_input.wait_for(state="visible", timeout=10000)
+                        password_input.fill(self.password)
+                        logger.info("✅ Filled password field")
+                        
+                        # Step 4: Click "Sign in" button
+                        logger.info("Step 4: Clicking 'Sign in' button...")
+                        try:
+                            sign_in_button = page.get_by_role("button", name=re.compile("sign in", re.IGNORECASE))
+                            sign_in_button.wait_for(state="visible", timeout=10000)
+                            sign_in_button.click()
+                            logger.info("✅ Clicked 'Sign in' button")
+                        except Exception as e:
+                            logger.warning(f"Could not find 'Sign in' button: {e}")
+                            logger.info("Trying Enter key...")
+                            page.keyboard.press('Enter')
+                        
+                        # Wait for navigation after login
+                        logger.info("⏳ Waiting for login to complete...")
+                        page.wait_for_timeout(5000)
+                        page.wait_for_load_state("networkidle", timeout=30000)
+                        
+                        current_url = page.url
+                        logger.info(f"After first login URL: {current_url}")
+                        
+                        # Check if we're on the 2FA/MFA selection page
+                        if "authsvc" in current_url or "macotp" in current_url:
+                            logger.info("🔐 On 2FA selection page, looking for 'Touch Approval' option...")
+                            
+                            # Take screenshot for debugging
+                            try:
+                                page.screenshot(path="/app/2fa_page.png")
+                                logger.info("📸 Screenshot saved to /app/2fa_page.png")
+                            except:
+                                pass
+                            
+                            # Log page content for debugging
+                            try:
+                                page_text = page.inner_text('body')
+                                logger.info(f"Page text preview: {page_text[:500]}")
+                            except:
+                                pass
+                            
+                            try:
+                                # Look for "Touch Approval" option on the 2FA page
+                                # Try multiple variations
+                                selectors_to_try = [
+                                    'text="Touch Approval"',
+                                    'text="touch approval"',
+                                    'text="Sweetty\'s S24 Ultra (Touch Approval)"',
+                                    '[aria-label*="Touch Approval" i]',
+                                    'button:has-text("Touch Approval")',
+                                    'a:has-text("Touch Approval")',
+                                    '.auth-method:has-text("Touch Approval")'
+                                ]
+                                
+                                clicked = False
+                                for selector in selectors_to_try:
+                                    try:
+                                        element = page.locator(selector).first
+                                        if element.count() > 0:
+                                            element.wait_for(state="visible", timeout=2000)
+                                            element.click()
+                                            logger.info(f"✅ Clicked 'Touch Approval' option using selector: {selector}")
+                                            clicked = True
+                                            break
+                                    except:
+                                        continue
+                                
+                                if not clicked:
+                                    logger.warning("Could not find 'Touch Approval' option with any selector")
+                                    raise Exception("Touch Approval option not found")
+                                
+                                # Wait for user to approve on phone
+                                logger.info("📱 Waiting for approval on your phone...")
+                                logger.info("⏳ Please approve the notification on Sweetty's S24 Ultra (60 seconds timeout)")
+                                
+                                # Wait for authentication to complete (longer timeout for phone approval)
+                                try:
+                                    page.wait_for_url("**/buildBreakReport**", timeout=60000)
+                                    logger.info("✅ Successfully authenticated after phone approval!")
+                                except Exception as e:
+                                    logger.warning(f"Timeout waiting for phone approval: {e}")
+                                    # Check if we're at least past the 2FA page
+                                    current_url = page.url
+                                    if "macotp" not in current_url:
+                                        logger.info("✅ Moved past 2FA page, continuing...")
+                                    else:
+                                        raise Exception("Phone approval timeout or not completed")
+                                
+                            except Exception as e:
+                                logger.warning(f"Could not complete 2FA with Touch Approval: {e}")
+                        
+                        # Check final URL
+                        final_url = page.url
+                        logger.info(f"Final URL: {final_url}")
+                        
+                        # If not at Build Break Report, try direct navigation
+                        if "buildBreakReport" not in final_url:
+                            logger.warning(f"⚠️  Not at Build Break Report, attempting direct navigation...")
+                            page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/", wait_until="networkidle", timeout=30000)
+                            logger.info(f"After direct navigation: {page.url}")
+                    
+                    # Extract cookies
+                    cookies = context.cookies()
+                    logger.info(f"✅ Extracted {len(cookies)} cookies")
+                    
+                    context.close()
+                    return cookies
+                    
+                except Exception as e:
+                    logger.error(f"Error during Playwright login: {e}")
+                    context.close()
+                    return None
+                    
+        except ImportError:
+            logger.error("❌ Playwright not installed")
+            logger.error("Install with: pip install playwright && playwright install chromium")
+            return None
+        except Exception as e:
+            logger.error(f"Error in Playwright login: {e}")
+            return None
     
     def _verify_authentication(self, max_retries: int = 3) -> bool:
         """Verify that authentication was successful by testing API with retry logic"""
@@ -384,8 +543,13 @@ class IBMAuthenticator:
             logger.info("🔐 Authenticating with Jazz/RTC...")
             
             if not self.session:
-                logger.error("No active session - authenticate with Build Break Report first")
-                return False
+                logger.debug("No session exists, creating new session")
+                self.session = requests.Session()
+                self.session.headers.update({
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                })
             
             if not self.username or not self.password:
                 logger.error("No Jazz/RTC credentials configured")

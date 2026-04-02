@@ -38,7 +38,7 @@ class CookieMonitor:
                 break
         
         if not self.refresh_script_path:
-            logger.warning(f"⚠️  Cookie refresh script not found in any of: {possible_paths}")
+            logger.debug(f"Cookie refresh script not found in: {possible_paths}")
             self.refresh_script_path = refresh_script_path  # Use default anyway
         self.last_refresh: Optional[datetime] = None
         self.refresh_in_progress = False

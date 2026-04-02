@@ -15,14 +15,25 @@ logger = logging.getLogger(__name__)
 # Try to import ML libraries
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.naive_bayes import MultinomialNB
+    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
     from sklearn.pipeline import Pipeline
-    from sklearn.model_selection import train_test_split
+    from sklearn.model_selection import train_test_split, cross_val_score
     from sklearn.metrics import classification_report, accuracy_score
+    from imblearn.over_sampling import SMOTE
+    from imblearn.pipeline import Pipeline as ImbPipeline
+    import re
     ML_AVAILABLE = True
-except ImportError:
-    ML_AVAILABLE = False
-    logger.warning("⚠️ scikit-learn not installed. Install with: pip install scikit-learn")
+    SMOTE_AVAILABLE = True
+except ImportError as e:
+    if 'imblearn' in str(e):
+        ML_AVAILABLE = True
+        SMOTE_AVAILABLE = False
+        logger.warning("⚠️ imbalanced-learn not installed. Install with: pip install imbalanced-learn")
+        logger.warning("   Continuing without SMOTE (accuracy may be lower)")
+    else:
+        ML_AVAILABLE = False
+        SMOTE_AVAILABLE = False
+        logger.warning("⚠️ scikit-learn not installed. Install with: pip install scikit-learn")
 
 
 class MLTagSuggester:
@@ -59,8 +70,7 @@ class MLTagSuggester:
                     self.model = data['model']
                     self.training_stats = data.get('stats', {})
                 self.trained = True
-                logger.info(f"✅ Loaded pre-trained model from {self.model_path}")
-                logger.info(f"   Training accuracy: {self.training_stats.get('accuracy', 'N/A')}")
+                logger.info(f"✅ Loaded ML model: {self.training_stats.get('accuracy', 'N/A')} accuracy")
                 return True
         except Exception as e:
             logger.warning(f"Could not load model: {e}")
@@ -106,18 +116,17 @@ class MLTagSuggester:
         return None
     
     def _extract_text_features(self, defect: Dict) -> str:
-        """Extract and combine text features from defect"""
-        # Combine multiple fields into one text for training
+        """Extract and combine text features from defect - SIMPLE VERSION"""
+        # Keep it simple - just combine the text fields
+        # Random Forest will learn the patterns from the raw text
         summary = str(defect.get('summary', '')).lower()
         description = str(defect.get('description', '')).lower()
         functional_area = str(defect.get('functionalArea', '')).lower()
         
-        # Give equal weight to all three features
-        # Description contains crucial error information (e.g., "Connection refused")
-        # Summary contains test name
-        # Functional area contains component context
-        text = f"{summary} {description} {functional_area}"
-        return text
+        # Combine all text - description is most important (has error details)
+        # But include all fields for context
+        text = f"{description} {summary} {functional_area}"
+        return text.strip()
     
     def train_from_defects(self, triaged_defects: List[Dict], min_samples: int = 10, incremental: bool = True) -> bool:
         """
@@ -217,20 +226,58 @@ class MLTagSuggester:
                     X_texts, y_labels, test_size=0.2, random_state=42
                 )
             
-            # Create ML pipeline: TF-IDF + Naive Bayes
+            # Don't use SMOTE - it creates unrealistic synthetic samples
+            # Instead: optimize Random Forest with careful hyperparameters
+            logger.info("🔧 Building optimized Random Forest classifier...")
+            logger.info("   Using sample_weight to handle class imbalance naturally")
+            
+            # Calculate sample weights to give more importance to minority classes
+            class_counts = Counter(y_train)
+            total_samples = len(y_train)
+            
+            # Weight inversely proportional to class frequency
+            class_weights = {cls: total_samples / (len(class_counts) * count)
+                           for cls, count in class_counts.items()}
+            
+            # Create sample weights array
+            sample_weights = np.array([class_weights[y] for y in y_train])
+            
+            logger.info(f"   Class distribution: {dict(class_counts)}")
+            logger.info(f"   Class weights: {class_weights}")
+            
             self.model = Pipeline([
                 ('tfidf', TfidfVectorizer(
-                    max_features=1000,
-                    ngram_range=(1, 2),  # Use unigrams and bigrams
-                    min_df=2,  # Ignore terms that appear in less than 2 documents
-                    stop_words='english'
+                    max_features=3000,  # Reduced to focus on most important terms
+                    ngram_range=(1, 2),  # Unigrams and bigrams
+                    min_df=3,  # More conservative - need at least 3 occurrences
+                    max_df=0.80,  # Filter common terms more aggressively
+                    stop_words='english',
+                    sublinear_tf=True,
+                    norm='l2'  # L2 normalization
                 )),
-                ('classifier', MultinomialNB(alpha=0.1))
+                ('classifier', RandomForestClassifier(
+                    n_estimators=400,  # More trees for stability
+                    max_depth=12,  # Shallower trees to prevent overfitting
+                    min_samples_split=10,  # Require more samples to split
+                    min_samples_leaf=4,  # Require more samples in leaves
+                    max_features='log2',  # Use log2 of features (more conservative)
+                    bootstrap=True,
+                    oob_score=True,
+                    random_state=42,
+                    n_jobs=-1,
+                    class_weight=None,  # We use sample_weight instead
+                    verbose=0,
+                    max_samples=0.8  # Use 80% of samples per tree (regularization)
+                ))
             ])
             
-            # Train the model
-            logger.info("🔧 Training Naive Bayes classifier with TF-IDF features...")
-            self.model.fit(X_train, y_train)
+            logger.info("🔧 Training Random Forest (400 trees) with sample weighting...")
+            self.model.fit(X_train, y_train, classifier__sample_weight=sample_weights)
+            
+            # Log OOB score
+            if hasattr(self.model.named_steps['classifier'], 'oob_score_'):
+                oob_score = self.model.named_steps['classifier'].oob_score_
+                logger.info(f"   Out-of-bag score: {oob_score:.2%}")
             
             # Evaluate on test set
             y_pred = self.model.predict(X_test)

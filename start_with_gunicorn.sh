@@ -7,15 +7,13 @@ cd /app
 pkill -f "python src/app.py" || true
 pkill -f "gunicorn" || true
 
-# Start with Gunicorn with reload on code changes
+# Start with Gunicorn (production mode - no reload for stability)
+# Note: --reload disabled to prevent worker restarts during ML training
 exec gunicorn \
     --bind 0.0.0.0:5000 \
     --workers 1 \
-    --reload \
-    --reload-extra-file src/database.py \
-    --reload-extra-file src/app.py \
-    --reload-extra-file src/defect_checker.py \
-    --timeout 300 \
+    --timeout 900 \
+    --graceful-timeout 120 \
     --access-logfile - \
     --error-logfile - \
     --log-level info \
