@@ -1,10 +1,7 @@
 ibm:
-  auth_method: cookies  # or "password" or "browser_cookies"
-  cookies:
-    LtpaToken2: "YOUR_LTPA_TOKEN_HERE"
-    mod_auth_openidc_session: "YOUR_SESSION_ID_HERE"
-  username: "your.email@ibm.com"
-  password: "your_password_here"
+  auth_method: password  # Using username/password authentication
+  username: "your-ibm-email@ibm.com"
+  password: "your-password-here"
   build_break_url: "https://libh-proxy1.fyre.ibm.com/buildBreakReport"
   soe_triage_url: "https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.runSavedQuery&id=_fJ834OXIEemRB5enIPF1MQ"
   session_timeout: 28800  # 8 hours
@@ -19,63 +16,48 @@ slack:
 ml_training:
   # Components to use for training the ML model
   # If empty or not specified, will use all_components
-  training_components:
-    - Spring Boot
-    # - JCA
-    # - Messaging
+  training_components: []
   
   # Weekly retraining schedule
-  retrain_day: "saturday"  # Day of week for retraining
+  retrain_day: "thursday"  # Day of week for retraining
   retrain_time: "10:00"    # Time in HH:MM format (IST)
 
 # Team-based monitoring (NEW!)
 # Each team has its own components, schedule, and Slack webhook
 teams:
-  - name: "Spring Boot Team"
+  - name: "Team 1"
     components:
-      - name: "Spring Boot"
+      - name: "Batch"
         notify: true
-        slack_channel: "#springboot-defects"
-    check_time: "10:00"  # HH:MM format (IST)
-    skip_weekends: true  # Skip Saturday and Sunday
-    webhook_url: "https://hooks.slack.com/triggers/YOUR/SPRINGBOOT/WEBHOOK"
-    slack_channel: "#springboot-defects"
-  
-  - name: "Messaging Team"
-    components:
       - name: "Messaging"
         notify: true
-        slack_channel: "#messaging-defects"
-      - name: "JCA"
-        notify: true
-        slack_channel: "#messaging-defects"
-    check_time: "11:00"  # Different time for this team
-    skip_weekends: true
-    webhook_url: "https://hooks.slack.com/triggers/YOUR/MESSAGING/WEBHOOK"
-    slack_channel: "#messaging-defects"
-  
-  - name: "Database Team"
+    check_time: "10:00"  # HH:MM format (IST)
+    skip_weekends: true  # Skip Saturday and Sunday
+    webhook_url: "https://hooks.slack.com/triggers/YOUR/TEAM1/WEBHOOK"
+    slack_channel: "#team1-defects"
+    weekly_dashboard_day: "friday"   # Send weekly dashboard every Friday
+    weekly_dashboard_time: "17:00"   # At 5:00 PM IST
+
+  - name: "Team 2"
     components:
-      - name: "Database (jdbc, oracle, db2, derby)"
-        notify: true
-        slack_channel: "#database-defects"
       - name: "JPA"
         notify: true
-        slack_channel: "#database-defects"
-    check_time: "14:00"  # Afternoon check
+      - name: "JCA"
+        notify: true
+      - name: "Bean Validation"
+        notify: true
+    check_time: "10:30"  # Different time for this team
     skip_weekends: true
-    webhook_url: "https://hooks.slack.com/triggers/YOUR/DATABASE/WEBHOOK"
-    slack_channel: "#database-defects"
+    webhook_url: "https://hooks.slack.com/triggers/YOUR/TEAM2/WEBHOOK"
+    slack_channel: "#team2-defects"
+    weekly_dashboard_day: "friday"
+    weekly_dashboard_time: "17:00"
 
 # Legacy monitored components (used if teams not configured)
-monitored_components:
-  - name: "Spring Boot"
-    notify: true
-    slack_channel: "#springboot-defects"
-  # Add more monitored components here
-  # - name: "JCA"
-  #   notify: true
-  #   slack_channel: "#jca-defects"
+# monitored_components:
+#   - name: "Spring Boot"
+#     notify: true
+#     slack_channel: "#springboot-defects"
 
 all_components:
   - AdminCenter
@@ -132,19 +114,21 @@ all_components:
 
 schedule:
   # Legacy daily check (used if teams not configured)
-  daily_check_time: "10:00"  # HH:MM format (IST)
-  skip_weekends: true  # NEW: Skip Saturday and Sunday
+  # daily_check_time: "10:00"  # HH:MM format (IST)
+  # skip_weekends: true
   
   # Dashboard and background tasks
-  weekly_dashboard_day: "monday"
-  weekly_dashboard_time: "11:00"
-  all_components_fetch_time: "09:00"  # Background fetch for dashboard (optimized - no ML/duplicate detection)
+  all_components_fetch_time: "09:00"  # Background fetch for dashboard (runs before team checks)
+  
+  # For testing: specify components to fetch (if empty, fetches all_components)
+  test_components: []
+  
   timezone: "Asia/Kolkata"
 
 dashboard:
   port: 5000
   host: "0.0.0.0"
-  public_url: "http://YOUR_VM_IP:5000/dashboard"
+  public_url: "http://your-server-ip:5001/dashboard"
   secret_key: "change-this-to-random-secret-key"
   retention_days: 90
   enable_component_explorer: true
