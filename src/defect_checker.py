@@ -854,11 +854,20 @@ class DefectChecker:
             logger.info("=" * 70)
             logger.info("🎓 WEEKLY ML TRAINING + COMPREHENSIVE DATA FETCH")
             logger.info("=" * 70)
-            logger.info(f"Fetching ALL defects from {len(all_components)} components...")
+            
+            # STEP 1: Get triaged defects from database cache (fast, includes historical data)
+            logger.info("📚 Loading triaged defects from database cache...")
+            all_triaged_defects = []
+            if self.database:
+                all_triaged_defects = self.database.get_all_triaged_defects_from_cache(all_components)
+                logger.info(f"   ✅ Loaded {len(all_triaged_defects)} triaged defects from cache")
+            
+            # STEP 2: Fetch fresh data from IBM to update cache
+            logger.info(f"🔄 Fetching fresh data from {len(all_components)} components to update cache...")
             logger.info("This will take time but ensures complete data for the week")
             
-            all_triaged_defects = []
             all_defects_for_caching = []  # ALL defects (triaged + untriaged)
+            newly_triaged_count = 0
             
             # Fetch defects from all components
             for i, component in enumerate(all_components, 1):
@@ -872,12 +881,12 @@ class DefectChecker:
                             defect['component'] = component  # Add component info
                         all_defects_for_caching.extend(defects)
                         
-                        # Parse with collect_triaged=True to get triaged defects for ML training
+                        # Parse to count newly triaged defects
                         parsed = self.parse_defects(defects, component, collect_triaged=True)
                         triaged = parsed.get("triaged_defects", [])
                         
                         if triaged:
-                            all_triaged_defects.extend(triaged)
+                            newly_triaged_count += len(triaged)
                             logger.info(f"   ✓ Found {len(defects)} total defects ({len(triaged)} triaged)")
                         else:
                             logger.info(f"   ✓ Found {len(defects)} total defects (0 triaged)")
@@ -887,7 +896,8 @@ class DefectChecker:
                     continue
             
             logger.info("=" * 70)
-            logger.info(f"📊 Collected {len(all_defects_for_caching)} TOTAL defects ({len(all_triaged_defects)} triaged)")
+            logger.info(f"📊 Fetched {len(all_defects_for_caching)} TOTAL defects ({newly_triaged_count} newly triaged)")
+            logger.info(f"📚 Using {len(all_triaged_defects)} triaged defects from cache for training")
             logger.info("=" * 70)
             
             # Cache basic defect info first, then fetch descriptions from Jazz/RTC

@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 class IBMAuthenticator:
     """Handles IBM W3ID authentication and session management"""
     
+    # Class-level variables to keep browser alive
+    _playwright_instance = None
+    _browser_context = None
+    _browser_page = None
+    _browser_lock = threading.Lock()
+    
     def __init__(self, username: str, password: str, session_timeout: int = 7200, max_retries: int = 3,
                  auth_method: str = "password", cookies: Optional[Dict[str, str]] = None):
         self.username = username
@@ -228,41 +234,74 @@ class IBMAuthenticator:
             return False
     
     def _playwright_login(self):
-        """Use Playwright to login and extract cookies"""
+        """Use Playwright to login and extract cookies - KEEPS BROWSER ALIVE"""
         try:
             from playwright.sync_api import sync_playwright
             import re
             import os
             
-            logger.info("🌐 Launching Playwright browser...")
-            
-            # Use persistent browser profile to avoid repeated 2FA
-            user_data_dir = "/app/data/chrome_profile"
-            os.makedirs(user_data_dir, exist_ok=True)
-            
-            with sync_playwright() as p:
-                # Launch browser with persistent context (remembers login state)
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir,
-                    headless=True,
-                    ignore_https_errors=True,
-                    args=['--disable-blink-features=AutomationControlled']
-                )
-                page = context.pages[0] if context.pages else context.new_page()
+            with self._browser_lock:
+                # Check if browser is already running
+                if self._browser_context and self._browser_page:
+                    logger.info("♻️ Reusing existing browser session...")
+                    try:
+                        # Test if browser is still alive
+                        self._browser_page.url
+                        # Extract cookies from existing session
+                        cookies = self._browser_context.cookies()
+                        logger.info(f"✅ Extracted {len(cookies)} cookies from existing browser")
+                        return cookies
+                    except:
+                        logger.warning("Existing browser session is dead, creating new one...")
+                        self._browser_context = None
+                        self._browser_page = None
+                        self._playwright_instance = None
+                
+                # Launch new browser if needed
+                if not self._playwright_instance:
+                    logger.info("🌐 Launching persistent Playwright browser...")
+                    
+                    # Use persistent browser profile
+                    user_data_dir = "/app/data/chrome_profile"
+                    os.makedirs(user_data_dir, exist_ok=True)
+                    
+                    self._playwright_instance = sync_playwright().start()
+                    
+                    # Launch browser with persistent context (remembers login state)
+                    self._browser_context = self._playwright_instance.chromium.launch_persistent_context(
+                        user_data_dir,
+                        headless=True,
+                        ignore_https_errors=True,
+                        args=['--disable-blink-features=AutomationControlled']
+                    )
+                    self._browser_page = self._browser_context.pages[0] if self._browser_context.pages else self._browser_context.new_page()
+                
+                context = self._browser_context
+                page = self._browser_page
                 
                 try:
-                    # Navigate to IBM page (will redirect to login)
-                    logger.info("📍 Navigating to Build Break Report...")
+                    # Navigate to IBM page (will redirect to login if needed)
+                    logger.info("📍 Navigating to Build Break Report to check session...")
                     page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/", wait_until="networkidle", timeout=30000)
                     
                     # Wait for page to load
-                    page.wait_for_timeout(2000)
+                    page.wait_for_timeout(3000)
                     
                     current_url = page.url
                     logger.info(f"Current URL: {current_url}")
                     
-                    # Check if on login page
+                    # Check if we're ALREADY logged in (persistent profile worked!)
+                    if "buildBreakReport" in current_url and "login" not in current_url.lower() and "auth" not in current_url.lower():
+                        logger.info("✅ Already logged in! Persistent browser profile preserved the session")
+                        logger.info("🎉 No 2FA needed - reusing trusted device session!")
+                        # Extract cookies and return immediately
+                        cookies = context.cookies()
+                        logger.info(f"✅ Extracted {len(cookies)} cookies from existing session")
+                        return cookies
+                    
+                    # Check if on login page (need to authenticate)
                     if "login" in current_url.lower() or "auth" in current_url.lower():
+                        logger.info("🔑 Session expired or new device - need to authenticate...")
                         logger.info("🔑 On IBM login page...")
                         
                         # IMPORTANT: Click on "w3id Password" link first
@@ -392,16 +431,15 @@ class IBMAuthenticator:
                             page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/", wait_until="networkidle", timeout=30000)
                             logger.info(f"After direct navigation: {page.url}")
                     
-                    # Extract cookies
+                    # Extract cookies (DON'T close browser - keep it alive!)
                     cookies = context.cookies()
                     logger.info(f"✅ Extracted {len(cookies)} cookies")
-                    
-                    context.close()
+                    logger.info("🔄 Keeping browser alive for future authentications...")
                     return cookies
                     
                 except Exception as e:
                     logger.error(f"Error during Playwright login: {e}")
-                    context.close()
+                    # Don't close browser on error - it might recover
                     return None
                     
         except ImportError:
@@ -537,100 +575,95 @@ class IBMAuthenticator:
     def authenticate_jazz_rtc(self) -> bool:
         """
         Authenticate with Jazz/RTC system using username/password
-        Matches Chrome extension flow with proper form submission
+        Uses lock to prevent concurrent authentication attempts
         """
-        try:
-            logger.info("🔐 Authenticating with Jazz/RTC...")
-            
-            if not self.session:
-                logger.debug("No session exists, creating new session")
-                self.session = requests.Session()
-                self.session.headers.update({
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                })
-            
-            if not self.username or not self.password:
-                logger.error("No Jazz/RTC credentials configured")
-                return False
-            
-            # Jazz/RTC authentication endpoint
-            jazz_auth_url = "https://wasrtc.hursley.ibm.com:9443/jazz/authenticated/identity"
-            
-            # Step 1: Try to access Jazz/RTC (will redirect to login if needed)
-            logger.info(f"Step 1: Accessing {jazz_auth_url}")
-            initial_response = self.session.get(
-                jazz_auth_url,
-                timeout=30,
-                verify=False,
-                allow_redirects=True
-            )
-            
-            # Check if already authenticated (got JSON)
-            if initial_response.status_code == 200:
-                content_type = initial_response.headers.get('content-type', '')
-                if 'application/json' in content_type:
-                    try:
-                        data = initial_response.json()
-                        logger.info(f"✅ Jazz/RTC already authenticated as {data.get('userId', 'unknown')}")
-                        return True
-                    except:
-                        pass
-            
-            # Step 2: Submit login credentials
-            logger.info("Step 2: Submitting Jazz/RTC login credentials...")
-            login_url = "https://wasrtc.hursley.ibm.com:9443/jazz/j_security_check"
-            
-            login_data = {
-                'j_username': self.username,
-                'j_password': self.password
-            }
-            
-            login_response = self.session.post(
-                login_url,
-                data=login_data,
-                timeout=30,
-                verify=False,
-                allow_redirects=True,
-                headers={
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Referer': 'https://wasrtc.hursley.ibm.com:9443/jazz/'
+        # Use lock to prevent multiple threads from authenticating simultaneously
+        with self._auth_lock:
+            try:
+                if not self.session:
+                    logger.debug("No session exists, creating new session")
+                    self.session = requests.Session()
+                    self.session.headers.update({
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                    })
+                
+                if not self.username or not self.password:
+                    logger.error("No Jazz/RTC credentials configured")
+                    return False
+                
+                # Jazz/RTC authentication endpoint
+                jazz_auth_url = "https://wasrtc.hursley.ibm.com:9443/jazz/authenticated/identity"
+                
+                # Step 1: Check if already authenticated (silent check)
+                try:
+                    initial_response = self.session.get(
+                        jazz_auth_url,
+                        timeout=10,
+                        verify=False,
+                        allow_redirects=True
+                    )
+                    
+                    # Check if already authenticated (got JSON)
+                    if initial_response.status_code == 200:
+                        content_type = initial_response.headers.get('content-type', '')
+                        if 'application/json' in content_type:
+                            try:
+                                data = initial_response.json()
+                                # Already authenticated - return silently
+                                return True
+                            except:
+                                pass
+                except:
+                    pass
+                
+                # Need to authenticate
+                logger.info("🔐 Authenticating with Jazz/RTC...")
+                
+                # Step 2: Submit login credentials
+                login_url = "https://wasrtc.hursley.ibm.com:9443/jazz/j_security_check"
+                
+                login_data = {
+                    'j_username': self.username,
+                    'j_password': self.password
                 }
-            )
-            
-            logger.info(f"Login response: status={login_response.status_code}, url={login_response.url}")
-            
-            # Step 3: Verify authentication
-            logger.info("Step 3: Verifying Jazz/RTC authentication...")
-            verify_response = self.session.get(
-                jazz_auth_url,
-                timeout=30,
-                verify=False,
-                allow_redirects=False
-            )
-            
-            if verify_response.status_code == 200:
-                content_type = verify_response.headers.get('content-type', '')
-                # Jazz/RTC returns 'text/json' instead of 'application/json'
-                if 'json' in content_type.lower():
-                    try:
-                        data = verify_response.json()
-                        user_id = data.get('userId', 'unknown')
-                        logger.info(f"✅ Jazz/RTC authenticated successfully as {user_id}")
-                        return True
-                    except Exception as e:
-                        logger.error(f"Failed to parse JSON: {e}")
-                        logger.error(f"Response: {verify_response.text[:300]}")
-            
-            logger.error(f"Jazz/RTC authentication failed - Status: {verify_response.status_code}")
-            logger.error(f"Content-Type: {verify_response.headers.get('content-type')}")
-            logger.error(f"Response preview: {verify_response.text[:300]}")
-            return False
-            
-            logger.warning("⚠️ Jazz/RTC authentication not possible - no credentials or session")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error authenticating with Jazz/RTC: {e}")
-            return False
+                
+                login_response = self.session.post(
+                    login_url,
+                    data=login_data,
+                    timeout=30,
+                    verify=False,
+                    allow_redirects=True,
+                    headers={
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Referer': 'https://wasrtc.hursley.ibm.com:9443/jazz/'
+                    }
+                )
+                
+                # Step 3: Verify authentication
+                verify_response = self.session.get(
+                    jazz_auth_url,
+                    timeout=30,
+                    verify=False,
+                    allow_redirects=False
+                )
+                
+                if verify_response.status_code == 200:
+                    content_type = verify_response.headers.get('content-type', '')
+                    # Jazz/RTC returns 'text/json' instead of 'application/json'
+                    if 'json' in content_type.lower():
+                        try:
+                            data = verify_response.json()
+                            user_id = data.get('userId', 'unknown')
+                            logger.info(f"✅ Jazz/RTC authenticated successfully as {user_id}")
+                            return True
+                        except Exception as e:
+                            logger.error(f"Failed to parse JSON: {e}")
+                
+                logger.error(f"Jazz/RTC authentication failed - Status: {verify_response.status_code}")
+                return False
+                
+            except Exception as e:
+                logger.error(f"Error authenticating with Jazz/RTC: {e}")
+                return False

@@ -53,37 +53,21 @@ class CookieMonitor:
         Returns:
             True if cookies appear to be expired
         """
-        # Check for common signs of expired cookies
+        # ONLY check for DEFINITE signs of expired cookies
+        # Be conservative to avoid false positives
+        
+        # Check for 401 Unauthorized
         if response.status_code == 401:
-            logger.warning("🔴 401 Unauthorized - Cookies may be expired")
+            logger.warning("🔴 401 Unauthorized - Cookies expired")
             return True
         
-        if response.status_code == 403:
-            logger.warning("🔴 403 Forbidden - Cookies may be expired")
+        # Check if redirected to IBM login page (very specific check)
+        if "login.w3.ibm.com" in response.url.lower():
+            logger.warning("🔴 Redirected to IBM login page - Cookies expired")
             return True
         
-        # Check if redirected to login page
-        if "login" in response.url.lower() or "w3id" in response.url.lower():
-            logger.warning("🔴 Redirected to login - Cookies expired")
-            return True
-        
-        # ONLY check for authentication errors in HTML responses (not JSON data)
-        # This prevents false positives from defect descriptions containing auth keywords
-        try:
-            content_type = response.headers.get('Content-Type', '').lower()
-            
-            # Only check HTML responses for auth errors (not JSON API responses)
-            if 'text/html' in content_type:
-                response_text_lower = response.text.lower()
-                
-                # Check for IBM-specific login/auth pages
-                if any(keyword in response_text_lower for keyword in
-                      ['w3id on ibm', 'ibm w3id', 'two-step verification',
-                       'choose a method of authentication', 'session has expired']):
-                    logger.warning("🔴 IBM authentication page detected - Cookies expired")
-                    return True
-        except:
-            pass
+        # Don't check response content - too many false positives
+        # Let the system work with existing cookies until they truly expire
         
         return False
     

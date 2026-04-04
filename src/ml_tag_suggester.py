@@ -210,21 +210,59 @@ class MLTagSuggester:
             
             logger.info(f"📊 Training data distribution: {dict(tag_counts)}")
             
-            # Check if we can use stratified split (need at least 2 samples per class)
+            # Check if we can use balanced test set (10 samples per class)
             min_class_count = min(tag_counts.values())
+            samples_per_class = 10
             
             # Split data for validation
-            try:
-                # Try stratified split first
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X_texts, y_labels, test_size=0.2, random_state=42, stratify=y_labels
-                )
-            except ValueError:
-                # Fall back to random split if stratification fails
-                logger.warning(f"⚠️ Cannot use stratified split (some classes have <2 samples), using random split")
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X_texts, y_labels, test_size=0.2, random_state=42
-                )
+            if min_class_count >= samples_per_class + 2:  # Need at least 12 samples per class
+                # Use balanced test set: 10 samples from each class
+                logger.info(f"📊 Using balanced test set: {samples_per_class} samples per class")
+                
+                # Separate data by class
+                X_by_class = {tag: [] for tag in self.tag_mapping.values()}
+                y_by_class = {tag: [] for tag in self.tag_mapping.values()}
+                
+                for x, y in zip(X_texts, y_labels):
+                    X_by_class[y].append(x)
+                    y_by_class[y].append(y)
+                
+                # Take 10 samples from each class for testing
+                X_test = []
+                y_test = []
+                X_train = []
+                y_train = []
+                
+                for tag in self.tag_mapping.values():
+                    # Use FIXED indices (no shuffle) for consistent test set
+                    # Always use the FIRST 10 samples of each class for testing
+                    # This ensures the test set never changes as we add more data
+                    indices = list(range(len(X_by_class[tag])))
+                    
+                    # Test: ALWAYS first 10 samples (fixed)
+                    test_indices = indices[:samples_per_class]
+                    train_indices = indices[samples_per_class:]
+                    
+                    X_test.extend([X_by_class[tag][i] for i in test_indices])
+                    y_test.extend([y_by_class[tag][i] for i in test_indices])
+                    X_train.extend([X_by_class[tag][i] for i in train_indices])
+                    y_train.extend([y_by_class[tag][i] for i in train_indices])
+                
+                logger.info(f"   Test set: {len(X_test)} samples ({samples_per_class} per class)")
+                logger.info(f"   Train set: {len(X_train)} samples")
+            else:
+                # Fall back to stratified split if not enough samples
+                logger.info(f"⚠️ Not enough samples for balanced test set (need {samples_per_class+2} per class)")
+                logger.info(f"   Using stratified 80/20 split instead")
+                try:
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X_texts, y_labels, test_size=0.2, random_state=42, stratify=y_labels
+                    )
+                except ValueError:
+                    logger.warning(f"⚠️ Cannot use stratified split, using random split")
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X_texts, y_labels, test_size=0.2, random_state=42
+                    )
             
             # Don't use SMOTE - it creates unrealistic synthetic samples
             # Instead: optimize Random Forest with careful hyperparameters
