@@ -13,6 +13,9 @@ services:
       - ./src:/app/src
       - ./templates:/app/templates
       - ./static:/app/static
+      # Persist Playwright browser data (CRITICAL for avoiding repeated 2FA)
+      - playwright-cache:/root/.cache/ms-playwright
+      - playwright-config:/root/.config
       # Mount Chrome profile for cookie access (Linux)
       - ${HOME}/.config/google-chrome:/root/.config/google-chrome:ro
       # Mount Chrome profile for cookie access (macOS)
@@ -28,6 +31,12 @@ services:
       start_period: 40s
     networks:
       - defect-monitor-network
+
+volumes:
+  # Named volumes to persist Playwright browser data across container restarts
+  # This prevents IBM from asking for 2FA every time
+  playwright-cache:
+  playwright-config:
 
 networks:
   defect-monitor-network:

@@ -63,16 +63,25 @@ class CookieMonitor:
             return True
         
         # Check if redirected to login page
-        if "login" in response.url.lower():
+        if "login" in response.url.lower() or "w3id" in response.url.lower():
             logger.warning("🔴 Redirected to login - Cookies expired")
             return True
         
-        # Check for authentication error messages
+        # ONLY check for authentication errors in HTML responses (not JSON data)
+        # This prevents false positives from defect descriptions containing auth keywords
         try:
-            if response.text and any(keyword in response.text.lower() for keyword in 
-                                    ['authentication', 'unauthorized', 'session expired', 'please log in']):
-                logger.warning("🔴 Authentication error detected - Cookies expired")
-                return True
+            content_type = response.headers.get('Content-Type', '').lower()
+            
+            # Only check HTML responses for auth errors (not JSON API responses)
+            if 'text/html' in content_type:
+                response_text_lower = response.text.lower()
+                
+                # Check for IBM-specific login/auth pages
+                if any(keyword in response_text_lower for keyword in
+                      ['w3id on ibm', 'ibm w3id', 'two-step verification',
+                       'choose a method of authentication', 'session has expired']):
+                    logger.warning("🔴 IBM authentication page detected - Cookies expired")
+                    return True
         except:
             pass
         
