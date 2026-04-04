@@ -642,6 +642,7 @@ class DefectScheduler:
     def run_team_check(self, team: dict):
         """
         Run defect check for a specific team
+        Uses cached data from daily background fetch (13:24) instead of re-fetching
         Each team has its own components, webhook, and schedule
         """
         try:
@@ -657,8 +658,23 @@ class DefectScheduler:
                 logger.warning(f"No components configured for team {team_name}")
                 return
             
-            # Check defects for team's components (with team-specific checkpoint)
-            results = self.defect_checker.check_monitored_components(team_components, self.database, team_name=team_name)
+            # Extract component names from team config
+            component_names = [c.get("name") for c in team_components if c.get("name")]
+            
+            if not component_names:
+                logger.warning(f"No valid component names for team {team_name}")
+                return
+            
+            # Try to get cached data from daily background fetch (13:24)
+            logger.info(f"📦 Retrieving cached data for {len(component_names)} components...")
+            results = self.database.get_team_snapshot_from_cache(component_names)
+            
+            if not results:
+                # Fallback: If no cached data, fetch fresh data
+                logger.warning(f"⚠️  No cached data found for {team_name}, fetching fresh data...")
+                results = self.defect_checker.check_monitored_components(team_components, self.database, team_name=team_name)
+            else:
+                logger.info(f"✅ Using cached data from daily background fetch (13:24)")
             
             # Store check history
             self.database.store_check_history(results, True)

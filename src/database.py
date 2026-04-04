@@ -759,6 +759,79 @@ class DefectDatabase:
             logger.error(f"Error getting latest all components snapshot: {e}")
             return None
     
+    def get_team_snapshot_from_cache(self, component_names: List[str]) -> Optional[Dict]:
+        """
+        Get the most recent snapshot data for team components from all_components_snapshots
+        Returns full data including defects with ML predictions and duplicate info
+        This is used by team notifications to avoid re-fetching from Build Break Report
+        Returns data in format compatible with slack_notifier (components as dict, not list)
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            if not component_names:
+                return None
+            
+            placeholders = ','.join('?' * len(component_names))
+            query = f"""
+                SELECT component, data
+                FROM all_components_snapshots
+                WHERE date = (SELECT MAX(date) FROM all_components_snapshots)
+                AND component IN ({placeholders})
+            """
+            cursor.execute(query, component_names)
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if not rows:
+                logger.warning(f"No cached snapshot found for components: {component_names}")
+                return None
+            
+            # Build results structure compatible with slack_notifier
+            # Components should be a DICT with component names as keys
+            components_dict = {}
+            monitored_components = []
+            total_defects = 0
+            total_untriaged = 0
+            
+            for component, data_json in rows:
+                data = json.loads(data_json)
+                
+                # Add to components dict (for slack_notifier)
+                components_dict[component] = {
+                    "component": component,
+                    "total": data.get("total", 0),
+                    "untriaged": data.get("untriaged", 0),
+                    "test_bugs": data.get("test_bugs", 0),
+                    "product_bugs": data.get("product_bugs", 0),
+                    "infra_bugs": data.get("infra_bugs", 0),
+                    "defects": data.get("defects", [])  # Includes ML predictions and duplicate info
+                }
+                
+                # Also add to monitored_components list (for compatibility)
+                monitored_components.append(components_dict[component])
+                
+                total_defects += data.get("total", 0)
+                total_untriaged += data.get("untriaged", 0)
+            
+            results = {
+                "components": components_dict,  # Dict format for slack_notifier
+                "monitored_components": monitored_components,  # List format for compatibility
+                "total_defects": total_defects,
+                "total_untriaged": total_untriaged,
+                "timestamp": datetime.now().isoformat(),
+                "from_cache": True  # Flag to indicate this is from cache
+            }
+            
+            logger.info(f"✅ Retrieved cached snapshot for {len(components_dict)} components")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error getting team snapshot from cache: {e}")
+            return None
+    
     def store_check_history(self, results: Dict, success: bool, error_message: Optional[str] = None):
         """Store check history"""
         try:

@@ -195,8 +195,14 @@ class DefectChecker:
         """
         for attempt in range(max_retries):
             try:
+                # Get session and authenticate with Jazz/RTC if needed
                 session = self.authenticator.get_session()
                 if not session:
+                    return {}
+                
+                # Authenticate with Jazz/RTC (uses same session)
+                if not self.authenticator.authenticate_jazz_rtc():
+                    logger.warning(f"Jazz/RTC authentication failed for defect {defect_id}")
                     return {}
                 
                 # Jazz/RTC work item URL
@@ -213,32 +219,35 @@ class DefectChecker:
                 if response.status_code == 200:
                     data = response.json()
                     
-                    # Try multiple field name variations for creation date
-                    created = (data.get('dcterms:created') or
-                              data.get('created') or
-                              data.get('rtc_cm:created') or
-                              data.get('creationDate') or
-                              data.get('creation_date') or
-                              '')
+                    # Extract fields using correct Jazz/RTC field names
+                    # Based on actual API response: dc:created, dc:description, dc:modified, dc:creator
+                    created = data.get('dc:created', '')
+                    description = str(data.get('dc:description', ''))
+                    modified = data.get('dc:modified', '')
                     
-                    # Debug: Log the keys to see what fields are available
-                    if defect_id == '308598':  # Log for one sample defect
-                        logger.info(f"DEBUG - API response keys for defect {defect_id}: {list(data.keys())[:30]}")
-                        logger.info(f"DEBUG - created field value: {created}")
-                        # Log all keys containing 'creat' or 'date'
-                        date_keys = [k for k in data.keys() if 'creat' in k.lower() or 'date' in k.lower()]
-                        logger.info(f"DEBUG - Keys with 'creat' or 'date': {date_keys}")
-                        for key in date_keys:
-                            logger.info(f"DEBUG - {key}: {data.get(key)}")
+                    # Creator is a nested object with rdf:resource
+                    creator_obj = data.get('dc:creator', {})
+                    creator = creator_obj.get('rdf:resource', '') if isinstance(creator_obj, dict) else ''
                     
-                    # Extract relevant fields
+                    # State is nested under rtc_cm:state
+                    state_obj = data.get('rtc_cm:state', {})
+                    state = state_obj.get('rdf:resource', '') if isinstance(state_obj, dict) else ''
+                    
+                    # Log success
+                    if description or created:
+                        logger.info(f"✅ Fetched details for {defect_id}: desc={len(description)} chars, created={created[:10] if created else 'N/A'}")
+                    else:
+                        logger.warning(f"⚠️  Defect {defect_id}: API returned 200 but no description/created")
+                    
                     return {
-                        'description': str(data.get('dcterms:description', data.get('description', ''))),
+                        'description': description,
                         'created': created,
-                        'modified': data.get('dcterms:modified', data.get('modified', '')),
-                        'creator': data.get('dcterms:creator', {}).get('foaf:name', ''),
-                        'state': data.get('rtc_cm:state', {}).get('dcterms:title', '')
+                        'modified': modified,
+                        'creator': creator,
+                        'state': state
                     }
+                else:
+                    logger.warning(f"⚠️  Failed to fetch {defect_id}: HTTP {response.status_code}")
                 
                 return {}
                 
@@ -523,6 +532,15 @@ class DefectChecker:
                 elif isinstance(owner_raw, str):
                     owned_by = owner_raw
                 
+                # Extract tags from dc:subject field
+                tags_raw = item.get('dc:subject', item.get('dcterms:subject', item.get('tags', [])))
+                tags = []
+                if isinstance(tags_raw, list):
+                    tags = [str(tag).strip() for tag in tags_raw if tag]
+                elif isinstance(tags_raw, str):
+                    # Single tag as string
+                    tags = [tags_raw.strip()] if tags_raw.strip() else []
+                
                 # Filter by monitored components if provided (matches Chrome extension logic)
                 if monitored_components:
                     # Match by functionalArea field (case-insensitive)
@@ -546,6 +564,8 @@ class DefectChecker:
                     "creationDate": formatted_date,
                     "ownedBy": owned_by,
                     "description": description,
+                    "tags": tags,  # Add tags for triage detection
+                    "triageTags": tags,  # Also add as triageTags for compatibility
                     "source": "SOE_TRIAGE"
                 })
                 
@@ -664,66 +684,68 @@ class DefectChecker:
                 }
             }
         
-        # Fetch descriptions for untriaged defects and all defects (for duplicate checking)
-        # Use caching to avoid re-fetching descriptions
-        if untriaged_defects:
+        # SMART DAILY OPERATION: Use cache + fetch only NEW defects
+        # Most defects are cached from weekly ML training (Thursday 12:17 PM)
+        # Only fetch descriptions for NEW defects (typically 5-10 per day)
+        logger.debug(f"📋 Component {component}: {len(all_defects_for_dup_check)} total defects, {len(untriaged_defects)} untriaged")
+        
+        if all_defects_for_dup_check and self.database:
             # Collect all defect IDs
-            untriaged_ids = [str(d.get('id')) for d in untriaged_defects if d.get('id')]
             all_ids = [str(d.get('id')) for d in all_defects_for_dup_check if d.get('id')]
             
-            # Try to get cached descriptions first
-            cached_descriptions = {}
-            ids_to_fetch = []
+            # Check cache first
+            logger.debug(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
+            cached_descriptions = self.database.get_cached_descriptions(all_ids)
             
-            if self.database:
-                logger.info(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
-                cached_descriptions = self.database.get_cached_descriptions(all_ids)
-                
-                # Determine which IDs need to be fetched
-                ids_to_fetch = [id for id in all_ids if id not in cached_descriptions]
-                
-                if cached_descriptions:
-                    logger.info(f"✅ Found {len(cached_descriptions)} cached descriptions")
-                if ids_to_fetch:
-                    logger.info(f"📥 Need to fetch {len(ids_to_fetch)} new descriptions...")
-            else:
-                # No database, fetch all
-                ids_to_fetch = all_ids
+            # Identify NEW defects (not in cache)
+            ids_to_fetch = [id for id in all_ids if id not in cached_descriptions]
             
-            # Fetch missing details (description + creation date) in parallel
+            if cached_descriptions:
+                logger.debug(f"✅ Found {len(cached_descriptions)} cached descriptions")
+            
+            # Fetch descriptions for NEW defects only (fast - typically 5-10 defects)
             newly_fetched_details = {}
             if ids_to_fetch:
-                newly_fetched_details = self.fetch_details_parallel(ids_to_fetch, max_workers=5)
+                logger.info(f"📥 Fetching descriptions for {len(ids_to_fetch)} NEW defects...")
+                newly_fetched_details = self.fetch_details_parallel(ids_to_fetch, max_workers=3)
                 
                 # Cache the newly fetched details
-                if self.database and newly_fetched_details:
+                if newly_fetched_details:
                     defects_to_cache = []
                     for defect_id, details in newly_fetched_details.items():
-                        # Find the defect in all_defects_for_dup_check to get full info
-                        defect_info = next((d for d in all_defects_for_dup_check if str(d.get('id')) == defect_id), None)
-                        if defect_info:
-                            defect_info['description'] = details.get('description', '')
-                            defect_info['creation_date'] = details.get('created', '')
-                            defect_info['component'] = component
-                            defects_to_cache.append(defect_info)
+                        description = details.get('description', '')
+                        creation_date = details.get('created', '')
+                        
+                        # Only cache if we got actual data
+                        if description or creation_date:
+                            # Find the defect to get full info
+                            defect_info = next((d for d in all_defects_for_dup_check if str(d.get('id')) == defect_id), None)
+                            if defect_info:
+                                defect_info['description'] = description
+                                defect_info['creation_date'] = creation_date
+                                defect_info['component'] = component
+                                defects_to_cache.append(defect_info)
                     
                     if defects_to_cache:
                         self.database.cache_defect_descriptions(defects_to_cache)
-            
-            # Convert newly_fetched_details to description format for backward compatibility
-            newly_fetched = {defect_id: details.get('description', '') for defect_id, details in newly_fetched_details.items()}
+                        logger.info(f"✅ Cached {len(defects_to_cache)} new defects")
             
             # Combine cached and newly fetched descriptions
-            all_descriptions = {**cached_descriptions, **newly_fetched}
+            all_descriptions = {**cached_descriptions}
+            for defect_id, details in newly_fetched_details.items():
+                all_descriptions[defect_id] = {
+                    'description': details.get('description', ''),
+                    'creation_date': details.get('created', '')
+                }
             
             # Apply descriptions to untriaged defects
             for defect in untriaged_defects:
                 defect_id = str(defect.get('id'))
                 if defect_id in all_descriptions:
                     desc_data = all_descriptions[defect_id]
-                    # Handle both dict (from cache) and string (from fetch)
                     if isinstance(desc_data, dict):
                         defect['description'] = desc_data.get('description', '')
+                        defect['creation_date'] = desc_data.get('creation_date', '')
                     else:
                         defect['description'] = desc_data
                 else:
@@ -734,18 +756,17 @@ class DefectChecker:
                 defect_id = str(defect.get('id'))
                 if defect_id in all_descriptions:
                     desc_data = all_descriptions[defect_id]
-                    # Handle both dict (from cache) and string (from fetch)
                     if isinstance(desc_data, dict):
                         defect['description'] = desc_data.get('description', '')
-                        # Update triageTags from cache if available (for duplicate detection)
+                        defect['creation_date'] = desc_data.get('creation_date', '')
+                        # Update triageTags from cache if available
                         if 'triageTags' in desc_data and desc_data['triageTags']:
-                            # Always use cached tags if they exist (they're authoritative)
                             defect['triageTags'] = desc_data['triageTags']
                     else:
                         defect['description'] = desc_data
-            
-            
-            for defect in untriaged_defects:
+        
+        # Process untriaged defects with ML suggestions and duplicate detection
+        for defect in untriaged_defects:
                 # Check for duplicates FIRST
                 duplicate_info = self.duplicate_detector.check_defect_for_duplicates(
                     defect,
@@ -820,7 +841,8 @@ class DefectChecker:
     def train_ml_model_on_all_components(self, all_components: List[str]) -> bool:
         """
         Train ML model on ALL triaged defects across ALL components
-        This provides much better training data (1200+ defects) than per-component training
+        ALSO fetches and caches descriptions for ALL defects (triaged + untriaged)
+        This is the COMPREHENSIVE data fetch that happens weekly (Thursday 12:17 PM)
         
         Args:
             all_components: List of all component names to fetch
@@ -830,81 +852,122 @@ class DefectChecker:
         """
         try:
             logger.info("=" * 70)
-            logger.info("🎓 TRAINING ML MODEL ON ALL COMPONENTS")
+            logger.info("🎓 WEEKLY ML TRAINING + COMPREHENSIVE DATA FETCH")
             logger.info("=" * 70)
-            logger.info(f"Fetching triaged defects from {len(all_components)} components...")
+            logger.info(f"Fetching ALL defects from {len(all_components)} components...")
+            logger.info("This will take time but ensures complete data for the week")
             
             all_triaged_defects = []
+            all_defects_for_caching = []  # ALL defects (triaged + untriaged)
             
-            # Fetch defects from all components and collect triaged ones
+            # Fetch defects from all components
             for i, component in enumerate(all_components, 1):
                 try:
                     logger.info(f"[{i}/{len(all_components)}] Fetching {component}...")
                     defects = self.fetch_defects_for_component(component)
                     
                     if defects:
-                        # Parse with collect_triaged=True to get triaged defects
+                        # Store ALL defects for comprehensive caching
+                        for defect in defects:
+                            defect['component'] = component  # Add component info
+                        all_defects_for_caching.extend(defects)
+                        
+                        # Parse with collect_triaged=True to get triaged defects for ML training
                         parsed = self.parse_defects(defects, component, collect_triaged=True)
                         triaged = parsed.get("triaged_defects", [])
                         
                         if triaged:
                             all_triaged_defects.extend(triaged)
-                            logger.info(f"   ✓ Found {len(triaged)} triaged defects")
+                            logger.info(f"   ✓ Found {len(defects)} total defects ({len(triaged)} triaged)")
                         else:
-                            logger.debug(f"   - No triaged defects")
+                            logger.info(f"   ✓ Found {len(defects)} total defects (0 triaged)")
                 
                 except Exception as e:
                     logger.warning(f"   ✗ Error fetching {component}: {e}")
                     continue
             
             logger.info("=" * 70)
-            logger.info(f"📊 Collected {len(all_triaged_defects)} triaged defects across all components")
+            logger.info(f"📊 Collected {len(all_defects_for_caching)} TOTAL defects ({len(all_triaged_defects)} triaged)")
             logger.info("=" * 70)
             
-            # Fetch descriptions AND creation dates for triaged defects (for better ML training)
-            if all_triaged_defects:
-                    # Collect IDs that need descriptions (check for empty or missing descriptions)
-                    ids_needing_desc = [
-                        str(d.get('id')) for d in all_triaged_defects
-                        if d.get('id') and not d.get('description')  # Check if description is empty or missing
-                    ]
+            # Cache basic defect info first, then fetch descriptions from Jazz/RTC
+            if all_defects_for_caching and self.database:
+                logger.info(f"💾 Caching basic defect info for {len(all_defects_for_caching)} defects...")
+                
+                # Cache all defects with basic info
+                self.database.cache_defect_descriptions(all_defects_for_caching)
+                logger.info(f"   ✅ Cached {len(all_defects_for_caching)} defects to database")
+                
+                # Now fetch descriptions from Jazz/RTC API
+                logger.info(f"🔍 Fetching descriptions from Jazz/RTC API for {len(all_defects_for_caching)} defects...")
+                logger.info("   This may take a few minutes...")
+                
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                import time
+                
+                fetched_count = 0
+                failed_count = 0
+                
+                # Fetch descriptions in parallel (5 workers)
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    future_to_defect = {
+                        executor.submit(self.fetch_defect_details, str(d.get('id'))): d
+                        for d in all_defects_for_caching
+                    }
                     
-                    if ids_needing_desc:
-                        logger.info(f"📥 Fetching descriptions + creation dates for {len(ids_needing_desc)} triaged defects in parallel...")
-                        logger.info("   (Using 3 parallel workers for stable authentication...)")
-                        
-                        # Fetch full details (description + creation_date) in parallel
-                        details_map = self.fetch_details_parallel(ids_needing_desc, max_workers=3)
-                        
-                        # Apply descriptions and creation dates to defects
-                        for defect in all_triaged_defects:
-                            defect_id = str(defect.get('id'))
-                            if defect_id in details_map:
-                                details = details_map[defect_id]
-                                defect['description'] = details.get('description', '')
-                                defect['creation_date'] = details.get('created', '')
-                                # Add component for caching
-                                if 'component' not in defect:
-                                    defect['component'] = defect.get('functional_area', 'Unknown')
-                        
-                        # Cache the fetched descriptions + creation dates to database
-                        if self.database and details_map:
-                            logger.info(f"   💾 Caching {len(details_map)} descriptions + creation dates to database...")
-                            self.database.cache_defect_descriptions(all_triaged_defects)
-                        
-                        logger.info(f"   ✅ Fetched descriptions + creation dates for all {len(ids_needing_desc)} defects")
-                        logger.info("=" * 70)
-                    else:
-                        logger.info("   ℹ️  All triaged defects already have descriptions (from cache or previous fetch)")
+                    for future in as_completed(future_to_defect):
+                        defect = future_to_defect[future]
+                        try:
+                            details = future.result(timeout=90)
+                            if details and details.get('description'):
+                                # Update defect with fetched details
+                                defect['description'] = details['description']
+                                defect['created'] = details.get('created', '')
+                                fetched_count += 1
+                            else:
+                                failed_count += 1
+                        except Exception as e:
+                            logger.debug(f"Failed to fetch details for {defect.get('id')}: {e}")
+                            failed_count += 1
+                
+                logger.info(f"   ✅ Fetched descriptions: {fetched_count}/{len(all_defects_for_caching)}")
+                if failed_count > 0:
+                    logger.warning(f"   ⚠️  Failed to fetch: {failed_count}/{len(all_defects_for_caching)}")
+                
+                # Update database with fetched descriptions
+                if fetched_count > 0:
+                    logger.info(f"💾 Updating database with fetched descriptions...")
+                    self.database.cache_defect_descriptions(all_defects_for_caching)
+                    logger.info(f"   ✅ Updated {fetched_count} defects with descriptions")
+                
+                logger.info("=" * 70)
+                
+                # Apply descriptions and tags to triaged defects for ML training
+                for triaged_defect in all_triaged_defects:
+                    defect_id = str(triaged_defect.get('id'))
+                    for full_defect in all_defects_for_caching:
+                        if str(full_defect.get('id')) == defect_id:
+                            triaged_defect['description'] = full_defect.get('description', '')
+                            triaged_defect['creation_date'] = full_defect.get('created', '')
+                            # Copy tags from Build Break Report if not already present
+                            if not triaged_defect.get('triageTags'):
+                                triaged_defect['triageTags'] = full_defect.get('tags', [])
+                            break
             
             if len(all_triaged_defects) < 10:
                 logger.warning(f"⚠️  Not enough triaged defects for training (need at least 10, got {len(all_triaged_defects)})")
                 return False
             
-            # Train the ML model
-            if self.tag_suggester.train_from_defects(all_triaged_defects):
+            # Train the ML model with incremental learning
+            logger.info("=" * 70)
+            logger.info("🤖 Training ML model with incremental learning...")
+            logger.info("=" * 70)
+            
+            if self.tag_suggester.train_from_defects(all_triaged_defects, incremental=True):
                 logger.info("=" * 70)
-                logger.info("✅ ML MODEL TRAINING COMPLETE")
+                logger.info("✅ WEEKLY ML TRAINING + DATA CACHING COMPLETE")
+                logger.info("   • ML model trained with incremental learning")
+                logger.info(f"   • {len(all_defects_for_caching)} defects cached for fast daily operations")
                 logger.info("=" * 70)
                 return True
             else:
@@ -912,7 +975,7 @@ class DefectChecker:
                 return False
                 
         except Exception as e:
-            logger.error(f"Error training ML model: {e}")
+            logger.error(f"Error in ML training + data fetch: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False

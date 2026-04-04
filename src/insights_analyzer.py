@@ -112,63 +112,62 @@ class InsightsAnalyzer:
         rare_defects = []
         
         try:
-            # Find defects with number_builds == 1 AND are older than 2 weeks
+            # Find defects with number_builds == 1 AND have creation_date
             for defect in defects:
                 defect_id = defect['id']
                 # Use the number_builds field from Build Break Report API
                 build_count = defect.get('number_builds', 0)
                 
                 if build_count == 1:
-                    # Get creation date from cached defect data (fetched during background check)
+                    # Get creation date from cached defect data
                     creation_date = defect.get('creation_date')
+                    
+                    # Skip if no creation date (can't determine age)
+                    if not creation_date:
+                        continue
+                    
                     age_info = "old defect"
                     days_old = None
                     
-                    # Parse creation date if available
-                    if creation_date:
-                        try:
-                            # Try different date formats
-                            for fmt in ['%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d']:
-                                try:
-                                    # Clean up the date string
-                                    clean_date = creation_date.split('+')[0].split('.')[0]
-                                    if 'T' not in clean_date:
-                                        clean_date = creation_date  # It's just a date
-                                    
-                                    created_dt = datetime.strptime(clean_date, fmt.replace('.%fZ', '').replace('Z', ''))
-                                    days_old = (datetime.now() - created_dt).days
-                                    
-                                    # Calculate age info
-                                    if days_old < 7:
-                                        age_info = f"{days_old} days old"
-                                    elif days_old < 30:
-                                        weeks_old = days_old // 7
-                                        age_info = f"{weeks_old} week{'s' if weeks_old > 1 else ''} old"
-                                    else:
-                                        months_old = days_old // 30
-                                        age_info = f"{months_old} month{'s' if months_old > 1 else ''} old"
-                                    break
-                                except ValueError:
-                                    continue
-                        except Exception as e:
-                            logger.debug(f"Could not parse creation date for {defect_id}: {e}")
-                    
-                    # If no creation date available, we can't determine age
-                    # Skip this defect as we need age to filter for "older than 2 weeks"
-                    if days_old is None:
-                        logger.debug(f"Skipping defect {defect_id} - no creation date available")
+                    # Parse creation date
+                    try:
+                        # Try different date formats
+                        for fmt in ['%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d']:
+                            try:
+                                # Clean up the date string
+                                clean_date = creation_date.split('+')[0].split('.')[0]
+                                if 'T' not in clean_date:
+                                    clean_date = creation_date  # It's just a date
+                                
+                                created_dt = datetime.strptime(clean_date, fmt.replace('.%fZ', '').replace('Z', ''))
+                                days_old = (datetime.now() - created_dt).days
+                                
+                                # Calculate age info
+                                if days_old < 7:
+                                    age_info = f"{days_old} days old"
+                                elif days_old < 30:
+                                    weeks_old = days_old // 7
+                                    age_info = f"{weeks_old} week{'s' if weeks_old > 1 else ''} old"
+                                else:
+                                    months_old = days_old // 30
+                                    age_info = f"{months_old} month{'s' if months_old > 1 else ''} old"
+                                break
+                            except ValueError:
+                                continue
+                    except Exception as e:
+                        logger.debug(f"Could not parse creation date for {defect_id}: {e}")
                         continue
                     
                     # Only include if defect is older than 14 days (2 weeks)
-                    if days_old >= 14:
+                    if days_old is not None and days_old >= 30:
                         rare_defects.append({
                             'id': defect_id,
                             'summary': defect['summary'],
                             'tag': defect.get('tags', ['unknown'])[0] if defect.get('tags') else 'unknown',
-                            'build_count': build_count,  # Number of reported builds from API
+                            'build_count': build_count,
                             'age_info': age_info,
                             'days_old': days_old,
-                            'creation_date': creation_date or 'Unknown'
+                            'creation_date': creation_date
                         })
                         
                         logger.debug(f"Found rare old defect: {defect_id}, created: {creation_date}, age: {days_old} days, builds: {build_count}")
