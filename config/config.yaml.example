@@ -16,11 +16,18 @@ slack:
 ml_training:
   # Components to use for training the ML model
   # If empty or not specified, will use all_components
-  training_components: []
+  # For testing: Use 3-6 components with good data
+  training_components:
+    - "Batch"
+    - "JPA"
+    - "Bean Validation"
+    - "Classloading"
+    - "Build"
+    - "JCA"
   
-  # Weekly retraining schedule
+  # Weekly retraining schedule - INCREMENTAL LEARNING (preserves old data + adds new)
   retrain_day: "thursday"  # Day of week for retraining
-  retrain_time: "10:00"    # Time in HH:MM format (IST)
+  retrain_time: "12:17"    # Time in HH:MM format (IST) - Weekly retraining on Thursday
 
 # Team-based monitoring (NEW!)
 # Each team has its own components, schedule, and Slack webhook
@@ -29,14 +36,12 @@ teams:
     components:
       - name: "Batch"
         notify: true
-      - name: "Messaging"
-        notify: true
-    check_time: "10:00"  # HH:MM format (IST)
-    skip_weekends: true  # Skip Saturday and Sunday
+    check_time: "14:30"  # HH:MM format (IST)
+    skip_weekends: false  # Set to true to skip Saturday and Sunday
     webhook_url: "https://hooks.slack.com/triggers/YOUR/TEAM1/WEBHOOK"
     slack_channel: "#team1-defects"
-    weekly_dashboard_day: "friday"   # Send weekly dashboard every Friday
-    weekly_dashboard_time: "17:00"   # At 5:00 PM IST
+    weekly_dashboard_day: "saturday"   # Send weekly dashboard every Saturday
+    weekly_dashboard_time: "14:24"     # At 2:24 PM IST
 
   - name: "Team 2"
     components:
@@ -46,18 +51,33 @@ teams:
         notify: true
       - name: "Bean Validation"
         notify: true
-    check_time: "10:30"  # Different time for this team
-    skip_weekends: true
+    check_time: "14:29"  # Different time for this team
+    skip_weekends: false
     webhook_url: "https://hooks.slack.com/triggers/YOUR/TEAM2/WEBHOOK"
     slack_channel: "#team2-defects"
-    weekly_dashboard_day: "friday"
-    weekly_dashboard_time: "17:00"
+    weekly_dashboard_day: "saturday"   # Send weekly dashboard every Saturday
+    weekly_dashboard_time: "14:25"     # At 2:25 PM IST
+
+  # Example: Database Team (commented out)
+  # - name: "Database Team"
+  #   components:
+  #     - name: "Database (jdbc, oracle, db2, derby)"
+  #       notify: true
+  #     - name: "JPA"
+  #       notify: true
+  #   check_time: "14:00"  # Afternoon check
+  #   skip_weekends: true
+  #   webhook_url: "https://hooks.slack.com/triggers/YOUR/DATABASE/WEBHOOK"
+  #   slack_channel: "#database-defects"
 
 # Legacy monitored components (used if teams not configured)
-# monitored_components:
-#   - name: "Spring Boot"
-#     notify: true
-#     slack_channel: "#springboot-defects"
+#monitored_components:
+#  - name: "Spring Boot"
+#    notify: true
+#    slack_channel: "#springboot-defects"
+#  - name: "JCA"
+#    notify: true
+#    slack_channel: "#jca-defects"
 
 all_components:
   - AdminCenter
@@ -115,13 +135,20 @@ all_components:
 schedule:
   # Legacy daily check (used if teams not configured)
   # daily_check_time: "10:00"  # HH:MM format (IST)
-  # skip_weekends: true
+  # skip_weekends: true  # Skip Saturday and Sunday
   
   # Dashboard and background tasks
-  all_components_fetch_time: "09:00"  # Background fetch for dashboard (runs before team checks)
+  # Daily background fetch uses CACHED data from ML training (fast, no API calls)
+  all_components_fetch_time: "14:15"  # Background fetch for dashboard (optimized - no ML/duplicate detection)
   
   # For testing: specify components to fetch (if empty, fetches all_components)
-  test_components: []
+  test_components:
+    - "Batch"
+    - "JPA"
+    - "Bean Validation"
+    - "Classloading"
+    - "Build"
+    - "JCA"
   
   timezone: "Asia/Kolkata"
 
@@ -147,5 +174,3 @@ notifications:
 
 logging:
   level: "INFO"
-
-  
