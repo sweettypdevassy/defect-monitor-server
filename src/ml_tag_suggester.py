@@ -161,16 +161,25 @@ class MLTagSuggester:
             # Combine old and new training data
             all_training_data = previous_training_data + triaged_defects
             
-            # Remove duplicates based on defect ID
+            # Remove duplicates based on defect ID (normalize to string for comparison)
             seen_ids = set()
             unique_training_data = []
+            duplicates_removed = 0
+            
             for defect in all_training_data:
                 defect_id = defect.get('id')
-                if defect_id and defect_id not in seen_ids:
-                    seen_ids.add(defect_id)
-                    unique_training_data.append(defect)
+                if defect_id:
+                    # Normalize ID to string for consistent comparison
+                    normalized_id = str(defect_id)
+                    if normalized_id not in seen_ids:
+                        seen_ids.add(normalized_id)
+                        unique_training_data.append(defect)
+                    else:
+                        duplicates_removed += 1
             
             logger.info(f"🎓 Incremental training: {len(previous_training_data)} old + {len(triaged_defects)} new = {len(unique_training_data)} total unique samples")
+            if duplicates_removed > 0:
+                logger.info(f"   🗑️  Removed {duplicates_removed} duplicate defects")
             
             # Prepare training data from combined dataset
             X_texts = []

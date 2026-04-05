@@ -15,7 +15,6 @@ class BrowserManager:
     """Manages a persistent Playwright browser session"""
     
     _instance = None
-    _lock = asyncio.Lock()
     
     def __new__(cls):
         if cls._instance is None:
@@ -37,37 +36,36 @@ class BrowserManager:
     
     async def start(self, username: str, password: str, user_data_dir: str = "/app/data/chrome_profile"):
         """Start the persistent browser session"""
-        async with self._lock:
-            if self.context:
-                # Browser already running
-                logger.info("♻️ Browser session already running")
-                return True
+        if self.context:
+            # Browser already running
+            logger.info("♻️ Browser session already running")
+            return True
+        
+        try:
+            import os
+            os.makedirs(user_data_dir, exist_ok=True)
             
-            try:
-                import os
-                os.makedirs(user_data_dir, exist_ok=True)
-                
-                logger.info("🚀 Starting persistent browser session...")
-                self.username = username
-                self.password = password
-                
-                # Start Playwright
-                self.playwright = await async_playwright().start()
-                
-                # Launch persistent browser context
-                self.context = await self.playwright.chromium.launch_persistent_context(
-                    user_data_dir,
-                    headless=True,
-                    ignore_https_errors=True,
-                    args=['--disable-blink-features=AutomationControlled']
-                )
-                
-                logger.info("✅ Persistent browser session started")
-                return True
-                
-            except Exception as e:
-                logger.error(f"Failed to start browser: {e}")
-                return False
+            logger.info("🚀 Starting persistent browser session...")
+            self.username = username
+            self.password = password
+            
+            # Start Playwright
+            self.playwright = await async_playwright().start()
+            
+            # Launch persistent browser context
+            self.context = await self.playwright.chromium.launch_persistent_context(
+                user_data_dir,
+                headless=True,
+                ignore_https_errors=True,
+                args=['--disable-blink-features=AutomationControlled']
+            )
+            
+            logger.info("✅ Persistent browser session started")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start browser: {e}")
+            return False
     
     async def get_cookies(self) -> Optional[List[Dict]]:
         """Get cookies from the current browser session"""
@@ -202,14 +200,13 @@ class BrowserManager:
     
     async def stop(self):
         """Stop the browser session"""
-        async with self._lock:
-            if self.context:
-                await self.context.close()
-                self.context = None
-            if self.playwright:
-                await self.playwright.stop()
-                self.playwright = None
-            logger.info("🛑 Browser session stopped")
+        if self.context:
+            await self.context.close()
+            self.context = None
+        if self.playwright:
+            await self.playwright.stop()
+            self.playwright = None
+        logger.info("🛑 Browser session stopped")
 
 
 # Global instance

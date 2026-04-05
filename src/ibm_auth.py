@@ -247,15 +247,18 @@ class IBMAuthenticator:
     def _playwright_login(self):
         """Use async browser manager to login and extract cookies"""
         try:
-            # Get or create event loop
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            # Always create new event loop for thread safety
+            # This is called from ThreadPoolExecutor workers which don't have event loops
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             
-            # Run async login
-            return loop.run_until_complete(self._async_playwright_login())
+            try:
+                # Run async login
+                result = loop.run_until_complete(self._async_playwright_login())
+                return result
+            finally:
+                # Clean up event loop
+                loop.close()
             
         except Exception as e:
             logger.error(f"Error in Playwright login: {e}")

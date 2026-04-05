@@ -587,13 +587,22 @@ class DefectScheduler:
             if not training_components:
                 training_components = self.config.get("all_components", [])
             
-            if training_components:
+            # Extract component names if they're dictionaries
+            # Config format: [{'name': 'JPA'}, ...] or ['JPA', ...]
+            component_names = []
+            for comp in training_components:
+                if isinstance(comp, dict):
+                    component_names.append(comp.get('name', comp))
+                else:
+                    component_names.append(comp)
+            
+            if component_names:
                 # NO DELETION - Keep existing model and training data
                 # The train_ml_model_on_all_components will load old data and combine with new
-                logger.info(f"🎓 Incremental training on {len(training_components)} components...")
+                logger.info(f"🎓 Incremental training on {len(component_names)} components...")
                 logger.info("   (Keeping existing training data + adding new defects)")
                 
-                success = self.defect_checker.train_ml_model_on_all_components(training_components)
+                success = self.defect_checker.train_ml_model_on_all_components(component_names)
                 
                 if success:
                     logger.info("✅ ML model incrementally trained successfully")

@@ -857,16 +857,17 @@ class DefectChecker:
             
             # STEP 1: Get triaged defects from database cache (fast, includes historical data)
             logger.info("📚 Loading triaged defects from database cache...")
-            all_triaged_defects = []
+            cached_triaged_defects = []
             if self.database:
-                all_triaged_defects = self.database.get_all_triaged_defects_from_cache(all_components)
-                logger.info(f"   ✅ Loaded {len(all_triaged_defects)} triaged defects from cache")
+                cached_triaged_defects = self.database.get_all_triaged_defects_from_cache(all_components)
+                logger.info(f"   ✅ Loaded {len(cached_triaged_defects)} triaged defects from cache")
             
             # STEP 2: Fetch fresh data from IBM to update cache
             logger.info(f"🔄 Fetching fresh data from {len(all_components)} components to update cache...")
             logger.info("This will take time but ensures complete data for the week")
             
             all_defects_for_caching = []  # ALL defects (triaged + untriaged)
+            newly_fetched_triaged = []  # Newly fetched triaged defects
             newly_triaged_count = 0
             
             # Fetch defects from all components
@@ -881,11 +882,12 @@ class DefectChecker:
                             defect['component'] = component  # Add component info
                         all_defects_for_caching.extend(defects)
                         
-                        # Parse to count newly triaged defects
+                        # Parse to collect newly triaged defects
                         parsed = self.parse_defects(defects, component, collect_triaged=True)
                         triaged = parsed.get("triaged_defects", [])
                         
                         if triaged:
+                            newly_fetched_triaged.extend(triaged)  # ← FIX: Collect triaged defects!
                             newly_triaged_count += len(triaged)
                             logger.info(f"   ✓ Found {len(defects)} total defects ({len(triaged)} triaged)")
                         else:
@@ -895,37 +897,57 @@ class DefectChecker:
                     logger.warning(f"   ✗ Error fetching {component}: {e}")
                     continue
             
+            # Combine cached and newly fetched triaged defects (remove duplicates by ID)
+            all_triaged_defects = cached_triaged_defects.copy()
+            cached_ids = {str(d.get('id')) for d in cached_triaged_defects}
+            
+            for new_defect in newly_fetched_triaged:
+                if str(new_defect.get('id')) not in cached_ids:
+                    all_triaged_defects.append(new_defect)
+            
             logger.info("=" * 70)
             logger.info(f"📊 Fetched {len(all_defects_for_caching)} TOTAL defects ({newly_triaged_count} newly triaged)")
-            logger.info(f"📚 Using {len(all_triaged_defects)} triaged defects from cache for training")
+            logger.info(f"📚 Using {len(all_triaged_defects)} triaged defects for training")
+            logger.info(f"   ({len(cached_triaged_defects)} from cache + {len(all_triaged_defects) - len(cached_triaged_defects)} newly fetched)")
             logger.info("=" * 70)
             
-            # Cache basic defect info first, then fetch descriptions from Jazz/RTC
+            # Check which defects need descriptions BEFORE caching
             if all_defects_for_caching and self.database:
-                logger.info(f"💾 Caching basic defect info for {len(all_defects_for_caching)} defects...")
-                
-                # Cache all defects with basic info
-                self.database.cache_defect_descriptions(all_defects_for_caching)
-                logger.info(f"   ✅ Cached {len(all_defects_for_caching)} defects to database")
-                
-                # Identify defects that need descriptions (don't have them in DB yet)
-                defects_needing_descriptions = []
-                
                 # Get all defect IDs
                 all_defect_ids = [str(d.get('id')) for d in all_defects_for_caching]
                 
                 # Batch check which defects have descriptions in cache
+                logger.info(f"🔍 Checking which defects already have descriptions in database...")
                 cached_descriptions = self.database.get_cached_descriptions(all_defect_ids)
+                
+                # Count defects with substantial descriptions
+                defects_with_descriptions = 0
+                defects_needing_descriptions = []
+                defects_to_cache = []  # Only cache NEW defects or those needing updates
                 
                 for defect in all_defects_for_caching:
                     defect_id = str(defect.get('id'))
-                    # Check if description exists in database
                     cached_data = cached_descriptions.get(defect_id, {})
                     cached_desc = cached_data.get('description', '')
                     
-                    if not cached_desc or len(cached_desc.strip()) < 10:
-                        # No description or very short - needs fetching
+                    if cached_desc and len(cached_desc.strip()) >= 10:
+                        # Has good description - reuse it
+                        defect['description'] = cached_desc
+                        defect['created'] = cached_data.get('creation_date', '')
+                        defects_with_descriptions += 1
+                    else:
+                        # No description or too short - needs fetching
                         defects_needing_descriptions.append(defect)
+                        defects_to_cache.append(defect)  # Will cache after fetching
+                
+                logger.info(f"   ✅ Found {defects_with_descriptions} defects with existing descriptions")
+                logger.info(f"   ⚠️  Need to fetch {len(defects_needing_descriptions)} defects without descriptions")
+                
+                # Only cache NEW defects (those not in database or without descriptions)
+                if defects_to_cache:
+                    logger.info(f"💾 Caching {len(defects_to_cache)} new/updated defects...")
+                    self.database.cache_defect_descriptions(defects_to_cache)
+                    logger.info(f"   ✅ Cached {len(defects_to_cache)} defects to database")
                 
                 if defects_needing_descriptions:
                     logger.info(f"🔍 Fetching descriptions from Jazz/RTC API for {len(defects_needing_descriptions)} NEW defects...")
@@ -953,11 +975,11 @@ class DefectChecker:
                     
                     for attempt in range(max_retries):
                         try:
-                            # Rate limiting: ensure minimum 0.3s between requests
+                            # Rate limiting: ensure minimum 0.2s between requests (faster but still safe)
                             with rate_limit_lock:
                                 elapsed = time.time() - rate_limit_state['last_request_time']
-                                if elapsed < 0.3:
-                                    time.sleep(0.3 - elapsed)
+                                if elapsed < 0.2:
+                                    time.sleep(0.2 - elapsed)
                                 rate_limit_state['last_request_time'] = time.time()
                             
                             # Fetch details
@@ -991,7 +1013,7 @@ class DefectChecker:
                     num_batches = (len(defects_needing_descriptions) + batch_size - 1) // batch_size
                     
                     logger.info(f"   Processing in {num_batches} batches of up to {batch_size} defects")
-                    logger.info(f"   Using 2 parallel workers with rate limiting (0.3s between requests)")
+                    logger.info(f"   Using 3 parallel workers with rate limiting (0.2s between requests)")
                     
                     for batch_num in range(num_batches):
                         start_idx = batch_num * batch_size
@@ -1000,8 +1022,8 @@ class DefectChecker:
                         
                         logger.info(f"   📦 Batch {batch_num + 1}/{num_batches}: Processing defects {start_idx + 1}-{end_idx}...")
                         
-                        # Process batch with reduced workers (2 instead of 5)
-                        with ThreadPoolExecutor(max_workers=2) as executor:
+                        # Process batch with 3 workers (balanced speed and reliability)
+                        with ThreadPoolExecutor(max_workers=3) as executor:
                             future_to_defect = {
                                 executor.submit(fetch_with_retry_and_rate_limit, str(d.get('id'))): d
                                 for d in batch
@@ -1027,7 +1049,7 @@ class DefectChecker:
                         
                         # Delay between batches (except last batch) to avoid rate limiting
                         if batch_num < num_batches - 1:
-                            delay = 10  # 10 seconds between batches
+                            delay = 5  # 5 seconds between batches (reduced from 10)
                             logger.info(f"   ⏸️  Waiting {delay}s before next batch...")
                             time.sleep(delay)
                     
