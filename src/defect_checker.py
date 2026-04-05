@@ -908,53 +908,141 @@ class DefectChecker:
                 self.database.cache_defect_descriptions(all_defects_for_caching)
                 logger.info(f"   ✅ Cached {len(all_defects_for_caching)} defects to database")
                 
-                # Now fetch descriptions from Jazz/RTC API
-                logger.info(f"🔍 Fetching descriptions from Jazz/RTC API for {len(all_defects_for_caching)} defects...")
-                logger.info("   This may take a few minutes...")
+                # Identify defects that need descriptions (don't have them in DB yet)
+                defects_needing_descriptions = []
+                for defect in all_defects_for_caching:
+                    defect_id = str(defect.get('id'))
+                    # Check if description exists in database
+                    cached_desc = self.database.get_defect_description(defect_id)
+                    if not cached_desc or len(cached_desc.strip()) < 10:
+                        # No description or very short - needs fetching
+                        defects_needing_descriptions.append(defect)
+                
+                if defects_needing_descriptions:
+                    logger.info(f"🔍 Fetching descriptions from Jazz/RTC API for {len(defects_needing_descriptions)} NEW defects...")
+                    logger.info(f"   (Skipping {len(all_defects_for_caching) - len(defects_needing_descriptions)} defects that already have descriptions)")
+                    logger.info("   This may take a few minutes...")
+                else:
+                    logger.info(f"✅ All {len(all_defects_for_caching)} defects already have descriptions in database!")
+                    logger.info("   Skipping description fetch - using cached data")
                 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 import time
+                from threading import Lock
                 
                 fetched_count = 0
                 failed_count = 0
+                retry_count = 0
                 
-                # Fetch descriptions in parallel (5 workers)
-                with ThreadPoolExecutor(max_workers=5) as executor:
-                    future_to_defect = {
-                        executor.submit(self.fetch_defect_details, str(d.get('id'))): d
-                        for d in all_defects_for_caching
-                    }
+                # Rate limiter to prevent overwhelming Jazz/RTC server
+                rate_limit_lock = Lock()
+                rate_limit_state = {'last_request_time': 0.0}  # Use dict to allow modification in nested function
+                
+                def fetch_with_retry_and_rate_limit(defect_id, max_retries=3):
+                    """Fetch defect details with retry logic and rate limiting"""
+                    nonlocal retry_count
                     
-                    for future in as_completed(future_to_defect):
-                        defect = future_to_defect[future]
+                    for attempt in range(max_retries):
                         try:
-                            details = future.result(timeout=90)
-                            if details and details.get('description'):
-                                # Update defect with fetched details
-                                defect['description'] = details['description']
-                                defect['created'] = details.get('created', '')
-                                fetched_count += 1
-                            else:
-                                failed_count += 1
+                            # Rate limiting: ensure minimum 0.3s between requests
+                            with rate_limit_lock:
+                                elapsed = time.time() - rate_limit_state['last_request_time']
+                                if elapsed < 0.3:
+                                    time.sleep(0.3 - elapsed)
+                                rate_limit_state['last_request_time'] = time.time()
+                            
+                            # Fetch details
+                            details = self.fetch_defect_details(defect_id)
+                            
+                            if attempt > 0:
+                                retry_count += 1
+                                logger.info(f"   ✓ Retry successful for defect {defect_id}")
+                            
+                            return details
+                            
                         except Exception as e:
-                            logger.debug(f"Failed to fetch details for {defect.get('id')}: {e}")
-                            failed_count += 1
+                            error_msg = str(e)
+                            is_connection_error = "Connection refused" in error_msg or "Max retries exceeded" in error_msg
+                            
+                            if is_connection_error and attempt < max_retries - 1:
+                                # Exponential backoff: 2s, 4s, 8s
+                                wait_time = 2 ** (attempt + 1)
+                                logger.warning(f"   ⚠️  Connection error for defect {defect_id}, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                                time.sleep(wait_time)
+                            else:
+                                if attempt == max_retries - 1:
+                                    logger.error(f"   ✗ Failed to fetch defect {defect_id} after {max_retries} attempts: {error_msg}")
+                                raise
+                    
+                    return None
                 
-                logger.info(f"   ✅ Fetched descriptions: {fetched_count}/{len(all_defects_for_caching)}")
-                if failed_count > 0:
-                    logger.warning(f"   ⚠️  Failed to fetch: {failed_count}/{len(all_defects_for_caching)}")
-                
-                # Update database with fetched descriptions
-                if fetched_count > 0:
-                    logger.info(f"💾 Updating database with fetched descriptions...")
-                    self.database.cache_defect_descriptions(all_defects_for_caching)
-                    logger.info(f"   ✅ Updated {fetched_count} defects with descriptions")
+                # Fetch descriptions in batches with rate limiting and retry logic
+                if defects_needing_descriptions:
+                    batch_size = 100  # Process 100 defects at a time
+                    num_batches = (len(defects_needing_descriptions) + batch_size - 1) // batch_size
+                    
+                    logger.info(f"   Processing in {num_batches} batches of up to {batch_size} defects")
+                    logger.info(f"   Using 2 parallel workers with rate limiting (0.3s between requests)")
+                    
+                    for batch_num in range(num_batches):
+                        start_idx = batch_num * batch_size
+                        end_idx = min(start_idx + batch_size, len(defects_needing_descriptions))
+                        batch = defects_needing_descriptions[start_idx:end_idx]
+                        
+                        logger.info(f"   📦 Batch {batch_num + 1}/{num_batches}: Processing defects {start_idx + 1}-{end_idx}...")
+                        
+                        # Process batch with reduced workers (2 instead of 5)
+                        with ThreadPoolExecutor(max_workers=2) as executor:
+                            future_to_defect = {
+                                executor.submit(fetch_with_retry_and_rate_limit, str(d.get('id'))): d
+                                for d in batch
+                            }
+                            
+                            for future in as_completed(future_to_defect):
+                                defect = future_to_defect[future]
+                                try:
+                                    details = future.result(timeout=120)
+                                    if details and details.get('description'):
+                                        # Update defect with fetched details
+                                        defect['description'] = details['description']
+                                        defect['created'] = details.get('created', '')
+                                        fetched_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception as e:
+                                    logger.debug(f"Failed to fetch details for {defect.get('id')}: {e}")
+                                    failed_count += 1
+                        
+                        # Progress update
+                        logger.info(f"   ✓ Batch {batch_num + 1}/{num_batches} complete: {fetched_count} fetched, {failed_count} failed")
+                        
+                        # Delay between batches (except last batch) to avoid rate limiting
+                        if batch_num < num_batches - 1:
+                            delay = 10  # 10 seconds between batches
+                            logger.info(f"   ⏸️  Waiting {delay}s before next batch...")
+                            time.sleep(delay)
+                    
+                    logger.info(f"   ✅ Fetched descriptions: {fetched_count}/{len(defects_needing_descriptions)}")
+                    if retry_count > 0:
+                        logger.info(f"   🔄 Successful retries: {retry_count}")
+                    if failed_count > 0:
+                        logger.warning(f"   ⚠️  Failed to fetch: {failed_count}/{len(defects_needing_descriptions)}")
+                    
+                    # Update database with fetched descriptions
+                    if fetched_count > 0:
+                        logger.info(f"💾 Updating database with fetched descriptions...")
+                        self.database.cache_defect_descriptions(defects_needing_descriptions)
+                        logger.info(f"   ✅ Updated {fetched_count} defects with descriptions")
                 
                 logger.info("=" * 70)
                 
                 # Apply descriptions and tags to triaged defects for ML training
+                logger.info("📝 Loading descriptions for triaged defects from database...")
                 for triaged_defect in all_triaged_defects:
                     defect_id = str(triaged_defect.get('id'))
+                    
+                    # First try to get from freshly fetched data
+                    found = False
                     for full_defect in all_defects_for_caching:
                         if str(full_defect.get('id')) == defect_id:
                             triaged_defect['description'] = full_defect.get('description', '')
@@ -962,7 +1050,18 @@ class DefectChecker:
                             # Copy tags from Build Break Report if not already present
                             if not triaged_defect.get('triageTags'):
                                 triaged_defect['triageTags'] = full_defect.get('tags', [])
+                            found = True
                             break
+                    
+                    # If not in fresh data, load from database cache
+                    if not found or not triaged_defect.get('description'):
+                        cached_desc = self.database.get_defect_description(defect_id)
+                        if cached_desc:
+                            triaged_defect['description'] = cached_desc
+                
+                # Count how many triaged defects have descriptions
+                with_desc = sum(1 for d in all_triaged_defects if d.get('description') and len(d.get('description', '')) > 10)
+                logger.info(f"   ✅ {with_desc}/{len(all_triaged_defects)} triaged defects have descriptions for training")
             
             if len(all_triaged_defects) < 10:
                 logger.warning(f"⚠️  Not enough triaged defects for training (need at least 10, got {len(all_triaged_defects)})")

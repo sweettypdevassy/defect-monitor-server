@@ -7,8 +7,10 @@ import requests
 import urllib3
 import logging
 import threading
+import asyncio
 from datetime import datetime, timedelta
 from cookie_monitor import get_cookie_monitor
+from browser_manager import get_browser_manager
 from typing import Optional, Dict
 
 # Disable SSL warnings for IBM self-signed certificates
@@ -19,12 +21,6 @@ logger = logging.getLogger(__name__)
 
 class IBMAuthenticator:
     """Handles IBM W3ID authentication and session management"""
-    
-    # Class-level variables to keep browser alive
-    _playwright_instance = None
-    _browser_context = None
-    _browser_page = None
-    _browser_lock = threading.Lock()
     
     def __init__(self, username: str, password: str, session_timeout: int = 7200, max_retries: int = 3,
                  auth_method: str = "password", cookies: Optional[Dict[str, str]] = None):
@@ -200,20 +196,35 @@ class IBMAuthenticator:
             # Create session with cookies from Playwright
             self.session = requests.Session()
             
-            # Set headers
+            # Set headers to match browser
             self.session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0'
             })
             
-            # Add cookies to session
+            # Add cookies to session with proper domain handling
             for cookie in cookies:
+                # Handle domain - remove leading dot if present
+                domain = cookie.get('domain', '')
+                if domain.startswith('.'):
+                    domain = domain[1:]
+                
                 self.session.cookies.set(
                     cookie['name'],
                     cookie['value'],
-                    domain=cookie.get('domain', ''),
-                    path=cookie.get('path', '/')
+                    domain=domain,
+                    path=cookie.get('path', '/'),
+                    secure=cookie.get('secure', False),
+                    rest={'HttpOnly': cookie.get('httpOnly', False)}
                 )
             
             logger.info(f"✅ Added {len(cookies)} cookies to session")
@@ -234,220 +245,51 @@ class IBMAuthenticator:
             return False
     
     def _playwright_login(self):
-        """Use Playwright to login and extract cookies - KEEPS BROWSER ALIVE"""
+        """Use async browser manager to login and extract cookies"""
         try:
-            from playwright.sync_api import sync_playwright
-            import re
-            import os
+            # Get or create event loop
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
             
-            with self._browser_lock:
-                # Check if browser is already running
-                if self._browser_context and self._browser_page:
-                    logger.info("♻️ Reusing existing browser session...")
-                    try:
-                        # Test if browser is still alive
-                        self._browser_page.url
-                        # Extract cookies from existing session
-                        cookies = self._browser_context.cookies()
-                        logger.info(f"✅ Extracted {len(cookies)} cookies from existing browser")
-                        return cookies
-                    except:
-                        logger.warning("Existing browser session is dead, creating new one...")
-                        self._browser_context = None
-                        self._browser_page = None
-                        self._playwright_instance = None
-                
-                # Launch new browser if needed
-                if not self._playwright_instance:
-                    logger.info("🌐 Launching persistent Playwright browser...")
-                    
-                    # Use persistent browser profile
-                    user_data_dir = "/app/data/chrome_profile"
-                    os.makedirs(user_data_dir, exist_ok=True)
-                    
-                    self._playwright_instance = sync_playwright().start()
-                    
-                    # Launch browser with persistent context (remembers login state)
-                    self._browser_context = self._playwright_instance.chromium.launch_persistent_context(
-                        user_data_dir,
-                        headless=True,
-                        ignore_https_errors=True,
-                        args=['--disable-blink-features=AutomationControlled']
-                    )
-                    self._browser_page = self._browser_context.pages[0] if self._browser_context.pages else self._browser_context.new_page()
-                
-                context = self._browser_context
-                page = self._browser_page
-                
-                try:
-                    # Navigate to IBM page (will redirect to login if needed)
-                    logger.info("📍 Navigating to Build Break Report to check session...")
-                    page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/", wait_until="networkidle", timeout=30000)
-                    
-                    # Wait for page to load
-                    page.wait_for_timeout(3000)
-                    
-                    current_url = page.url
-                    logger.info(f"Current URL: {current_url}")
-                    
-                    # Check if we're ALREADY logged in (persistent profile worked!)
-                    if "buildBreakReport" in current_url and "login" not in current_url.lower() and "auth" not in current_url.lower():
-                        logger.info("✅ Already logged in! Persistent browser profile preserved the session")
-                        logger.info("🎉 No 2FA needed - reusing trusted device session!")
-                        # Extract cookies and return immediately
-                        cookies = context.cookies()
-                        logger.info(f"✅ Extracted {len(cookies)} cookies from existing session")
-                        return cookies
-                    
-                    # Check if on login page (need to authenticate)
-                    if "login" in current_url.lower() or "auth" in current_url.lower():
-                        logger.info("🔑 Session expired or new device - need to authenticate...")
-                        logger.info("🔑 On IBM login page...")
-                        
-                        # IMPORTANT: Click on "w3id Password" link first
-                        logger.info("Step 1: Looking for 'w3id Password' link...")
-                        try:
-                            w3id_link = page.get_by_text("w3id Password")
-                            w3id_link.wait_for(state="visible", timeout=10000)
-                            w3id_link.click()
-                            logger.info("✅ Clicked 'w3id Password' link")
-                            
-                            # Wait for login form to load
-                            page.wait_for_load_state("networkidle")
-                            page.wait_for_timeout(2000)
-                        except Exception as e:
-                            logger.warning(f"Could not find 'w3id Password' link: {e}")
-                            logger.info("Continuing with direct login attempt...")
-                        
-                        # Step 2: Fill in email/username
-                        logger.info("Step 2: Filling email/username...")
-                        email_input = page.locator('input[type="email"], input[name="email"], input[id*="email"], input[name="username"]').first
-                        email_input.wait_for(state="visible", timeout=10000)
-                        email_input.fill(self.username)
-                        logger.info("✅ Filled email field")
-                        
-                        # Step 3: Fill in password
-                        logger.info("Step 3: Filling password...")
-                        password_input = page.locator('input[type="password"], input[name="password"], input[id*="password"]').first
-                        password_input.wait_for(state="visible", timeout=10000)
-                        password_input.fill(self.password)
-                        logger.info("✅ Filled password field")
-                        
-                        # Step 4: Click "Sign in" button
-                        logger.info("Step 4: Clicking 'Sign in' button...")
-                        try:
-                            sign_in_button = page.get_by_role("button", name=re.compile("sign in", re.IGNORECASE))
-                            sign_in_button.wait_for(state="visible", timeout=10000)
-                            sign_in_button.click()
-                            logger.info("✅ Clicked 'Sign in' button")
-                        except Exception as e:
-                            logger.warning(f"Could not find 'Sign in' button: {e}")
-                            logger.info("Trying Enter key...")
-                            page.keyboard.press('Enter')
-                        
-                        # Wait for navigation after login
-                        logger.info("⏳ Waiting for login to complete...")
-                        page.wait_for_timeout(5000)
-                        page.wait_for_load_state("networkidle", timeout=30000)
-                        
-                        current_url = page.url
-                        logger.info(f"After first login URL: {current_url}")
-                        
-                        # Check if we're on the 2FA/MFA selection page
-                        if "authsvc" in current_url or "macotp" in current_url:
-                            logger.info("🔐 On 2FA selection page, looking for 'Touch Approval' option...")
-                            
-                            # Take screenshot for debugging
-                            try:
-                                page.screenshot(path="/app/2fa_page.png")
-                                logger.info("📸 Screenshot saved to /app/2fa_page.png")
-                            except:
-                                pass
-                            
-                            # Log page content for debugging
-                            try:
-                                page_text = page.inner_text('body')
-                                logger.info(f"Page text preview: {page_text[:500]}")
-                            except:
-                                pass
-                            
-                            try:
-                                # Look for "Touch Approval" option on the 2FA page
-                                # Try multiple variations
-                                selectors_to_try = [
-                                    'text="Touch Approval"',
-                                    'text="touch approval"',
-                                    'text="Sweetty\'s S24 Ultra (Touch Approval)"',
-                                    '[aria-label*="Touch Approval" i]',
-                                    'button:has-text("Touch Approval")',
-                                    'a:has-text("Touch Approval")',
-                                    '.auth-method:has-text("Touch Approval")'
-                                ]
-                                
-                                clicked = False
-                                for selector in selectors_to_try:
-                                    try:
-                                        element = page.locator(selector).first
-                                        if element.count() > 0:
-                                            element.wait_for(state="visible", timeout=2000)
-                                            element.click()
-                                            logger.info(f"✅ Clicked 'Touch Approval' option using selector: {selector}")
-                                            clicked = True
-                                            break
-                                    except:
-                                        continue
-                                
-                                if not clicked:
-                                    logger.warning("Could not find 'Touch Approval' option with any selector")
-                                    raise Exception("Touch Approval option not found")
-                                
-                                # Wait for user to approve on phone
-                                logger.info("📱 Waiting for approval on your phone...")
-                                logger.info("⏳ Please approve the notification on Sweetty's S24 Ultra (60 seconds timeout)")
-                                
-                                # Wait for authentication to complete (longer timeout for phone approval)
-                                try:
-                                    page.wait_for_url("**/buildBreakReport**", timeout=60000)
-                                    logger.info("✅ Successfully authenticated after phone approval!")
-                                except Exception as e:
-                                    logger.warning(f"Timeout waiting for phone approval: {e}")
-                                    # Check if we're at least past the 2FA page
-                                    current_url = page.url
-                                    if "macotp" not in current_url:
-                                        logger.info("✅ Moved past 2FA page, continuing...")
-                                    else:
-                                        raise Exception("Phone approval timeout or not completed")
-                                
-                            except Exception as e:
-                                logger.warning(f"Could not complete 2FA with Touch Approval: {e}")
-                        
-                        # Check final URL
-                        final_url = page.url
-                        logger.info(f"Final URL: {final_url}")
-                        
-                        # If not at Build Break Report, try direct navigation
-                        if "buildBreakReport" not in final_url:
-                            logger.warning(f"⚠️  Not at Build Break Report, attempting direct navigation...")
-                            page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/", wait_until="networkidle", timeout=30000)
-                            logger.info(f"After direct navigation: {page.url}")
-                    
-                    # Extract cookies (DON'T close browser - keep it alive!)
-                    cookies = context.cookies()
-                    logger.info(f"✅ Extracted {len(cookies)} cookies")
-                    logger.info("🔄 Keeping browser alive for future authentications...")
-                    return cookies
-                    
-                except Exception as e:
-                    logger.error(f"Error during Playwright login: {e}")
-                    # Don't close browser on error - it might recover
-                    return None
-                    
-        except ImportError:
-            logger.error("❌ Playwright not installed")
-            logger.error("Install with: pip install playwright && playwright install chromium")
-            return None
+            # Run async login
+            return loop.run_until_complete(self._async_playwright_login())
+            
         except Exception as e:
             logger.error(f"Error in Playwright login: {e}")
+            return None
+    
+    async def _async_playwright_login(self):
+        """Async method to use browser manager"""
+        try:
+            browser_manager = get_browser_manager()
+            
+            # Start browser if not already started
+            await browser_manager.start(self.username, self.password)
+            
+            # Login if needed (opens new tab, checks session, closes tab)
+            success = await browser_manager.login_if_needed()
+            
+            if not success:
+                logger.error("❌ Browser login failed")
+                return None
+            
+            # Get cookies from browser
+            cookies = await browser_manager.get_cookies()
+            
+            if cookies:
+                logger.info(f"✅ Extracted {len(cookies)} cookies from persistent browser")
+                return cookies
+            else:
+                logger.error("❌ Failed to extract cookies")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error in async Playwright login: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def _verify_authentication(self, max_retries: int = 3) -> bool:
