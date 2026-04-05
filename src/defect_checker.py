@@ -910,10 +910,19 @@ class DefectChecker:
                 
                 # Identify defects that need descriptions (don't have them in DB yet)
                 defects_needing_descriptions = []
+                
+                # Get all defect IDs
+                all_defect_ids = [str(d.get('id')) for d in all_defects_for_caching]
+                
+                # Batch check which defects have descriptions in cache
+                cached_descriptions = self.database.get_cached_descriptions(all_defect_ids)
+                
                 for defect in all_defects_for_caching:
                     defect_id = str(defect.get('id'))
                     # Check if description exists in database
-                    cached_desc = self.database.get_defect_description(defect_id)
+                    cached_data = cached_descriptions.get(defect_id, {})
+                    cached_desc = cached_data.get('description', '')
+                    
                     if not cached_desc or len(cached_desc.strip()) < 10:
                         # No description or very short - needs fetching
                         defects_needing_descriptions.append(defect)
@@ -1038,6 +1047,13 @@ class DefectChecker:
                 
                 # Apply descriptions and tags to triaged defects for ML training
                 logger.info("📝 Loading descriptions for triaged defects from database...")
+                
+                # Get all triaged defect IDs
+                triaged_defect_ids = [str(d.get('id')) for d in all_triaged_defects]
+                
+                # Batch load descriptions from cache
+                cached_triaged_descriptions = self.database.get_cached_descriptions(triaged_defect_ids)
+                
                 for triaged_defect in all_triaged_defects:
                     defect_id = str(triaged_defect.get('id'))
                     
@@ -1055,7 +1071,8 @@ class DefectChecker:
                     
                     # If not in fresh data, load from database cache
                     if not found or not triaged_defect.get('description'):
-                        cached_desc = self.database.get_defect_description(defect_id)
+                        cached_data = cached_triaged_descriptions.get(defect_id, {})
+                        cached_desc = cached_data.get('description', '')
                         if cached_desc:
                             triaged_defect['description'] = cached_desc
                 
