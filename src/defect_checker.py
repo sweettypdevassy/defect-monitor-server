@@ -34,7 +34,7 @@ class DefectChecker:
         
         # Lower threshold to 0.85 for summary-only matching (was 0.7)
         # Since we only have summaries, we need high similarity to avoid false positives
-        self.duplicate_detector = DuplicateDetector(similarity_threshold=0.85)
+        self.duplicate_detector = DuplicateDetector(similarity_threshold=0.80)
     
     @property
     def suggester_trained(self):

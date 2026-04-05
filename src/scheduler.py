@@ -302,8 +302,15 @@ class DefectScheduler:
             test_components = self.config.get("schedule", {}).get("test_components", [])
             
             if test_components:
-                # Use test components for testing
-                components_to_fetch = test_components
+                # Extract component names if they're dictionaries
+                component_names = []
+                for comp in test_components:
+                    if isinstance(comp, dict):
+                        component_names.append(comp.get('name', comp))
+                    else:
+                        component_names.append(comp)
+                
+                components_to_fetch = component_names
                 logger.info(f"📝 Using test_components: {len(components_to_fetch)} components")
                 logger.info(f"   Components: {', '.join(components_to_fetch)}")
             else:

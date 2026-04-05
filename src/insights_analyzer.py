@@ -86,7 +86,7 @@ class InsightsAnalyzer:
                         defect['summary'],
                         other_defect['summary']
                     )
-                    if similarity > 0.95:  # 95% similarity threshold
+                    if similarity > 0.80:  # 80% similarity threshold
                         similar_defects.append({
                             'id': other_defect['id'],
                             'summary': other_defect['summary'],
