@@ -749,8 +749,8 @@ async function renderUntriagedDefects(selectedComponents = null) {
                     tagFromDuplicate = true;
                 }
                 
-                // Show duplicate ONLY if tag came from it, otherwise hide (insights will show duplicates)
-                const duplicateDisplay = (tagFromDuplicate && isDuplicate && duplicateId) ?
+                // Always show duplicate if one exists (regardless of tag source)
+                const duplicateDisplay = (isDuplicate && duplicateId) ?
                     `<a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${duplicateId}"
                         target="_blank"
                         style="color: #1d9bf0; text-decoration: none;"
@@ -1282,28 +1282,31 @@ async function renderComponentInsights(selectedComponents) {
         // Simple bullet-point format
         html += '<ul style="list-style: none; padding: 0; margin: 0;">';
         
-        // Duplicate defects with clickable links
+        // Duplicate defects with clickable links and similarity percentages
         if (allInsights.duplicates && allInsights.duplicates.length > 0) {
             allInsights.duplicates.forEach(group => {
-                const defectIds = [group.main_defect.id];
-                if (group.similar_defects) {
-                    group.similar_defects.forEach(d => defectIds.push(d.id));
-                }
-                
-                // Create clickable links for each defect ID
-                const defectLinks = defectIds.map(id =>
-                    `<a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${id}"
+                const mainDefectLink = `<a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${group.main_defect.id}"
                        target="_blank"
                        style="color: #4fc3f7; text-decoration: none; font-weight: 500;"
                        onmouseover="this.style.textDecoration='underline'"
-                       onmouseout="this.style.textDecoration='none'">#${id}</a>`
-                ).join(', ');
+                       onmouseout="this.style.textDecoration='none'">#${group.main_defect.id}</a>`;
                 
-                html += `
-                    <li style="padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
-                        • Defects ${defectLinks} are duplicates
-                    </li>
-                `;
+                if (group.similar_defects && group.similar_defects.length > 0) {
+                    // Create links with similarity percentages for each similar defect
+                    const similarLinks = group.similar_defects.map(d =>
+                        `<a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${d.id}"
+                           target="_blank"
+                           style="color: #4fc3f7; text-decoration: none; font-weight: 500;"
+                           onmouseover="this.style.textDecoration='underline'"
+                           onmouseout="this.style.textDecoration='none'">#${d.id}</a> <span style="color: #66bb6a; font-size: 0.9em;">(${d.similarity}%)</span>`
+                    ).join(', ');
+                    
+                    html += `
+                        <li style="padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                            • Defect ${mainDefectLink} is similar to: ${similarLinks}
+                        </li>
+                    `;
+                }
             });
         }
         

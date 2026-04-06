@@ -69,17 +69,12 @@ class IBMAuthenticator:
         if not self.session or not self.last_login:
             return False
         
-        # Check if session has expired based on time
-        elapsed = (datetime.now() - self.last_login).total_seconds()
-        if elapsed > self.session_timeout:
-            logger.info("Session expired based on timeout, needs re-authentication")
-            return False
-        
         # If session is less than 5 minutes old, assume it's valid (skip validation)
+        elapsed = (datetime.now() - self.last_login).total_seconds()
         if elapsed < 300:  # 5 minutes
             return True
         
-        # For older sessions, test with a simple request
+        # For older sessions, test with a simple request (don't rely on timeout)
         try:
             test_url = "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas"
             response = self.session.get(test_url, params={"component": "test"}, timeout=60, verify=False)
@@ -91,14 +86,10 @@ class IBMAuthenticator:
             
             return True
         except requests.exceptions.Timeout:
-            # On timeout, assume session is still valid if not too old
+            # On timeout, assume session is still valid
             # This prevents unnecessary re-authentication when server is slow
-            if elapsed < 600:  # Less than 10 minutes old
-                logger.debug("Session validation timeout, but session is recent - assuming valid")
-                return True
-            else:
-                logger.debug("Session validation timeout and session is old - will re-authenticate")
-                return False
+            logger.debug("Session validation timeout - assuming valid (persistent browser maintains session)")
+            return True
         except Exception as e:
             logger.debug(f"Session validation failed: {e}")
             # On other errors, assume valid if session is recent

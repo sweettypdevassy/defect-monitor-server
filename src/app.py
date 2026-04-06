@@ -100,7 +100,6 @@ def initialize_services():
         authenticator = IBMAuthenticator(
             username=ibm_config.get("username", ""),
             password=ibm_config.get("password", ""),
-            session_timeout=ibm_config.get("session_timeout", 7200),
             auth_method=auth_method,
             cookies=cookies
         )
