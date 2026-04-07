@@ -274,27 +274,94 @@ class BrowserManager:
                 await page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/", wait_until="networkidle", timeout=30000)
                 logger.info("✅ Loaded page")
                 
-                # Click w3id Password link
+                # Wait a bit for page to stabilize
+                await page.wait_for_timeout(2000)
+                
+                current_url = page.url
+                logger.info(f"📍 Current URL after navigation: {current_url}")
+                
+                # Click w3id Password link (if present)
+                # This link may not appear if we're already past the authentication method selection
                 try:
+                    # Check if the w3id Password link exists
                     w3id_link = page.get_by_text("w3id Password")
-                    await w3id_link.wait_for(state="visible", timeout=10000)
-                    await w3id_link.click()
-                    logger.info("✅ Clicked 'w3id Password' link")
-                    await page.wait_for_load_state("networkidle", timeout=30000)
+                    link_count = await w3id_link.count()
+                    
+                    if link_count > 0:
+                        logger.info("🔍 Found 'w3id Password' link, clicking...")
+                        await w3id_link.wait_for(state="visible", timeout=20000)
+                        await w3id_link.click()
+                        logger.info("✅ Clicked 'w3id Password' link")
+                        await page.wait_for_load_state("networkidle", timeout=30000)
+                        await page.wait_for_timeout(2000)
+                    else:
+                        logger.info("ℹ️ 'w3id Password' link not found - may already be on login page")
                 except Exception as e:
-                    logger.warning(f"Could not click w3id Password link: {e}")
+                    logger.warning(f"Could not click w3id Password link (continuing anyway): {e}")
+                    # Continue anyway - we might already be on the login page
                 
-                # Fill email
-                email_input = page.locator('input[type="email"], input[name="email"], input[id*="email"]').first
-                await email_input.wait_for(state="visible", timeout=10000)
-                await email_input.fill(self.username)
-                logger.info("✅ Filled email")
+                # Wait for login form to appear
+                await page.wait_for_timeout(2000)
                 
-                # Fill password
-                password_input = page.locator('input[type="password"], input[name="password"], input[id*="password"]').first
-                await password_input.wait_for(state="visible", timeout=10000)
-                await password_input.fill(self.password)
-                logger.info("✅ Filled password")
+                # Fill email - try multiple selectors
+                logger.info("🔍 Looking for email input field...")
+                email_selectors = [
+                    'input[type="email"]',
+                    'input[name="email"]',
+                    'input[id*="email"]',
+                    'input[placeholder*="email" i]',
+                    'input[aria-label*="email" i]'
+                ]
+                
+                email_filled = False
+                for selector in email_selectors:
+                    try:
+                        email_input = page.locator(selector).first
+                        if await email_input.count() > 0:
+                            await email_input.wait_for(state="visible", timeout=15000)
+                            await email_input.fill(self.username)
+                            logger.info(f"✅ Filled email using selector: {selector}")
+                            email_filled = True
+                            break
+                    except:
+                        continue
+                
+                if not email_filled:
+                    logger.error("❌ Could not find email input field")
+                    if attempt < max_attempts:
+                        logger.info("🔄 Retrying...")
+                        continue
+                    return False
+                
+                # Fill password - try multiple selectors
+                logger.info("🔍 Looking for password input field...")
+                password_selectors = [
+                    'input[type="password"]',
+                    'input[name="password"]',
+                    'input[id*="password"]',
+                    'input[placeholder*="password" i]',
+                    'input[aria-label*="password" i]'
+                ]
+                
+                password_filled = False
+                for selector in password_selectors:
+                    try:
+                        password_input = page.locator(selector).first
+                        if await password_input.count() > 0:
+                            await password_input.wait_for(state="visible", timeout=15000)
+                            await password_input.fill(self.password)
+                            logger.info(f"✅ Filled password using selector: {selector}")
+                            password_filled = True
+                            break
+                    except:
+                        continue
+                
+                if not password_filled:
+                    logger.error("❌ Could not find password input field")
+                    if attempt < max_attempts:
+                        logger.info("🔄 Retrying...")
+                        continue
+                    return False
                 
                 # Click Sign in
                 try:
@@ -407,10 +474,20 @@ class BrowserManager:
                 
             except Exception as e:
                 logger.error(f"❌ Login attempt {attempt} failed: {e}")
+                
+                # Take screenshot on failure for debugging
+                try:
+                    screenshot_path = f"/app/logs/login_failure_attempt_{attempt}.png"
+                    await page.screenshot(path=screenshot_path)
+                    logger.info(f"📸 Screenshot saved to {screenshot_path}")
+                except Exception as screenshot_error:
+                    logger.warning(f"Could not save screenshot: {screenshot_error}")
+                
                 if attempt < max_attempts:
                     logger.info("🔄 Retrying...")
                     try:
                         await page.reload()
+                        await page.wait_for_timeout(2000)
                     except:
                         pass
                     continue

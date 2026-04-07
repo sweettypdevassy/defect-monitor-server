@@ -417,9 +417,21 @@ def api_component_insights(component_name):
         cached_defects = database.get_all_cached_descriptions_for_component(component_name)
         
         if cached_defects:
-            # Use cached defects with real IDs and descriptions
+            # Merge current number_builds from snapshot with cached defect data
+            # This ensures we have up-to-date build counts for rare defect detection
+            current_defects_map = {}
+            for defect in component_data.get('defects', []):
+                current_defects_map[str(defect['id'])] = defect.get('number_builds', 0)
+            
+            # Update number_builds in cached defects with current values
+            for defect in cached_defects:
+                defect_id = str(defect['id'])
+                if defect_id in current_defects_map:
+                    defect['number_builds'] = current_defects_map[defect_id]
+                    logger.debug(f"Updated number_builds for {defect_id}: {defect['number_builds']}")
+            
             defects = cached_defects
-            logger.info(f"✅ Using {len(defects)} cached defects for insights")
+            logger.info(f"✅ Using {len(defects)} cached defects for insights (with current build counts)")
         else:
             # Try to get from historical data
             history = database.get_component_history(component_name, days=30)

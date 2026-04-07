@@ -182,6 +182,27 @@ class DefectChecker:
         
         return ''
     
+    def is_defect_cancelled(self, state_url: str) -> bool:
+        """
+        Check if defect state URL indicates cancelled/closed/resolved
+        
+        Args:
+            state_url: The state URL from Jazz/RTC API
+            
+        Returns:
+            True if defect is cancelled/closed/resolved, False otherwise
+        """
+        if not state_url:
+            return False
+        
+        # Only check if it's a valid RTC state URL
+        # This prevents false positives from error messages or empty states
+        if 'jazz/oslc/workflows' not in state_url:
+            return False
+        
+        state_lower = state_url.lower()
+        return any(keyword in state_lower for keyword in ['canceled', 'cancelled', 'closed', 'resolved'])
+    
     def fetch_defect_details(self, defect_id: str, max_retries: int = 2) -> Dict:
         """
         Fetch complete details for a specific defect from Jazz/RTC with retry logic
@@ -233,9 +254,15 @@ class DefectChecker:
                     state_obj = data.get('rtc_cm:state', {})
                     state = state_obj.get('rdf:resource', '') if isinstance(state_obj, dict) else ''
                     
-                    # Log success
+                    # Check if defect is cancelled
+                    is_cancelled = self.is_defect_cancelled(state)
+                    
+                    # Log success with cancelled indicator
                     if description or created:
-                        logger.info(f"✅ Fetched details for {defect_id}: desc={len(description)} chars, created={created[:10] if created else 'N/A'}")
+                        if is_cancelled:
+                            logger.info(f"🚫 CANCELLED Fetched details for {defect_id}: desc={len(description)} chars, created={created[:10] if created else 'N/A'}")
+                        else:
+                            logger.info(f"✅ Fetched details for {defect_id}: desc={len(description)} chars, created={created[:10] if created else 'N/A'}")
                     else:
                         logger.warning(f"⚠️  Defect {defect_id}: API returned 200 but no description/created")
                     
@@ -244,7 +271,8 @@ class DefectChecker:
                         'created': created,
                         'modified': modified,
                         'creator': creator,
-                        'state': state
+                        'state': state,
+                        'is_cancelled': is_cancelled
                     }
                 else:
                     logger.warning(f"⚠️  Failed to fetch {defect_id}: HTTP {response.status_code}")
@@ -690,7 +718,7 @@ class DefectChecker:
         logger.debug(f"📋 Component {component}: {len(all_defects_for_dup_check)} total defects, {len(untriaged_defects)} untriaged")
         
         if all_defects_for_dup_check and self.database:
-            # Collect all defect IDs
+            # Collect all defect IDs from current API fetch
             all_ids = [str(d.get('id')) for d in all_defects_for_dup_check if d.get('id')]
             
             # Check cache first
@@ -699,6 +727,10 @@ class DefectChecker:
             
             # Identify NEW defects (not in cache)
             ids_to_fetch = [id for id in all_ids if id not in cached_descriptions]
+            
+            # NO STATE REFRESH - leave cached defects as-is
+            # This preserves old defects and prevents false positives
+            cached_ids_to_refresh = []
             
             if cached_descriptions:
                 logger.debug(f"✅ Found {len(cached_descriptions)} cached descriptions")
@@ -712,9 +744,16 @@ class DefectChecker:
                 # Cache the newly fetched details
                 if newly_fetched_details:
                     defects_to_cache = []
+                    cancelled_count = 0
                     for defect_id, details in newly_fetched_details.items():
                         description = details.get('description', '')
                         creation_date = details.get('created', '')
+                        state = details.get('state', '')
+                        is_cancelled = details.get('is_cancelled', False)
+                        
+                        # Track cancelled defects
+                        if is_cancelled:
+                            cancelled_count += 1
                         
                         # Only cache if we got actual data
                         if description or creation_date:
@@ -723,12 +762,17 @@ class DefectChecker:
                             if defect_info:
                                 defect_info['description'] = description
                                 defect_info['creation_date'] = creation_date
+                                defect_info['state'] = state
+                                defect_info['is_cancelled'] = is_cancelled
                                 defect_info['component'] = component
                                 defects_to_cache.append(defect_info)
                     
                     if defects_to_cache:
                         self.database.cache_defect_descriptions(defects_to_cache)
-                        logger.info(f"✅ Cached {len(defects_to_cache)} new defects")
+                        if cancelled_count > 0:
+                            logger.info(f"✅ Cached {len(defects_to_cache)} new defects ({cancelled_count} cancelled)")
+                        else:
+                            logger.info(f"✅ Cached {len(defects_to_cache)} new defects")
             
             # Combine cached and newly fetched descriptions
             all_descriptions = {**cached_descriptions}
@@ -943,11 +987,8 @@ class DefectChecker:
                 logger.info(f"   ✅ Found {defects_with_descriptions} defects with existing descriptions")
                 logger.info(f"   ⚠️  Need to fetch {len(defects_needing_descriptions)} defects without descriptions")
                 
-                # Only cache NEW defects (those not in database or without descriptions)
-                if defects_to_cache:
-                    logger.info(f"💾 Caching {len(defects_to_cache)} new/updated defects...")
-                    self.database.cache_defect_descriptions(defects_to_cache)
-                    logger.info(f"   ✅ Cached {len(defects_to_cache)} defects to database")
+                # DON'T cache yet - wait until descriptions are fetched
+                # Caching happens at line 1109 after descriptions are fetched
                 
                 if defects_needing_descriptions:
                     logger.info(f"🔍 Fetching descriptions from Jazz/RTC API for {len(defects_needing_descriptions)} NEW defects...")

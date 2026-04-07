@@ -50,11 +50,40 @@ class InsightsAnalyzer:
         if not defects:
             return insights
         
+        logger.info(f"📊 Starting insights analysis for {component_name} with {len(defects)} defects")
+        
+        # Filter out cancelled defects BEFORE analysis
+        # Check state field for cancelled/closed/resolved keywords
+        active_defects = []
+        cancelled_count = 0
+        for defect in defects:
+            state = defect.get('state', '')
+            is_cancelled = False
+            
+            if state and isinstance(state, str) and 'jazz/oslc/workflows' in state:
+                state_lower = state.lower()
+                # Only filter if state URL explicitly contains .canceled or .closed or .resolved
+                if '.canceled' in state_lower or '.cancelled' in state_lower or '.closed' in state_lower or '.resolved' in state_lower:
+                    is_cancelled = True
+                    cancelled_count += 1
+                    logger.debug(f"Filtering out cancelled defect {defect.get('id')} (state: {state[:100]}...)")
+            
+            if not is_cancelled:
+                active_defects.append(defect)
+        
+        if cancelled_count > 0:
+            logger.info(f"Analyzing {len(active_defects)} active defects (filtered out {cancelled_count} cancelled)")
+        
+        # Use active_defects for all analysis
+        defects = active_defects
+        
         # Analyze duplicates
         insights['duplicates'] = self._find_duplicates(defects)
+        logger.info(f"  Found {len(insights['duplicates'])} duplicate groups")
         
         # Analyze rare defects (occurred only once in last 30 days)
         insights['rare_defects'] = self._find_rare_defects(component_name, defects)
+        logger.info(f"  Found {len(insights['rare_defects'])} rare defects")
         
         # Analyze recurring patterns
         insights['recurring_patterns'] = self._find_recurring_patterns(defects)
@@ -111,19 +140,23 @@ class InsightsAnalyzer:
         """Find defects that occurred only once and are older than 2 weeks"""
         rare_defects = []
         
+        logger.debug(f"🔍 Checking {len(defects)} defects for rare defects (number_builds=1, age>=30 days)")
+        
         try:
             # Find defects with number_builds == 1 AND have creation_date
             for defect in defects:
                 defect_id = defect['id']
                 # Use the number_builds field from Build Break Report API
                 build_count = defect.get('number_builds', 0)
+                creation_date = defect.get('creation_date')
+                
+                logger.info(f"  Checking defect {defect_id}: number_builds={build_count}, creation_date={creation_date}")
                 
                 if build_count == 1:
-                    # Get creation date from cached defect data
-                    creation_date = defect.get('creation_date')
-                    
+                    logger.info(f"    → Defect {defect_id} has 1 build, checking age...")
                     # Skip if no creation date (can't determine age)
                     if not creation_date:
+                        logger.warning(f"    → Defect {defect_id} has no creation_date, skipping")
                         continue
                     
                     age_info = "old defect"
@@ -160,6 +193,7 @@ class InsightsAnalyzer:
                     
                     # Only include if defect is older than 14 days (2 weeks)
                     if days_old is not None and days_old >= 30:
+                        logger.info(f"✅ Found rare defect: {defect_id} ({days_old} days old, {build_count} build)")
                         rare_defects.append({
                             'id': defect_id,
                             'summary': defect['summary'],
@@ -170,7 +204,12 @@ class InsightsAnalyzer:
                             'creation_date': creation_date
                         })
                         
-                        logger.debug(f"Found rare old defect: {defect_id}, created: {creation_date}, age: {days_old} days, builds: {build_count}")
+                        logger.info(f"    → Added to rare defects: {defect_id}, created: {creation_date}, age: {days_old} days")
+                    else:
+                        logger.info(f"    → Skipping {defect_id}: only {days_old} days old (needs >= 30)")
+                else:
+                    if build_count > 1:
+                        logger.debug(f"  Skipping {defect_id}: {build_count} builds (needs exactly 1)")
         
         except Exception as e:
             logger.error(f"Error finding rare defects: {e}")
