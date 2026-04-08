@@ -116,17 +116,24 @@ class MLTagSuggester:
         return None
     
     def _extract_text_features(self, defect: Dict) -> str:
-        """Extract and combine text features from defect - SIMPLE VERSION"""
-        # Keep it simple - just combine the text fields
-        # Random Forest will learn the patterns from the raw text
-        summary = str(defect.get('summary', '')).lower()
-        description = str(defect.get('description', '')).lower()
-        functional_area = str(defect.get('functionalArea', '')).lower()
+        """
+        Extract text features from defect - DESCRIPTION ONLY
         
-        # Combine all text - description is most important (has error details)
-        # But include all fields for context
-        text = f"{description} {summary} {functional_area}"
-        return text.strip()
+        Summary often contains misleading patterns like "Test Failure:" which
+        doesn't indicate the root cause. Description contains the actual error
+        details (timeouts, exceptions, stack traces) that reveal whether it's:
+        - infrastructure: timeout, network, resource issues
+        - test_bug: test framework errors, assertion issues
+        - product_bug: runtime exceptions, logic errors
+        
+        Functional area is excluded as it doesn't help determine root cause.
+        """
+        description = str(defect.get('description', '')).lower()
+        
+        # Use ONLY description - it has the actual error details
+        # EXCLUDE summary (misleading "Test Failure:" patterns)
+        # EXCLUDE functional_area (doesn't indicate root cause)
+        return description.strip()
     
     def train_from_defects(self, triaged_defects: List[Dict], min_samples: int = 10, incremental: bool = True) -> bool:
         """
