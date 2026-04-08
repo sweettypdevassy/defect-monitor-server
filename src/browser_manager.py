@@ -165,8 +165,12 @@ class BrowserManager:
             logger.warning(f"⚠️ Error verifying page: {e}")
             return False
     
-    async def login_if_needed(self) -> bool:
-        """Check if logged in, if not perform login with 2FA"""
+    async def login_if_needed(self, force_refresh: bool = False) -> bool:
+        """Check if logged in, if not perform login with 2FA
+        
+        Args:
+            force_refresh: If True, force a page refresh to get fresh cookies
+        """
         if not self.context:
             logger.error("Browser not started")
             return False
@@ -178,9 +182,27 @@ class BrowserManager:
                 page = pages[0]
                 current_url = page.url
                 
+                # Check if we're on a login page
+                if "login" in current_url.lower() or "authsvc" in current_url.lower():
+                    logger.warning("🔐 Detected login page - session expired, performing login...")
+                    return await self._perform_login(page)
+                
                 # If already on buildBreakReport, verify it's responding
-                if "buildBreakReport" in current_url and "login" not in current_url.lower():
+                if "buildBreakReport" in current_url:
                     logger.info("✅ Already on buildBreakReport! Verifying page is responding...")
+                    
+                    # If force_refresh is True, always refresh the page to get fresh cookies
+                    if force_refresh:
+                        logger.info("🔄 Force refreshing page to get fresh cookies...")
+                        await page.reload(wait_until="domcontentloaded", timeout=30000)
+                        await page.wait_for_timeout(2000)
+                        
+                        # Check if refresh redirected us to login
+                        current_url = page.url
+                        if "login" in current_url.lower() or "authsvc" in current_url.lower():
+                            logger.warning("🔐 Refresh redirected to login - session expired, performing login...")
+                            return await self._perform_login(page)
+                    
                     if await self._verify_page_responding(page):
                         logger.info("✅ Page verified - using existing session")
                         return True
@@ -188,6 +210,13 @@ class BrowserManager:
                         logger.warning("⚠️ Page not responding - will refresh")
                         await page.reload(wait_until="domcontentloaded", timeout=30000)
                         await page.wait_for_timeout(2000)
+                        
+                        # Check if refresh redirected us to login
+                        current_url = page.url
+                        if "login" in current_url.lower() or "authsvc" in current_url.lower():
+                            logger.warning("🔐 Refresh redirected to login - session expired, performing login...")
+                            return await self._perform_login(page)
+                        
                         if await self._verify_page_responding(page):
                             logger.info("✅ Page responding after refresh!")
                             return True
@@ -202,7 +231,13 @@ class BrowserManager:
                     await page.wait_for_timeout(2000)
                     
                     current_url = page.url
-                    if "buildBreakReport" in current_url and "login" not in current_url.lower():
+                    
+                    # Check if redirected to login
+                    if "login" in current_url.lower() or "authsvc" in current_url.lower():
+                        logger.warning("🔐 Redirected to login page - session expired, performing login...")
+                        return await self._perform_login(page)
+                    
+                    if "buildBreakReport" in current_url:
                         logger.info("✅ Landed on buildBreakReport! Verifying page is responding...")
                         if await self._verify_page_responding(page):
                             logger.info("✅ Session is still valid and page is responding!")
@@ -219,7 +254,13 @@ class BrowserManager:
                     await page.wait_for_timeout(2000)
                     
                     current_url = page.url
-                    if "buildBreakReport" in current_url and "login" not in current_url.lower():
+                    
+                    # Check if refresh redirected to login
+                    if "login" in current_url.lower() or "authsvc" in current_url.lower():
+                        logger.warning("🔐 Refresh redirected to login - session expired, performing login...")
+                        return await self._perform_login(page)
+                    
+                    if "buildBreakReport" in current_url:
                         logger.info("✅ Landed on buildBreakReport after refresh! Verifying...")
                         if await self._verify_page_responding(page):
                             logger.info("✅ Session refreshed successfully and page is responding!")

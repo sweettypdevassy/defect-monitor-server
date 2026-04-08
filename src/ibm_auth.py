@@ -98,8 +98,12 @@ class IBMAuthenticator:
                 return True
             return False
     
-    def _authenticate_with_retry(self) -> bool:
-        """Authenticate with retry logic"""
+    def _authenticate_with_retry(self, force_refresh: bool = False) -> bool:
+        """Authenticate with retry logic
+        
+        Args:
+            force_refresh: If True, force page refresh on first attempt
+        """
         import time
         
         # If using cookies, just verify they work
@@ -142,7 +146,9 @@ class IBMAuthenticator:
         for attempt in range(1, self.max_retries + 1):
             try:
                 logger.info(f"Authentication attempt {attempt}/{self.max_retries}")
-                if self._do_authenticate():
+                # Force refresh on first attempt if requested, or on retry attempts
+                should_refresh = force_refresh or (attempt > 1)
+                if self._do_authenticate(force_refresh=should_refresh):
                     return True
                 
                 if attempt < self.max_retries:
@@ -167,18 +173,22 @@ class IBMAuthenticator:
         """
         return self._authenticate_with_retry()
     
-    def _do_authenticate(self) -> bool:
+    def _do_authenticate(self, force_refresh: bool = False) -> bool:
         """
         Authenticate with IBM Build Break Report using Playwright
         Since cookies expire in 10 minutes and W3ID uses JavaScript auth,
         we must use browser automation for every authentication
+        
+        Args:
+            force_refresh: If True, force page refresh to get fresh cookies
+            
         Returns True if successful, False otherwise
         """
         try:
             logger.info(f"Authenticating with IBM Build Break Report using Playwright for user: {self.username}")
             
-            # Use Playwright to login and get cookies
-            cookies = self._playwright_login()
+            # Use Playwright to login and get cookies (with optional force refresh)
+            cookies = self._playwright_login(force_refresh=force_refresh)
             
             if not cookies:
                 logger.error("❌ Playwright login failed")
@@ -235,15 +245,19 @@ class IBMAuthenticator:
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return False
     
-    def _playwright_login(self):
-        """Use async browser manager to login and extract cookies"""
+    def _playwright_login(self, force_refresh: bool = False):
+        """Use async browser manager to login and extract cookies
+        
+        Args:
+            force_refresh: If True, force page refresh to get fresh cookies
+        """
         try:
             # Get browser manager and use its persistent event loop
             browser_manager = get_browser_manager()
             loop = browser_manager._ensure_event_loop()
             
             # Run async login using the browser manager's event loop
-            result = loop.run_until_complete(self._async_playwright_login())
+            result = loop.run_until_complete(self._async_playwright_login(force_refresh=force_refresh))
             return result
             
         except Exception as e:
@@ -252,16 +266,20 @@ class IBMAuthenticator:
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return None
     
-    async def _async_playwright_login(self):
-        """Async method to use browser manager"""
+    async def _async_playwright_login(self, force_refresh: bool = False):
+        """Async method to use browser manager
+        
+        Args:
+            force_refresh: If True, force page refresh to get fresh cookies
+        """
         try:
             browser_manager = get_browser_manager()
             
             # Start browser if not already started
             await browser_manager.start(self.username, self.password)
             
-            # Login if needed (opens new tab, checks session, closes tab)
-            success = await browser_manager.login_if_needed()
+            # Login if needed with optional force refresh
+            success = await browser_manager.login_if_needed(force_refresh=force_refresh)
             
             if not success:
                 logger.error("❌ Browser login failed")

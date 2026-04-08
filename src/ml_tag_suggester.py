@@ -243,12 +243,16 @@ class MLTagSuggester:
                 y_train = []
                 
                 for tag in self.tag_mapping.values():
-                    # Use FIXED indices (no shuffle) for consistent test set
-                    # Always use the FIRST 10 samples of each class for testing
-                    # This ensures the test set never changes as we add more data
+                    # Use RANDOM selection for diverse test set
+                    # This ensures test set includes defects from different components
+                    import random
                     indices = list(range(len(X_by_class[tag])))
                     
-                    # Test: ALWAYS first 10 samples (fixed)
+                    # Shuffle indices to get random samples
+                    random.seed(42)  # Fixed seed for reproducibility
+                    random.shuffle(indices)
+                    
+                    # Test: Random 10 samples from shuffled indices
                     test_indices = indices[:samples_per_class]
                     train_indices = indices[samples_per_class:]
                     
