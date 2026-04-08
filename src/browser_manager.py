@@ -33,7 +33,19 @@ class BrowserManager:
         self.context = None
         self.username = None
         self.password = None
+        self.event_loop = None  # Persistent event loop for browser operations
         logger.info("🌐 Browser Manager initialized")
+    
+    def _ensure_event_loop(self):
+        """Ensure we have a persistent event loop for browser operations"""
+        if self.event_loop is None or self.event_loop.is_closed():
+            logger.info("🔄 Creating new event loop for browser manager")
+            self.event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.event_loop)
+        else:
+            # Set as current event loop for this thread
+            asyncio.set_event_loop(self.event_loop)
+        return self.event_loop
     
     async def start(self, username: str, password: str, user_data_dir: str = "/app/data/chrome_profile"):
         """Start the persistent browser session"""
