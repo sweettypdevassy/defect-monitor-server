@@ -588,24 +588,25 @@ class DefectScheduler:
     def run_proactive_authentication(self):
         """
         Proactively authenticate with IBM to keep session fresh
-        This prevents mid-task authentication failures and 2FA timeouts
+        Forces a FRESH LOGIN with 2FA to reset session expiration timer
+        This prevents mid-task authentication failures
         """
         try:
             logger.info("=" * 60)
-            logger.info("🔐 Starting proactive 2FA authentication")
+            logger.info("🔐 Starting proactive FRESH 2FA authentication")
+            logger.info("   (Forcing fresh login to reset session timer)")
             logger.info("=" * 60)
             
-            # Get the authenticator
-            authenticator = self.defect_checker.authenticator
+            # Get the browser manager
+            from browser_manager import get_browser_manager
+            browser_manager = get_browser_manager()
             
-            # Check if session is already valid
-            if authenticator.is_session_valid():
-                logger.info("✅ Session is already valid - refreshing to extend lifetime")
-            else:
-                logger.info("⚠️  Session is invalid - performing full authentication")
+            # Force a fresh login with 2FA to get brand new cookies
+            logger.info("🔄 Forcing fresh login to reset session expiration...")
             
-            # Perform authentication (will use 2FA if needed)
-            success = authenticator.authenticate()
+            # Run the async fresh login in the browser manager's event loop
+            loop = browser_manager._ensure_event_loop()
+            success = loop.run_until_complete(browser_manager.force_fresh_login())
             
             if success:
                 logger.info("=" * 60)

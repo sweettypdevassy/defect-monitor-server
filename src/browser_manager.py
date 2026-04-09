@@ -557,6 +557,46 @@ class BrowserManager:
         logger.error("❌ All login attempts failed")
         return False
     
+    async def force_fresh_login(self) -> bool:
+        """
+        Force a fresh login with 2FA to get brand new cookies
+        This resets the session expiration timer
+        """
+        try:
+            logger.info("🔄 Forcing fresh login to reset session...")
+            
+            if not self.context:
+                logger.error("❌ Browser context not initialized")
+                return False
+            
+            # Get the page
+            pages = self.context.pages
+            if pages:
+                page = pages[0]
+            else:
+                page = await self.context.new_page()
+            
+            # Clear existing cookies to force fresh login
+            logger.info("🗑️  Clearing existing cookies...")
+            await self.context.clear_cookies()
+            
+            # Perform fresh login with 2FA
+            logger.info("🔐 Performing fresh login with 2FA...")
+            success = await self._perform_login(page)
+            
+            if success:
+                logger.info("✅ Fresh login successful - session reset with new cookies")
+                return True
+            else:
+                logger.error("❌ Fresh login failed")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error during fresh login: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
     async def stop(self):
         """Stop the browser session - DISABLED to keep session alive across restarts"""
         # DO NOT close the browser - we want to keep the session alive!
