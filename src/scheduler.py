@@ -174,8 +174,27 @@ class DefectScheduler:
             
             logger.info(f"✅ Scheduled weekly dashboard on {dashboard_day} at {dashboard_time} {self.timezone}")
             
-            # Session refresh disabled - cookies are long-lived (8 hours)
-            # Manual refresh can be done via ./refresh_cookies_auto.sh when needed
+            # Schedule proactive 2FA authentication
+            proactive_auth_times = self.config.get("schedule", {}).get("proactive_auth_times", [])
+            if proactive_auth_times:
+                logger.info(f"📋 Scheduling proactive authentication at {len(proactive_auth_times)} times...")
+                for auth_time in proactive_auth_times:
+                    try:
+                        hour, minute = map(int, auth_time.split(":"))
+                        
+                        self.scheduler.add_job(
+                            self.run_proactive_authentication,
+                            CronTrigger(hour=hour, minute=minute, timezone=self.timezone),
+                            id=f"proactive_auth_{auth_time.replace(':', '')}",
+                            name=f"Proactive 2FA Authentication at {auth_time}",
+                            replace_existing=True
+                        )
+                        
+                        logger.info(f"✅ Scheduled proactive authentication at {auth_time} {self.timezone}")
+                    except Exception as e:
+                        logger.error(f"Error scheduling proactive auth at {auth_time}: {e}")
+            else:
+                logger.info("ℹ️  No proactive authentication times configured")
             
             # Schedule data cleanup weekly
             self.scheduler.add_job(
@@ -565,6 +584,60 @@ class DefectScheduler:
         except Exception as e:
             logger.error(f"Error refreshing session: {e}")
             logger.info("💡 Tip: Refresh your cookies using ./refresh_cookies_auto.sh")
+    
+    def run_proactive_authentication(self):
+        """
+        Proactively authenticate with IBM to keep session fresh
+        This prevents mid-task authentication failures and 2FA timeouts
+        """
+        try:
+            logger.info("=" * 60)
+            logger.info("🔐 Starting proactive 2FA authentication")
+            logger.info("=" * 60)
+            
+            # Get the authenticator
+            authenticator = self.defect_checker.authenticator
+            
+            # Check if session is already valid
+            if authenticator.is_session_valid():
+                logger.info("✅ Session is already valid - refreshing to extend lifetime")
+            else:
+                logger.info("⚠️  Session is invalid - performing full authentication")
+            
+            # Perform authentication (will use 2FA if needed)
+            success = authenticator.authenticate()
+            
+            if success:
+                logger.info("=" * 60)
+                logger.info("✅ Proactive authentication completed successfully")
+                logger.info("   Session is now fresh and ready for scheduled tasks")
+                logger.info("=" * 60)
+            else:
+                logger.error("=" * 60)
+                logger.error("❌ Proactive authentication failed")
+                logger.error("   Please check 2FA approval or cookie configuration")
+                logger.error("=" * 60)
+                
+                # Send notification about authentication failure
+                try:
+                    self.slack_notifier.send_error_notification(
+                        "⚠️ Proactive authentication failed. Please approve 2FA or check cookie configuration."
+                    )
+                except Exception as notify_error:
+                    logger.error(f"Failed to send authentication failure notification: {notify_error}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error in proactive authentication: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            # Send error notification
+            try:
+                self.slack_notifier.send_error_notification(
+                    f"Proactive authentication error: {str(e)}"
+                )
+            except Exception as notify_error:
+                logger.error(f"Failed to send error notification: {notify_error}")
     
     def cleanup_old_data(self):
         """Clean up old data from database"""
