@@ -502,8 +502,15 @@ class BrowserManager:
                     except:
                         logger.warning("⏰ Timeout waiting for 2FA approval")
                         if attempt < max_attempts:
-                            logger.info("🔄 Refreshing page and retrying...")
-                            await page.reload()
+                            logger.info("🔄 2FA timeout - will retry from beginning...")
+                            logger.info("   This will trigger a NEW 2FA request on your phone")
+                            # Navigate back to start to trigger fresh login flow
+                            try:
+                                await page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/",
+                                              wait_until="networkidle", timeout=30000)
+                                await page.wait_for_timeout(2000)
+                            except:
+                                pass
                             continue
                         return False
                 
