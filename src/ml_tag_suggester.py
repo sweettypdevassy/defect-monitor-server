@@ -398,7 +398,25 @@ class MLTagSuggester:
             if not text.strip():
                 return ('unknown', 0.0, 'No text features available')
             
-            # Predict tag
+            # Check for strong infrastructure indicators (override ML)
+            text_lower = text.lower()
+            infrastructure_keywords = [
+                'timeout occurred',
+                'connection refused',
+                'network issue',
+                'slow download',
+                'connection timed out',
+                'unable to connect',
+                'network interruption',
+                'connection reset',
+                'host unreachable',
+                'no route to host'
+            ]
+            
+            if any(keyword in text_lower for keyword in infrastructure_keywords):
+                return ('infrastructure_bug', 0.95, 'Rule-based: Strong infrastructure indicator detected (timeout/network issue)')
+            
+            # Predict tag using ML
             predicted_label = self.model.predict([text])[0]
             predicted_tag = self.reverse_tag_mapping[predicted_label]
             
