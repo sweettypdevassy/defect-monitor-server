@@ -750,47 +750,8 @@ class DefectChecker:
             # Identify NEW defects (not in cache)
             ids_to_fetch = [id for id in all_ids if id not in cached_descriptions]
             
-            # REFRESH STATE for cached defects to detect if they've been cancelled
-            # This is important because Build Break Report API shows "Open" but Jazz/RTC may show "Canceled"
-            cached_ids_to_refresh = list(cached_descriptions.keys())
-            
             if cached_descriptions:
                 logger.debug(f"✅ Found {len(cached_descriptions)} cached descriptions")
-            
-            # Refresh state for cached defects to detect cancellations
-            refreshed_states = {}
-            if cached_ids_to_refresh:
-                logger.info(f"🔄 Refreshing state for {len(cached_ids_to_refresh)} cached defects to detect cancellations...")
-                refreshed_states = self.fetch_details_parallel(cached_ids_to_refresh, max_workers=5)
-                
-                # Update cache with new states
-                if refreshed_states:
-                    defects_to_update = []
-                    cancelled_found = 0
-                    for defect_id, details in refreshed_states.items():
-                        state = details.get('state', '')
-                        is_cancelled = details.get('is_cancelled', False)
-                        
-                        if is_cancelled:
-                            cancelled_found += 1
-                            logger.info(f"🚫 Detected cancelled defect {defect_id} in cache")
-                        
-                        # Find the defect to update
-                        defect_info = next((d for d in all_defects_for_dup_check if str(d.get('id')) == defect_id), None)
-                        if defect_info:
-                            # Get cached description
-                            cached_data = cached_descriptions.get(defect_id, {})
-                            defect_info['description'] = cached_data.get('description', '')
-                            defect_info['creation_date'] = cached_data.get('creation_date', '')
-                            defect_info['state'] = state  # Update with fresh state
-                            defect_info['is_cancelled'] = is_cancelled
-                            defect_info['component'] = component
-                            defects_to_update.append(defect_info)
-                    
-                    if defects_to_update:
-                        self.database.cache_defect_descriptions(defects_to_update)
-                        if cancelled_found > 0:
-                            logger.info(f"✅ Updated {len(defects_to_update)} cached defects ({cancelled_found} now cancelled)")
             
             # Fetch descriptions for NEW defects only (fast - typically 5-10 defects)
             newly_fetched_details = {}
