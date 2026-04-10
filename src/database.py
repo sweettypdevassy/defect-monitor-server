@@ -372,6 +372,37 @@ class DefectDatabase:
             logger.error(f"Error deleting cached descriptions: {e}")
             return False
     
+    def update_defect_state(self, defect_id: str, state: str) -> bool:
+        """
+        Update the state field for a specific defect in cache
+        Used to mark triaged cancelled defects so they're filtered from insights
+        
+        Args:
+            defect_id: The defect ID to update
+            state: The new state value (typically a Jazz/RTC state URL)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE defect_descriptions
+                SET state = ?
+                WHERE defect_id = ?
+            """, (state, str(defect_id)))
+            
+            conn.commit()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating defect state for {defect_id}: {e}")
+            return False
+    
     def get_all_triaged_defects_from_cache(self, component_names: Optional[List[str]] = None) -> List[Dict]:
         """
         Get all TRIAGED defects from cache for ML training

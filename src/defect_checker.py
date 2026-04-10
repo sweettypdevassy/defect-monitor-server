@@ -765,9 +765,23 @@ class DefectChecker:
                     self.database.delete_cached_descriptions(untriaged_to_delete)
                     logger.info(f"🗑️  Deleted {len(untriaged_to_delete)} untriaged cancelled defects from cache")
                 
-                # Log triaged defects that are kept for ML training
+                # Update state for triaged defects to mark them as cancelled
+                # This ensures they're filtered out from insights/dashboard but kept for ML training
                 if triaged_to_keep:
                     logger.info(f"💾 Kept {len(triaged_to_keep)} triaged cancelled defects for ML training: {triaged_to_keep}")
+                    logger.info(f"🔄 Updating state to 'cancelled' for {len(triaged_to_keep)} triaged defects...")
+                    
+                    # Fetch current state from Jazz/RTC for these defects
+                    for defect_id in triaged_to_keep:
+                        try:
+                            details = self.fetch_defect_details(defect_id)
+                            if details:
+                                state = details.get('state', '')
+                                # Update the cached defect's state
+                                self.database.update_defect_state(defect_id, state)
+                                logger.debug(f"Updated state for defect {defect_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to update state for defect {defect_id}: {e}")
             
             # Check cache first (only for defects in current API response)
             logger.debug(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
