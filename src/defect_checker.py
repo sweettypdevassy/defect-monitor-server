@@ -738,10 +738,36 @@ class DefectChecker:
             # These are likely cancelled/closed defects that no longer appear in Build Break Report
             removed_ids = all_cached_ids - set(all_ids)
             if removed_ids:
-                logger.info(f"🗑️  Found {len(removed_ids)} defects in cache but not in API (likely cancelled): {removed_ids}")
-                # Remove them from cache
-                self.database.delete_cached_descriptions(list(removed_ids))
-                logger.info(f"✅ Removed {len(removed_ids)} stale defects from cache")
+                logger.info(f"🔍 Found {len(removed_ids)} defects in cache but not in API (likely cancelled): {removed_ids}")
+                
+                # Only delete UNTRIAGED defects (no ML tags)
+                # Keep TRIAGED defects for ML training even if cancelled
+                untriaged_to_delete = []
+                triaged_to_keep = []
+                
+                for defect in all_cached_for_component:
+                    defect_id = str(defect.get('id'))
+                    if defect_id in removed_ids:
+                        tags = defect.get('triageTags', [])
+                        # Check if defect has ML tags (test_bug, product_bug, infrastructure_bug)
+                        has_ml_tags = any(
+                            any(keyword in str(tag).lower() for keyword in ['test', 'product', 'infra', 'infrastructure'])
+                            for tag in tags
+                        )
+                        
+                        if has_ml_tags:
+                            triaged_to_keep.append(defect_id)
+                        else:
+                            untriaged_to_delete.append(defect_id)
+                
+                # Delete only untriaged defects
+                if untriaged_to_delete:
+                    self.database.delete_cached_descriptions(untriaged_to_delete)
+                    logger.info(f"🗑️  Deleted {len(untriaged_to_delete)} untriaged cancelled defects from cache")
+                
+                # Log triaged defects that are kept for ML training
+                if triaged_to_keep:
+                    logger.info(f"💾 Kept {len(triaged_to_keep)} triaged cancelled defects for ML training: {triaged_to_keep}")
             
             # Check cache first (only for defects in current API response)
             logger.debug(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
