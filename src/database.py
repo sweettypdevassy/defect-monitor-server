@@ -287,7 +287,7 @@ class DefectDatabase:
             return {}
     
     def get_all_cached_descriptions_for_component(self, component: str) -> List[Dict]:
-        """Get all cached descriptions for a component"""
+        """Get all cached descriptions for a component, filtering out cancelled/closed defects"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -299,8 +299,19 @@ class DefectDatabase:
             """, (component,))
             
             results = []
+            filtered_count = 0
             for row in cursor.fetchall():
                 defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds = row
+                
+                # Filter out cancelled/closed/resolved defects
+                if state and isinstance(state, str):
+                    state_lower = state.lower()
+                    if any(keyword in state_lower for keyword in ['canceled', 'cancelled', 'closed', 'resolved']):
+                        if 'jazz/oslc/workflows' in state_lower:  # Only filter if it's a valid RTC state URL
+                            filtered_count += 1
+                            logger.debug(f"Filtering cached cancelled defect {defect_id}")
+                            continue
+                
                 results.append({
                     'id': defect_id,
                     'description': description or '',
@@ -315,7 +326,10 @@ class DefectDatabase:
             
             conn.close()
             
-            logger.debug(f"✅ Retrieved {len(results)} cached descriptions for {component}")
+            if filtered_count > 0:
+                logger.info(f"✅ Retrieved {len(results)} cached descriptions for {component} (filtered {filtered_count} cancelled)")
+            else:
+                logger.debug(f"✅ Retrieved {len(results)} cached descriptions for {component}")
             return results
             
         except Exception as e:
