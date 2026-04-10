@@ -607,6 +607,7 @@ class DefectChecker:
         Parse and categorize defects - ONLY returns untriaged defects
         Matches the logic from defect-triaging-extension and IBM Build Break Report
         Also checks for duplicates within the component
+        Filters out cancelled/closed/resolved defects
         
         Args:
             defects: List of defects from API
@@ -620,9 +621,17 @@ class DefectChecker:
         test_bugs_count = 0
         product_bugs_count = 0
         infra_bugs_count = 0
+        cancelled_count = 0
         
         for defect in defects:
-            # Store all defects for duplicate checking
+            # Check if defect is cancelled/closed/resolved
+            state = defect.get("state", "")
+            if self.is_defect_cancelled(state):
+                cancelled_count += 1
+                logger.debug(f"Filtering out cancelled defect {defect.get('id')} from {component}")
+                continue  # Skip cancelled defects
+            
+            # Store all active defects for duplicate checking
             all_defects_for_dup_check.append(defect)
             
             # Get triage tags
@@ -869,9 +878,13 @@ class DefectChecker:
                         defect["suggestion_confidence"] = confidence
                         defect["suggestion_reasoning"] = reasoning
         
+        # Log cancelled defects if any were filtered
+        if cancelled_count > 0:
+            logger.info(f"🚫 Filtered out {cancelled_count} cancelled/closed defects from {component}")
+        
         result = {
             "component": component,
-            "total": len(defects),  # Total defects from API
+            "total": len(defects) - cancelled_count,  # Total ACTIVE defects (excluding cancelled)
             "untriaged": untriaged_count,  # Count of untriaged
             "test_bugs": test_bugs_count,  # Count of triaged test bugs
             "product_bugs": product_bugs_count,  # Count of triaged product bugs
