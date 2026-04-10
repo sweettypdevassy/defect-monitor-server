@@ -730,7 +730,20 @@ class DefectChecker:
             # Collect all defect IDs from current API fetch
             all_ids = [str(d.get('id')) for d in all_defects_for_dup_check if d.get('id')]
             
-            # Check cache first
+            # Get ALL cached defects for this component (not just the ones in current API response)
+            all_cached_for_component = self.database.get_all_cached_descriptions_for_component(component)
+            all_cached_ids = {str(d.get('id')) for d in all_cached_for_component}
+            
+            # Find defects that are in cache but NOT in current API response
+            # These are likely cancelled/closed defects that no longer appear in Build Break Report
+            removed_ids = all_cached_ids - set(all_ids)
+            if removed_ids:
+                logger.info(f"🗑️  Found {len(removed_ids)} defects in cache but not in API (likely cancelled): {removed_ids}")
+                # Remove them from cache
+                self.database.delete_cached_descriptions(list(removed_ids))
+                logger.info(f"✅ Removed {len(removed_ids)} stale defects from cache")
+            
+            # Check cache first (only for defects in current API response)
             logger.debug(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
             cached_descriptions = self.database.get_cached_descriptions(all_ids)
             

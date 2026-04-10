@@ -336,6 +336,42 @@ class DefectDatabase:
             logger.error(f"Error retrieving cached descriptions for component: {e}")
             return []
     
+    def delete_cached_descriptions(self, defect_ids: List[str]) -> bool:
+        """
+        Delete cached descriptions for specific defect IDs
+        Used to remove stale defects that no longer appear in Build Break Report
+        
+        Args:
+            defect_ids: List of defect IDs to delete
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not defect_ids:
+            return True
+            
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Delete defects
+            placeholders = ','.join('?' * len(defect_ids))
+            cursor.execute(f"""
+                DELETE FROM defect_descriptions
+                WHERE defect_id IN ({placeholders})
+            """, defect_ids)
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"🗑️  Deleted {deleted_count} defects from cache: {defect_ids}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting cached descriptions: {e}")
+            return False
+    
     def get_all_triaged_defects_from_cache(self, component_names: Optional[List[str]] = None) -> List[Dict]:
         """
         Get all TRIAGED defects from cache for ML training
