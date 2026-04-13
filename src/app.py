@@ -390,6 +390,14 @@ def api_refresh_components():
         soe_result = None
         try:
             logger.info("🔄 Refreshing SOE Triage: Overdue Defects...")
+            
+            # Check if session is valid, re-authenticate if needed
+            if not authenticator.is_session_valid():
+                logger.info("Session invalid, re-authenticating before SOE fetch...")
+                if not authenticator.authenticate():
+                    logger.error("❌ Re-authentication failed, skipping SOE Triage refresh")
+                    raise Exception("Authentication failed")
+            
             soe_defects = defect_checker.fetch_soe_triage_defects()
             
             if soe_defects is not None:
