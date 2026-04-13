@@ -832,6 +832,19 @@ class DefectChecker:
                         else:
                             logger.info(f"✅ Cached {len(defects_to_cache)} new defects")
             
+            # CRITICAL FIX: Update cache for ALL defects to reflect current tags from IBM
+            # This ensures that when tags are removed in IBM, they're also removed from cache
+            defects_to_update = []
+            for defect in all_defects_for_dup_check:
+                defect_id = str(defect.get('id'))
+                # Update cache with current defect data (including updated tags)
+                defect['component'] = component
+                defects_to_update.append(defect)
+            
+            if defects_to_update:
+                self.database.cache_defect_descriptions(defects_to_update)
+                logger.debug(f"🔄 Updated cache for {len(defects_to_update)} defects with current tags")
+            
             # Combine cached and newly fetched descriptions
             all_descriptions = {**cached_descriptions}
             for defect_id, details in newly_fetched_details.items():
