@@ -5,6 +5,7 @@ Web dashboard for defect monitoring
 
 from flask import Flask, render_template, jsonify, request
 import yaml
+import json
 import logging
 from pathlib import Path
 import sys
@@ -340,6 +341,7 @@ def api_refresh_component(component_name):
 def api_refresh_components():
     """
     Refresh data for multiple components from IBM system
+    Also refreshes SOE Triage: Overdue Defects
     Accepts JSON body with 'components' array
     """
     try:
@@ -384,14 +386,62 @@ def api_refresh_components():
                 logger.error(f"❌ Error refreshing {component_name}: {e}")
                 errors.append({"component": component_name, "error": str(e)})
         
+        # Also refresh SOE Triage: Overdue Defects
+        soe_result = None
+        try:
+            logger.info("🔄 Refreshing SOE Triage: Overdue Defects...")
+            soe_defects = defect_checker.fetch_soe_triage_defects()
+            
+            if soe_defects is not None:
+                soe_result = {
+                    "total": len(soe_defects),
+                    "defects": soe_defects
+                }
+                
+                # Store SOE Triage data in database
+                date = datetime.now().strftime("%Y-%m-%d")
+                created_at = datetime.now().isoformat()
+                
+                import sqlite3
+                conn = sqlite3.connect(database.db_path)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT OR REPLACE INTO soe_snapshots
+                    (date, total, data, created_at)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    date,
+                    soe_result["total"],
+                    json.dumps(soe_result),
+                    created_at
+                ))
+                conn.commit()
+                conn.close()
+                
+                logger.info(f"✅ SOE Triage: {len(soe_defects)} overdue defects refreshed")
+            else:
+                logger.warning("⚠️ Failed to fetch SOE Triage defects")
+                
+        except Exception as e:
+            logger.error(f"❌ Error refreshing SOE Triage: {e}")
+        
         logger.info(f"✅ Batch refresh completed: {len(results)} successful, {len(errors)} failed")
         
-        return jsonify({
+        response_data = {
             "message": f"Refreshed {len(results)} components",
             "results": results,
             "errors": errors,
             "timestamp": datetime.now().isoformat()
-        })
+        }
+        
+        # Add SOE Triage info to response
+        if soe_result:
+            response_data["soe_triage"] = {
+                "total": soe_result["total"],
+                "refreshed": True
+            }
+        
+        return jsonify(response_data)
         
     except Exception as e:
         logger.error(f"❌ Error in batch refresh: {e}")
