@@ -651,13 +651,21 @@ class DefectDatabase:
                     for tag in tags_lower
                 )
                 
+                # Parse state if it's a URL
+                parsed_state = state
+                if state and 'oslc/workflows' in state:
+                    # Extract state name from URL like: .../commonWorkflow.state.canceled
+                    state_parts = state.split('.')
+                    if len(state_parts) > 0:
+                        parsed_state = state_parts[-1].capitalize()
+                
                 # Build defect object
                 defect = {
                     'id': defect_id,
                     'component': component,
                     'summary': summary,
                     'owner': 'Unknown',  # Not stored in defect_descriptions
-                    'state': state,
+                    'state': parsed_state,
                     'functionalArea': functional_area or 'Unknown',
                     'triageTags': tags,
                     'tags': tags
