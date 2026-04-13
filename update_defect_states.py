@@ -47,8 +47,9 @@ def main():
     print("🔄 Updating defect states...")
     print()
     
-    # Update defect #308744 from Canceled to Open
+    # Update defects from Canceled to Open
     update_defect_state(db_path, "308744", "Open")
+    update_defect_state(db_path, "308600", "Open")
     
     print()
     print("✅ Done! Restart the Docker container:")
