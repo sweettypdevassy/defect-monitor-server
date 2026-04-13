@@ -628,8 +628,9 @@ class DefectChecker:
             state = defect.get("state", "")
             if self.is_defect_cancelled(state):
                 cancelled_count += 1
-                logger.debug(f"Filtering out cancelled defect {defect.get('id')} from {component}")
-                continue  # Skip cancelled defects
+                defect_id = defect.get('id', 'unknown')
+                logger.info(f"🚫 Filtering cancelled defect {defect_id} from {component} (state: {state.split('.')[-1] if '.' in state else state})")
+                continue  # Skip cancelled defects - will reappear if reopened
             
             # Store all active defects for duplicate checking
             all_defects_for_dup_check.append(defect)

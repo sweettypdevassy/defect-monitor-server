@@ -584,14 +584,14 @@ class DefectDatabase:
             cursor = conn.cursor()
             
             # Query defect_descriptions table for defects with triage tags
-            # Filter out cancelled/closed defects
+            # Filter out cancelled/closed/resolved defects (state URLs contain these keywords)
             if component_names:
                 placeholders = ','.join('?' * len(component_names))
                 query = f"""
                     SELECT defect_id, component, summary, state, tags, functional_area
                     FROM defect_descriptions
                     WHERE component IN ({placeholders})
-                    AND state NOT IN ('Cancelled', 'Closed', 'Resolved')
+                    AND (state NOT LIKE '%cancel%' AND state NOT LIKE '%closed%' AND state NOT LIKE '%resolved%')
                     AND (tags LIKE '%test_bug%' OR tags LIKE '%test%' OR tags LIKE '%product_bug%' OR tags LIKE '%product%' OR tags LIKE '%infrastructure_bug%' OR tags LIKE '%infrastructure%' OR tags LIKE '%infra_bug%' OR tags LIKE '%infra%')
                     ORDER BY component ASC, defect_id DESC
                 """
@@ -600,8 +600,8 @@ class DefectDatabase:
                 cursor.execute("""
                     SELECT defect_id, component, summary, state, tags, functional_area
                     FROM defect_descriptions
-                    WHERE state NOT IN ('Cancelled', 'Closed', 'Resolved')
-                    AND (tags LIKE '%test_bug%' OR tags LIKE '%test%' OR tags LIKE '%product_bug%' OR tags LIKE '%product%' OR tags LIKE '%infrastructure_bug%' OR tags LIKE '%infrastructure%' OR tags LIKE '%infra_bug%' OR tags LIKE '%infra%')
+                    WHERE (state NOT LIKE '%cancel%' AND state NOT LIKE '%closed%' AND state NOT LIKE '%resolved%')
+                    AND (tags LIKE '%test_bug%' OR tags LIKE '%test%' OR tags LIKE '%product_bug%' OR tags LIKE '%product%' OR tags LIKE '%infra structure_bug%' OR tags LIKE '%infrastructure%' OR tags LIKE '%infra_bug%' OR tags LIKE '%infra%')
                     ORDER BY component ASC, defect_id DESC
                 """)
             
