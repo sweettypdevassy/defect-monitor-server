@@ -391,12 +391,10 @@ def api_refresh_components():
         try:
             logger.info("🔄 Refreshing SOE Triage: Overdue Defects...")
             
-            # Check if session is valid, re-authenticate if needed
-            if not authenticator.is_session_valid():
-                logger.info("Session invalid, re-authenticating before SOE fetch...")
-                if not authenticator.authenticate():
-                    logger.error("❌ Re-authentication failed, skipping SOE Triage refresh")
-                    raise Exception("Authentication failed")
+            # Authenticate with Jazz/RTC (same as scheduled checks)
+            if not authenticator.authenticate_jazz_rtc():
+                logger.error("❌ Jazz/RTC authentication failed, skipping SOE Triage refresh")
+                raise Exception("Jazz/RTC authentication failed")
             
             soe_defects = defect_checker.fetch_soe_triage_defects()
             
