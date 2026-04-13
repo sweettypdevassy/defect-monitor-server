@@ -3,7 +3,7 @@ Main Flask Application
 Web dashboard for defect monitoring
 """
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, redirect, url_for
 import yaml
 import json
 import logging
@@ -150,8 +150,8 @@ def add_header(response):
 
 @app.route('/')
 def index():
-    """Home page"""
-    return render_template('index.html')
+    """Redirect to dashboard"""
+    return redirect(url_for('dashboard'))
 
 
 @app.route('/dashboard')
