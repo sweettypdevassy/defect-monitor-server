@@ -835,6 +835,139 @@ async function renderUntriagedDefects(selectedComponents = null) {
     }
 }
 
+// ============================================
+// TRIAGED DEFECTS RENDERING
+// ============================================
+
+async function renderTriagedDefects(selectedComponents = null) {
+    console.log('🔧 renderTriagedDefects called with components:', selectedComponents);
+    
+    const productTbody = document.getElementById('productDefectsTableBody');
+    const infraTbody = document.getElementById('infraDefectsTableBody');
+    const testTbody = document.getElementById('testDefectsTableBody');
+    
+    console.log('Table elements found:', {
+        product: !!productTbody,
+        infra: !!infraTbody,
+        test: !!testTbody
+    });
+    
+    if (!productTbody || !infraTbody || !testTbody) {
+        console.error('❌ Triaged defects tables not found in DOM');
+        return;
+    }
+    
+    try {
+        // Show loading state for all three tables
+        const loadingHtml = `
+            <tr>
+                <td colspan="6" style="text-align: center; padding: 20px; color: #8899a6;">
+                    <div style="display: flex; align-items: center; justify-content: center; gap: 10px;">
+                        <div class="loading-spinner" style="width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.1); border-top-color: #1d9bf0; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                        <span>Loading triaged defects...</span>
+                    </div>
+                </td>
+            </tr>
+        `;
+        productTbody.innerHTML = loadingHtml;
+        infraTbody.innerHTML = loadingHtml;
+        testTbody.innerHTML = loadingHtml;
+        
+        // Build API URL with component filter if provided
+        let apiUrl = '/api/triaged-defects';
+        if (selectedComponents && selectedComponents.length > 0) {
+            apiUrl += '?components=' + encodeURIComponent(selectedComponents.join(','));
+        }
+        
+        console.log('📡 Fetching from:', apiUrl);
+        
+        // Fetch triaged defects from Flask API
+        const response = await fetch(apiUrl);
+        const result = await response.json();
+        
+        console.log('📦 API Response:', result);
+        
+        const productBugs = result.product_bugs || [];
+        const infraBugs = result.infra_bugs || [];
+        const testBugs = result.test_bugs || [];
+        
+        console.log('=== Triaged Defects ===');
+        console.log('Product bugs:', productBugs.length);
+        console.log('Infrastructure bugs:', infraBugs.length);
+        console.log('Test bugs:', testBugs.length);
+        console.log('Total triaged:', result.total_triaged);
+        
+        // Helper function to render defect rows
+        const renderDefectRows = (defects, emptyMessage) => {
+            if (defects.length === 0) {
+                return `
+                    <tr>
+                        <td colspan="6" style="text-align: center; padding: 20px; color: #8899a6;">
+                            ${emptyMessage}
+                        </td>
+                    </tr>
+                `;
+            }
+            
+            return defects.map(defect => {
+                const defectId = defect.id || 'Unknown';
+                const component = defect.component || 'Unknown';
+                const summary = defect.summary || 'No summary';
+                const owner = defect.owner || 'Unassigned';
+                const state = defect.state || 'Unknown';
+                const triageTags = defect.triageTags || defect.tags || [];
+                
+                // Format triage tags
+                const tagsDisplay = triageTags.length > 0 
+                    ? triageTags.map(tag => {
+                        const tagLower = String(tag).toLowerCase();
+                        const tagColor = tagLower.includes('test') ? '#ffad1f' :
+                                       tagLower.includes('product') ? '#1d9bf0' :
+                                       tagLower.includes('infra') ? '#00d4aa' : '#8899a6';
+                        return `<span style="background: ${tagColor}20; color: ${tagColor}; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-right: 4px;">${tag}</span>`;
+                    }).join('')
+                    : '<span style="color: #8899a6;">-</span>';
+                
+                return `
+                    <tr>
+                        <td>
+                            <a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${defectId}"
+                               target="_blank"
+                               class="defect-id"
+                               style="color: #1d9bf0; text-decoration: none; font-weight: 600;">
+                                #${defectId}
+                            </a>
+                        </td>
+                        <td style="font-size: 11px; color: #8899a6;">${component}</td>
+                        <td style="font-size: 11px;">${summary}</td>
+                        <td style="font-size: 11px; color: #8899a6;">${owner}</td>
+                        <td style="font-size: 11px; color: #8899a6;">${state}</td>
+                        <td style="font-size: 11px;">${tagsDisplay}</td>
+                    </tr>
+                `;
+            }).join('');
+        };
+        
+        // Render each category
+        productTbody.innerHTML = renderDefectRows(productBugs, '✅ No product defects found');
+        infraTbody.innerHTML = renderDefectRows(infraBugs, '✅ No infrastructure defects found');
+        testTbody.innerHTML = renderDefectRows(testBugs, '✅ No test defects found');
+        
+    } catch (error) {
+        console.error('Error loading triaged defects:', error);
+        const errorHtml = `
+            <tr>
+                <td colspan="6" style="text-align: center; padding: 20px; color: #ff6b9d;">
+                    ❌ Error loading triaged defects
+                </td>
+            </tr>
+        `;
+        productTbody.innerHTML = errorHtml;
+        infraTbody.innerHTML = errorHtml;
+        testTbody.innerHTML = errorHtml;
+    }
+}
+
 // No auto-load for monitored components - user selects components first
 
 // Add keyboard shortcut for refresh (R key)
@@ -985,6 +1118,16 @@ async function generateExplorerDashboard() {
             renderUntriagedDefects(selectedComponents);
         } catch (e) {
             console.error('Error rendering untriaged defects:', e);
+        }
+        
+        // Render triaged defects (product, infra, test) for selected components
+        try {
+            console.log('🔧 About to call renderTriagedDefects with:', selectedComponents);
+            await renderTriagedDefects(selectedComponents);
+            console.log('✅ renderTriagedDefects completed successfully');
+        } catch (e) {
+            console.error('❌ Error rendering triaged defects:', e);
+            console.error('Error stack:', e.stack);
         }
         
         // Render insights for selected components

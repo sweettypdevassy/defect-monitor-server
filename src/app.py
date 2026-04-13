@@ -707,6 +707,30 @@ def api_untriaged_defects():
         logger.error(f"Error getting untriaged defects: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/triaged-defects')
+def api_triaged_defects():
+    """Get all triaged defects categorized by tag type (product, infra, test)"""
+    try:
+        # Get component filter from query parameter
+        components_param = request.args.get('components')
+        component_names = None
+        if components_param:
+            component_names = [c.strip() for c in components_param.split(',')]
+        
+        # Get triaged defects categorized by type from database
+        triaged_data = database.get_all_triaged_defects_by_category(component_names)
+        
+        # Add cache-control headers to prevent browser caching
+        response = jsonify(triaged_data)
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
+    except Exception as e:
+        logger.error(f"Error getting triaged defects: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 
 @app.route('/api/components')
 def api_components():

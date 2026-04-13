@@ -568,6 +568,129 @@ class DefectDatabase:
             import traceback
             logger.error(traceback.format_exc())
             return []
+    def get_all_triaged_defects_by_category(self, component_names: Optional[List[str]] = None) -> Dict:
+        """
+        Get triaged defects from defect_descriptions cache, categorized by tag type
+        Returns defects that HAVE triage tags (product_bug, test_bug, infrastructure_bug)
+        
+        Args:
+            component_names: Optional list of component names to filter by
+            
+        Returns:
+            Dict with three lists: product_bugs, infra_bugs, test_bugs
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Query defect_descriptions table for defects with triage tags
+            # Filter out cancelled/closed defects
+            if component_names:
+                placeholders = ','.join('?' * len(component_names))
+                query = f"""
+                    SELECT defect_id, component, summary, state, tags, functional_area
+                    FROM defect_descriptions
+                    WHERE component IN ({placeholders})
+                    AND state NOT IN ('Cancelled', 'Closed', 'Resolved')
+                    AND (tags LIKE '%test_bug%' OR tags LIKE '%test%' OR tags LIKE '%product_bug%' OR tags LIKE '%product%' OR tags LIKE '%infrastructure_bug%' OR tags LIKE '%infrastructure%' OR tags LIKE '%infra_bug%' OR tags LIKE '%infra%')
+                    ORDER BY component ASC, defect_id DESC
+                """
+                cursor.execute(query, component_names)
+            else:
+                cursor.execute("""
+                    SELECT defect_id, component, summary, state, tags, functional_area
+                    FROM defect_descriptions
+                    WHERE state NOT IN ('Cancelled', 'Closed', 'Resolved')
+                    AND (tags LIKE '%test_bug%' OR tags LIKE '%test%' OR tags LIKE '%product_bug%' OR tags LIKE '%product%' OR tags LIKE '%infrastructure_bug%' OR tags LIKE '%infrastructure%' OR tags LIKE '%infra_bug%' OR tags LIKE '%infra%')
+                    ORDER BY component ASC, defect_id DESC
+                """)
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            logger.info(f"✅ Retrieved {len(rows)} triaged defects from defect_descriptions")
+            
+            # Now categorize defects by their triage tags
+            product_bugs = []
+            infra_bugs = []
+            test_bugs = []
+            
+            for row in rows:
+                defect_id, component, summary, state, tags_json, functional_area = row
+                
+                # Parse tags JSON
+                try:
+                    tags = json.loads(tags_json) if tags_json else []
+                except:
+                    tags = []
+                
+                # Ensure it's an array
+                if not isinstance(tags, list):
+                    tags = []
+                
+                # Convert all tags to lowercase strings for comparison
+                tags_lower = [str(tag).lower().strip() for tag in tags]
+                
+                # Check for specific triage tags (same logic as defect_checker.py)
+                has_test_bug = any(
+                    tag == 'test_bug' or tag == 'test' or
+                    'test_bug' in tag or 'testbug' in tag
+                    for tag in tags_lower
+                )
+                
+                has_product_bug = any(
+                    tag == 'product_bug' or tag == 'product' or
+                    'product_bug' in tag or 'productbug' in tag
+                    for tag in tags_lower
+                )
+                
+                has_infra_bug = any(
+                    tag == 'infrastructure_bug' or tag == 'infrastructure' or tag == 'infra' or
+                    'infrastructure_bug' in tag or 'infrastructurebug' in tag or
+                    'infra_bug' in tag or 'infrabug' in tag
+                    for tag in tags_lower
+                )
+                
+                # Build defect object
+                defect = {
+                    'id': defect_id,
+                    'component': component,
+                    'summary': summary,
+                    'owner': 'Unknown',  # Not stored in defect_descriptions
+                    'state': state,
+                    'functionalArea': functional_area or 'Unknown',
+                    'triageTags': tags,
+                    'tags': tags
+                }
+                
+                # Categorize by priority: infra_bug > test_bug > product_bug
+                if has_infra_bug:
+                    infra_bugs.append(defect)
+                elif has_test_bug:
+                    test_bugs.append(defect)
+                elif has_product_bug:
+                    product_bugs.append(defect)
+            
+            logger.info(f"✅ Categorized triaged defects: {len(product_bugs)} product, {len(infra_bugs)} infra, {len(test_bugs)} test")
+            
+            return {
+                "product_bugs": product_bugs,
+                "infra_bugs": infra_bugs,
+                "test_bugs": test_bugs,
+                "total_triaged": len(product_bugs) + len(infra_bugs) + len(test_bugs)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error retrieving triaged defects by category: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                "product_bugs": [],
+                "infra_bugs": [],
+                "test_bugs": [],
+                "total_triaged": 0
+            }
+    
     
     def get_component_from_daily_snapshot(self, component: str) -> Optional[Dict]:
         """Get pre-processed component data from daily_snapshots"""
