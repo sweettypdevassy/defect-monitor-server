@@ -788,8 +788,18 @@ class DefectChecker:
             logger.info(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
             cached_descriptions = self.database.get_cached_descriptions(all_ids)
             
-            # Identify NEW defects (not in cache)
-            ids_to_fetch = [id for id in all_ids if id not in cached_descriptions]
+            # Identify NEW defects (not in cache) OR defects with empty tags that need tag refresh
+            ids_to_fetch = []
+            for id in all_ids:
+                if id not in cached_descriptions:
+                    # New defect - fetch everything
+                    ids_to_fetch.append(id)
+                else:
+                    # Existing defect - check if it has tags
+                    cached_tags = cached_descriptions[id].get('triageTags', [])
+                    if not cached_tags:
+                        # No tags in cache - might have been added in IBM RTC, fetch to get tags
+                        ids_to_fetch.append(id)
             
             if cached_descriptions:
                 logger.info(f"✅ Found {len(cached_descriptions)} cached descriptions")
@@ -835,14 +845,23 @@ class DefectChecker:
                         else:
                             logger.info(f"✅ Cached {len(defects_to_cache)} new defects")
             
-            # Update cached defects with fresh state and tags from IBM API
+            # Update cached defects with fresh state from IBM API
             # This ensures state changes (e.g., canceled -> open) are reflected
+            # NOTE: We DON'T update tags here because IBM Build Break Report API doesn't return
+            # manually added triage tags - those come from IBM RTC API
             defects_to_update_state = []
             for defect in all_defects_for_dup_check:
                 defect_id = str(defect.get('id'))
                 if defect_id in cached_descriptions:
-                    # Defect is in cache, update its state and tags from fresh API data
+                    # Defect is in cache, update its state but KEEP existing tags
                     cached_desc = cached_descriptions[defect_id]
+                    api_tags = defect.get('triageTags', [])
+                    cached_tags = cached_desc.get('triageTags', [])
+                    
+                    # Only update tags if API has tags AND cache doesn't, or if API has more tags
+                    # This prevents overwriting manually added tags with empty arrays
+                    tags_to_use = cached_tags if (not api_tags and cached_tags) else api_tags
+                    
                     defect_to_update = {
                         'id': defect_id,
                         'description': cached_desc.get('description', ''),
@@ -850,14 +869,14 @@ class DefectChecker:
                         'component': component,
                         'functionalArea': defect.get('functionalArea', ''),
                         'state': defect.get('state', ''),  # Fresh state from API
-                        'triageTags': defect.get('triageTags', []),  # Fresh tags from API
+                        'triageTags': tags_to_use,  # Keep cached tags if API returns empty
                         'creation_date': cached_desc.get('creation_date', '')
                     }
                     defects_to_update_state.append(defect_to_update)
             
             if defects_to_update_state:
                 self.database.cache_defect_descriptions(defects_to_update_state)
-                logger.info(f"🔄 Updated state/tags for {len(defects_to_update_state)} cached defects")
+                logger.info(f"🔄 Updated state for {len(defects_to_update_state)} cached defects (preserved existing tags)")
             
             # Combine cached and newly fetched descriptions
             all_descriptions = {**cached_descriptions}
