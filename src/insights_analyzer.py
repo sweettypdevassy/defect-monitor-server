@@ -137,13 +137,13 @@ class InsightsAnalyzer:
         return duplicates
     
     def _find_rare_defects(self, component_name: str, defects: List[Dict]) -> List[Dict]:
-        """Find defects that occurred only once and are older than 2 weeks"""
+        """Find defects that occurred only once (or never) and are older than 30 days"""
         rare_defects = []
         
-        logger.debug(f"🔍 Checking {len(defects)} defects for rare defects (number_builds=1, age>=30 days)")
+        logger.debug(f"🔍 Checking {len(defects)} defects for rare defects (number_builds<=1, age>=30 days)")
         
         try:
-            # Find defects with number_builds == 1 AND have creation_date
+            # Find defects with number_builds <= 1 (0 or 1) AND have creation_date
             for defect in defects:
                 defect_id = defect['id']
                 # Use the number_builds field from Build Break Report API
@@ -152,8 +152,8 @@ class InsightsAnalyzer:
                 
                 logger.info(f"  Checking defect {defect_id}: number_builds={build_count}, creation_date={creation_date}")
                 
-                if build_count == 1:
-                    logger.info(f"    → Defect {defect_id} has 1 build, checking age...")
+                if build_count <= 1:
+                    logger.info(f"    → Defect {defect_id} has {build_count} build(s), checking age...")
                     # Skip if no creation date (can't determine age)
                     if not creation_date:
                         logger.warning(f"    → Defect {defect_id} has no creation_date, skipping")
