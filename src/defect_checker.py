@@ -643,11 +643,21 @@ class DefectChecker:
         for defect in defects:
             # Check if defect is cancelled/closed/resolved
             state = defect.get("state", "")
-            if self.is_defect_cancelled(state):
+            is_cancelled = self.is_defect_cancelled(state)
+            
+            if is_cancelled:
                 cancelled_count += 1
                 defect_id = defect.get('id', 'unknown')
                 logger.info(f"🚫 Filtering cancelled defect {defect_id} from {component} (state: {state.split('.')[-1] if '.' in state else state})")
-                continue  # Skip cancelled defects - will reappear if reopened
+                
+                # Check if cancelled defect has tags - if so, keep it for duplicate detection
+                triage_tags = defect.get("triageTags", defect.get("tags", []))
+                if isinstance(triage_tags, list) and triage_tags:
+                    # Has tags - add to duplicate detection pool so other defects can inherit its tags
+                    all_defects_for_dup_check.append(defect)
+                    logger.info(f"   💾 Keeping cancelled defect {defect_id} for duplicate detection (has tags: {triage_tags})")
+                
+                continue  # Skip cancelled defects from counts - will reappear if reopened
             
             # Store all active defects for duplicate checking
             all_defects_for_dup_check.append(defect)
@@ -923,7 +933,7 @@ class DefectChecker:
                     logger.warning(f"⚠️  No description found for untriaged defect {defect_id}")
                     defect['description'] = ''
             
-            # Apply descriptions to all defects for duplicate checking
+            # Apply descriptions AND tags to all defects for duplicate checking
             for defect in all_defects_for_dup_check:
                 defect_id = str(defect.get('id'))
                 if defect_id in all_descriptions:
@@ -931,6 +941,10 @@ class DefectChecker:
                     if isinstance(desc_data, dict):
                         defect['description'] = desc_data.get('description', '')
                         defect['creation_date'] = desc_data.get('creation_date', '')
+                        # Apply cached tags so duplicate detection can use them
+                        cached_tags = desc_data.get('triageTags', [])
+                        if cached_tags and not defect.get('triageTags'):
+                            defect['triageTags'] = cached_tags
                     else:
                         defect['description'] = desc_data
             
