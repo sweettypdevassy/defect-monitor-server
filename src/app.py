@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 import sys
 from datetime import datetime
+import threading
+from typing import Dict, List
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -51,6 +53,10 @@ slack_notifier = None
 database = None
 scheduler = None
 insights_analyzer = None
+
+# Track ongoing refresh operations
+refresh_status = {}
+refresh_lock = threading.Lock()
 
 # Initialize services when module is imported (for Gunicorn)
 def init_app():
@@ -337,12 +343,134 @@ def api_refresh_component(component_name):
         return jsonify({"error": str(e)}), 500
 
 
+def _do_refresh_components(component_names: List[str], refresh_id: str):
+    """Background task to refresh components"""
+    try:
+        with refresh_lock:
+            refresh_status[refresh_id] = {
+                "status": "running",
+                "progress": 0,
+                "total": len(component_names),
+                "results": [],
+                "errors": [],
+                "started_at": datetime.now().isoformat()
+            }
+        
+        results = []
+        errors = []
+        
+        for idx, component_name in enumerate(component_names):
+            try:
+                # Fetch fresh data from IBM (SAME as scheduled fetch)
+                defects = defect_checker.fetch_defects_for_component(component_name)
+                
+                if defects is None:
+                    errors.append({"component": component_name, "error": "Failed to fetch defects"})
+                    with refresh_lock:
+                        refresh_status[refresh_id]["errors"] = errors
+                        refresh_status[refresh_id]["progress"] = idx + 1
+                    continue
+                
+                # Add component field to each defect for caching (SAME as scheduled fetch)
+                for defect in defects:
+                    defect['component'] = component_name
+                
+                # Use FULL parsing with ML and duplicate detection (SAME as scheduled fetch)
+                result = defect_checker.parse_defects(defects, component_name)
+                
+                # Store in BOTH tables for dashboard and notifications (SAME as scheduled fetch)
+                database.store_all_components_snapshot(component_name, result, is_monitored=False)
+                database.store_daily_snapshot({"components": {component_name: result}})
+                
+                results.append({
+                    "component": component_name,
+                    "total": result.get('total', 0),
+                    "untriaged": result.get('untriaged', 0),
+                    "test_bugs": result.get('test_bugs', 0),
+                    "product_bugs": result.get('product_bugs', 0),
+                    "infra_bugs": result.get('infra_bugs', 0)
+                })
+                
+                logger.info(f"✅ {component_name}: Total={result['total']}, Untriaged={result['untriaged']}")
+                
+                # Update progress
+                with refresh_lock:
+                    refresh_status[refresh_id]["results"] = results
+                    refresh_status[refresh_id]["progress"] = idx + 1
+                
+            except Exception as e:
+                logger.error(f"❌ Error refreshing {component_name}: {e}")
+                errors.append({"component": component_name, "error": str(e)})
+                with refresh_lock:
+                    refresh_status[refresh_id]["errors"] = errors
+                    refresh_status[refresh_id]["progress"] = idx + 1
+        
+        # Also refresh SOE Triage: Overdue Defects
+        soe_result = None
+        try:
+            logger.info("🔄 Refreshing SOE Triage: Overdue Defects...")
+            
+            # Authenticate with Jazz/RTC (same as scheduled checks)
+            if not authenticator.authenticate_jazz_rtc():
+                logger.error("❌ Jazz/RTC authentication failed, skipping SOE Triage refresh")
+                raise Exception("Jazz/RTC authentication failed")
+            
+            soe_defects = defect_checker.fetch_soe_triage_defects()
+            
+            if soe_defects is not None:
+                soe_result = {
+                    "total": len(soe_defects),
+                    "defects": soe_defects
+                }
+                
+                # Store SOE Triage data in database
+                date = datetime.now().strftime("%Y-%m-%d")
+                created_at = datetime.now().isoformat()
+                
+                import sqlite3
+                conn = sqlite3.connect(database.db_path)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT OR REPLACE INTO soe_snapshots
+                    (date, total, data, created_at)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    date,
+                    soe_result["total"],
+                    json.dumps(soe_result),
+                    created_at
+                ))
+                conn.commit()
+                conn.close()
+                
+                logger.info(f"✅ SOE Triage: {len(soe_defects)} overdue defects refreshed")
+            else:
+                logger.warning("⚠️ Failed to fetch SOE Triage defects")
+                
+        except Exception as e:
+            logger.error(f"❌ Error refreshing SOE Triage: {e}")
+        
+        logger.info(f"✅ Batch refresh completed: {len(results)} successful, {len(errors)} failed")
+        
+        # Mark as completed
+        with refresh_lock:
+            refresh_status[refresh_id]["status"] = "completed"
+            refresh_status[refresh_id]["completed_at"] = datetime.now().isoformat()
+            refresh_status[refresh_id]["soe_result"] = soe_result
+            
+    except Exception as e:
+        logger.error(f"❌ Background refresh failed: {e}")
+        with refresh_lock:
+            refresh_status[refresh_id]["status"] = "failed"
+            refresh_status[refresh_id]["error"] = str(e)
+            refresh_status[refresh_id]["completed_at"] = datetime.now().isoformat()
+
+
 @app.route('/api/refresh-components', methods=['POST'])
 def api_refresh_components():
     """
-    Refresh data for multiple components from IBM system
-    Also refreshes SOE Triage: Overdue Defects
-    Accepts JSON body with 'components' array
+    Trigger background refresh for multiple components
+    Returns immediately with a refresh_id to track progress
     """
     try:
         data = request.get_json()
@@ -351,7 +479,95 @@ def api_refresh_components():
         if not component_names:
             return jsonify({"error": "No components specified"}), 400
         
-        logger.info(f"🔄 Batch refresh triggered for {len(component_names)} components")
+        # Generate unique refresh ID
+        refresh_id = f"refresh_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        logger.info(f"🔄 Batch refresh triggered for {len(component_names)} components (ID: {refresh_id})")
+        
+        # Start background thread
+        thread = threading.Thread(
+            target=_do_refresh_components,
+            args=(component_names, refresh_id),
+            daemon=True
+        )
+        thread.start()
+        
+        return jsonify({
+            "message": "Refresh started in background",
+            "refresh_id": refresh_id,
+            "components": component_names,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Error starting refresh: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/refresh-status/<refresh_id>', methods=['GET'])
+def api_refresh_status(refresh_id):
+    """Get status of a background refresh operation"""
+    with refresh_lock:
+        if refresh_id not in refresh_status:
+            return jsonify({"error": "Refresh ID not found"}), 404
+        
+        status = refresh_status[refresh_id].copy()
+    
+    return jsonify(status)
+
+
+@app.route('/api/refresh-status', methods=['GET'])
+def api_all_refresh_status():
+    """Get status of all refresh operations"""
+    with refresh_lock:
+        all_status = refresh_status.copy()
+    
+    return jsonify(all_status)
+
+
+# Keep old endpoint for backward compatibility but make it async too
+@app.route('/api/refresh-component/<component_name>', methods=['POST'])
+def api_refresh_component(component_name):
+    """Refresh a single component (async)"""
+    try:
+        # Use the batch refresh with single component
+        refresh_id = f"refresh_{component_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        logger.info(f"🔄 Single component refresh triggered: {component_name} (ID: {refresh_id})")
+        
+        thread = threading.Thread(
+            target=_do_refresh_components,
+            args=([component_name], refresh_id),
+            daemon=True
+        )
+        thread.start()
+        
+        return jsonify({
+            "message": f"Refresh started for {component_name}",
+            "refresh_id": refresh_id,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Error refreshing {component_name}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# Old synchronous endpoint - DEPRECATED but kept for compatibility
+@app.route('/api/refresh-components-sync', methods=['POST'])
+def api_refresh_components_sync():
+    """
+    DEPRECATED: Synchronous refresh (blocks until complete)
+    Use /api/refresh-components instead for async operation
+    """
+    try:
+        data = request.get_json()
+        component_names = data.get('components', [])
+        
+        if not component_names:
+            return jsonify({"error": "No components specified"}), 400
+        
+        logger.info(f"🔄 SYNC Batch refresh triggered for {len(component_names)} components")
         
         results = []
         errors = []
