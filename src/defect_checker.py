@@ -833,19 +833,6 @@ class DefectChecker:
                         else:
                             logger.info(f"✅ Cached {len(defects_to_cache)} new defects")
             
-            # CRITICAL FIX: Update cache for ALL defects to reflect current tags from IBM
-            # This ensures that when tags are removed in IBM, they're also removed from cache
-            defects_to_update = []
-            for defect in all_defects_for_dup_check:
-                defect_id = str(defect.get('id'))
-                # Update cache with current defect data (including updated tags)
-                defect['component'] = component
-                defects_to_update.append(defect)
-            
-            if defects_to_update:
-                self.database.cache_defect_descriptions(defects_to_update)
-                logger.debug(f"🔄 Updated cache for {len(defects_to_update)} defects with current tags")
-            
             # Combine cached and newly fetched descriptions
             all_descriptions = {**cached_descriptions}
             for defect_id, details in newly_fetched_details.items():
@@ -868,6 +855,7 @@ class DefectChecker:
                     defect['description'] = ''
             
             # Apply descriptions to all defects for duplicate checking
+            # IMPORTANT: Do NOT overwrite triageTags from cache - use fresh tags from IBM API
             for defect in all_defects_for_dup_check:
                 defect_id = str(defect.get('id'))
                 if defect_id in all_descriptions:
@@ -875,11 +863,23 @@ class DefectChecker:
                     if isinstance(desc_data, dict):
                         defect['description'] = desc_data.get('description', '')
                         defect['creation_date'] = desc_data.get('creation_date', '')
-                        # Update triageTags from cache if available
-                        if 'triageTags' in desc_data and desc_data['triageTags']:
-                            defect['triageTags'] = desc_data['triageTags']
+                        # DO NOT update triageTags from cache - keep fresh tags from IBM API
                     else:
                         defect['description'] = desc_data
+            
+            # CRITICAL FIX: Update cache for ALL defects to reflect current tags from IBM
+            # This ensures that when tags are removed in IBM, they're also removed from cache
+            # This must happen AFTER we've applied descriptions but kept fresh tags
+            defects_to_update = []
+            for defect in all_defects_for_dup_check:
+                defect_id = str(defect.get('id'))
+                # Update cache with current defect data (including updated tags from IBM)
+                defect['component'] = component
+                defects_to_update.append(defect)
+            
+            if defects_to_update:
+                self.database.cache_defect_descriptions(defects_to_update)
+                logger.debug(f"🔄 Updated cache for {len(defects_to_update)} defects with current tags from IBM")
         
         # Process untriaged defects with ML suggestions and duplicate detection
         for defect in untriaged_defects:
