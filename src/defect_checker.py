@@ -254,15 +254,21 @@ class DefectChecker:
                     state_obj = data.get('rtc_cm:state', {})
                     state = state_obj.get('rdf:resource', '') if isinstance(state_obj, dict) else ''
                     
+                    # Extract tags from rtc_cm:com.ibm.team.apt.attribute.complexity
+                    # Tags are stored as an array of strings
+                    tags = data.get('rtc_cm:com.ibm.team.apt.attribute.complexity', [])
+                    if not isinstance(tags, list):
+                        tags = []
+                    
                     # Check if defect is cancelled
                     is_cancelled = self.is_defect_cancelled(state)
                     
                     # Log success with cancelled indicator
                     if description or created:
                         if is_cancelled:
-                            logger.info(f"🚫 CANCELLED Fetched details for {defect_id}: desc={len(description)} chars, created={created[:10] if created else 'N/A'}")
+                            logger.info(f"🚫 CANCELLED Fetched details for {defect_id}: desc={len(description)} chars, created={created[:10] if created else 'N/A'}, tags={tags}")
                         else:
-                            logger.info(f"✅ Fetched details for {defect_id}: desc={len(description)} chars, created={created[:10] if created else 'N/A'}")
+                            logger.info(f"✅ Fetched details for {defect_id}: desc={len(description)} chars, created={created[:10] if created else 'N/A'}, tags={tags}")
                     else:
                         logger.warning(f"⚠️  Defect {defect_id}: API returned 200 but no description/created")
                     
@@ -272,7 +278,8 @@ class DefectChecker:
                         'modified': modified,
                         'creator': creator,
                         'state': state,
-                        'is_cancelled': is_cancelled
+                        'is_cancelled': is_cancelled,
+                        'tags': tags
                     }
                 else:
                     logger.warning(f"⚠️  Failed to fetch {defect_id}: HTTP {response.status_code}")
@@ -821,6 +828,7 @@ class DefectChecker:
                         creation_date = details.get('created', '')
                         state = details.get('state', '')
                         is_cancelled = details.get('is_cancelled', False)
+                        tags = details.get('tags', [])  # Get tags from IBM RTC API
                         
                         # Track cancelled defects
                         if is_cancelled:
@@ -836,6 +844,9 @@ class DefectChecker:
                                 defect_info['state'] = state
                                 defect_info['is_cancelled'] = is_cancelled
                                 defect_info['component'] = component
+                                # Use tags from IBM RTC API if available, otherwise keep existing tags
+                                if tags:
+                                    defect_info['triageTags'] = tags
                                 defects_to_cache.append(defect_info)
                     
                     if defects_to_cache:
