@@ -344,8 +344,9 @@ class DefectDatabase:
             return []
     def get_all_cancelled_defects_with_tags(self) -> List[Dict]:
         """
-        Get ALL cancelled defects with ML tags across ALL components
+        Get ALL cancelled defects across ALL components (with or without tags)
         Used for duplicate detection to find cancelled duplicates regardless of component
+        Tags will be fetched from IBM RTC if empty
         """
         try:
             conn = sqlite3.connect(self.db_path)
@@ -366,25 +367,21 @@ class DefectDatabase:
                     state_lower = state.lower()
                     if any(keyword in state_lower for keyword in ['canceled', 'cancelled', 'closed', 'resolved']):
                         if 'jazz/oslc/workflows' in state_lower:  # Valid RTC state URL
-                            # Check if defect has ML tags
+                            # Include ALL cancelled defects, even those without tags
+                            # Tags will be fetched from IBM RTC later if empty
                             tags = json.loads(tags_str) if tags_str else []
-                            has_ml_tags = any(
-                                any(keyword in str(tag).lower() for keyword in ['test', 'product', 'infra', 'infrastructure'])
-                                for tag in tags
-                            )
                             
-                            if has_ml_tags:
-                                results.append({
-                                    'id': defect_id,
-                                    'description': description or '',
-                                    'summary': summary or '',
-                                    'component': component or '',
-                                    'functionalArea': functional_area or '',
-                                    'state': state or '',
-                                    'triageTags': tags,
-                                    'creation_date': creation_date or '',
-                                    'number_builds': number_builds or 0
-                                })
+                            results.append({
+                                'id': defect_id,
+                                'description': description or '',
+                                'summary': summary or '',
+                                'component': component or '',
+                                'functionalArea': functional_area or '',
+                                'state': state or '',
+                                'triageTags': tags,
+                                'creation_date': creation_date or '',
+                                'number_builds': number_builds or 0
+                            })
             
             conn.close()
             
