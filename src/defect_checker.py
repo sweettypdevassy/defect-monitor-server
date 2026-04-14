@@ -977,21 +977,35 @@ class DefectChecker:
                 defect_id = str(defect.get('id'))
                 
                 # Check if defect already has a suggested tag from previous run
-                # If so, preserve it instead of recalculating
+                # If so, preserve it ONLY if the duplicate it was based on still exists
                 if defect_id in previous_defects_map:
                     prev_defect = previous_defects_map[defect_id]
+                    prev_duplicate_info = prev_defect.get('duplicate_info', {})
+                    prev_duplicate_id = str(prev_duplicate_info.get('duplicate_id', '')) if prev_duplicate_info else ''
+                    
+                    # Check if the previous duplicate still exists in all_defects_for_dup_check
+                    duplicate_still_exists = False
+                    if prev_duplicate_id:
+                        duplicate_still_exists = any(str(d.get('id')) == prev_duplicate_id for d in all_defects_for_dup_check)
+                    
                     if prev_defect.get('suggested_tag') and prev_defect.get('suggested_tag') != 'unknown':
-                        # Preserve existing suggested tag
-                        defect["suggested_tag"] = prev_defect.get('suggested_tag')
-                        defect["suggestion_confidence"] = prev_defect.get('suggestion_confidence', 0.0)
-                        defect["suggestion_reasoning"] = prev_defect.get('suggestion_reasoning', 'Preserved from previous run')
-                        
-                        # Also preserve duplicate info if it exists
-                        if prev_defect.get('duplicate_info'):
-                            defect["duplicate_info"] = prev_defect.get('duplicate_info')
-                        
-                        logger.info(f"   💾 Preserved existing suggested tag for {defect_id}: {defect['suggested_tag']}")
-                        continue  # Skip recalculation
+                        # Only preserve if:
+                        # 1. No duplicate was used (pure ML prediction), OR
+                        # 2. The duplicate still exists in the current defect list
+                        if not prev_duplicate_id or duplicate_still_exists:
+                            # Preserve existing suggested tag
+                            defect["suggested_tag"] = prev_defect.get('suggested_tag')
+                            defect["suggestion_confidence"] = prev_defect.get('suggestion_confidence', 0.0)
+                            defect["suggestion_reasoning"] = prev_defect.get('suggestion_reasoning', 'Preserved from previous run')
+                            
+                            # Also preserve duplicate info if it exists
+                            if prev_defect.get('duplicate_info'):
+                                defect["duplicate_info"] = prev_defect.get('duplicate_info')
+                            
+                            logger.info(f"   💾 Preserved existing suggested tag for {defect_id}: {defect['suggested_tag']}")
+                            continue  # Skip recalculation
+                        else:
+                            logger.info(f"   🔄 Duplicate #{prev_duplicate_id} no longer exists for {defect_id}, recalculating tag...")
                 
                 # Check for duplicates FIRST
                 duplicate_info = self.duplicate_detector.check_defect_for_duplicates(
