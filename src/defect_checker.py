@@ -835,6 +835,30 @@ class DefectChecker:
                         else:
                             logger.info(f"✅ Cached {len(defects_to_cache)} new defects")
             
+            # Update cached defects with fresh state and tags from IBM API
+            # This ensures state changes (e.g., canceled -> open) are reflected
+            defects_to_update_state = []
+            for defect in all_defects_for_dup_check:
+                defect_id = str(defect.get('id'))
+                if defect_id in cached_descriptions:
+                    # Defect is in cache, update its state and tags from fresh API data
+                    cached_desc = cached_descriptions[defect_id]
+                    defect_to_update = {
+                        'id': defect_id,
+                        'description': cached_desc.get('description', ''),
+                        'summary': defect.get('summary', ''),
+                        'component': component,
+                        'functionalArea': defect.get('functionalArea', ''),
+                        'state': defect.get('state', ''),  # Fresh state from API
+                        'triageTags': defect.get('triageTags', []),  # Fresh tags from API
+                        'creation_date': cached_desc.get('creation_date', '')
+                    }
+                    defects_to_update_state.append(defect_to_update)
+            
+            if defects_to_update_state:
+                self.database.cache_defect_descriptions(defects_to_update_state)
+                logger.info(f"🔄 Updated state/tags for {len(defects_to_update_state)} cached defects")
+            
             # Combine cached and newly fetched descriptions
             all_descriptions = {**cached_descriptions}
             for defect_id, details in newly_fetched_details.items():
