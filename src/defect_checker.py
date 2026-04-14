@@ -1088,10 +1088,32 @@ class DefectChecker:
                 
                 if duplicate_info:
                     defect["duplicate_info"] = duplicate_info
-                    logger.info(f"   🔄 Defect {defect.get('id')} may be duplicate of {duplicate_info['duplicate_id']} ({duplicate_info['similarity']:.0%} similar)")
+                    duplicate_id = str(duplicate_info['duplicate_id'])
+                    logger.info(f"   🔄 Defect {defect.get('id')} may be duplicate of {duplicate_id} ({duplicate_info['similarity']:.0%} similar)")
+                    
+                    # Get duplicate's tags - if empty, fetch from IBM RTC
+                    duplicate_tags = duplicate_info.get('duplicate_tags', [])
+                    
+                    # If duplicate has empty tags, fetch from IBM RTC to get authoritative tags
+                    if not duplicate_tags:
+                        logger.info(f"   📥 Duplicate #{duplicate_id} has empty tags, fetching from IBM RTC...")
+                        try:
+                            fetched_details = self.fetch_details_parallel([duplicate_id], max_workers=1)
+                            if duplicate_id in fetched_details:
+                                fresh_tags = fetched_details[duplicate_id].get('tags', [])
+                                duplicate_tags = fresh_tags
+                                logger.info(f"   ✅ Fetched tags for duplicate #{duplicate_id}: {fresh_tags}")
+                                
+                                # Update the duplicate in the pool with fresh tags
+                                for dup_defect in all_defects_for_dup_check:
+                                    if str(dup_defect.get('id')) == duplicate_id:
+                                        dup_defect['triageTags'] = fresh_tags
+                                        logger.info(f"   ✅ Updated duplicate #{duplicate_id} in pool with fresh tags")
+                                        break
+                        except Exception as e:
+                            logger.warning(f"   ⚠️  Failed to fetch tags for duplicate #{duplicate_id}: {e}")
                     
                     # Use duplicate's tags if they are valid ML tags, otherwise use ML prediction
-                    duplicate_tags = duplicate_info.get('duplicate_tags', [])
                     has_valid_ml_tag = False
                     suggested_tag = None
                     
