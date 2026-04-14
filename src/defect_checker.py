@@ -758,8 +758,9 @@ class DefectChecker:
             # Collect all defect IDs from current API fetch
             all_ids = [str(d.get('id')) for d in all_defects_for_dup_check if d.get('id')]
             
-            # Get ALL cached defects for this component (not just the ones in current API response)
-            all_cached_for_component = self.database.get_all_cached_descriptions_for_component(component)
+            # Get ALL cached defects for this component INCLUDING cancelled ones
+            # (we need cancelled defects to detect which ones were removed from API)
+            all_cached_for_component = self.database.get_all_cached_descriptions_for_component(component, include_cancelled=True)
             all_cached_ids = {str(d.get('id')) for d in all_cached_for_component}
             
             # Find defects that are in cache but NOT in current API response
