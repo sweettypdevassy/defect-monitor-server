@@ -342,6 +342,59 @@ class DefectDatabase:
         except Exception as e:
             logger.error(f"Error retrieving cached descriptions for component: {e}")
             return []
+    def get_all_cancelled_defects_with_tags(self) -> List[Dict]:
+        """
+        Get ALL cancelled defects with ML tags across ALL components
+        Used for duplicate detection to find cancelled duplicates regardless of component
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds
+                FROM defect_descriptions
+                WHERE state IS NOT NULL
+            """)
+            
+            results = []
+            for row in cursor.fetchall():
+                defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds = row
+                
+                # Only include cancelled/closed/resolved defects
+                if state and isinstance(state, str):
+                    state_lower = state.lower()
+                    if any(keyword in state_lower for keyword in ['canceled', 'cancelled', 'closed', 'resolved']):
+                        if 'jazz/oslc/workflows' in state_lower:  # Valid RTC state URL
+                            # Check if defect has ML tags
+                            tags = json.loads(tags_str) if tags_str else []
+                            has_ml_tags = any(
+                                any(keyword in str(tag).lower() for keyword in ['test', 'product', 'infra', 'infrastructure'])
+                                for tag in tags
+                            )
+                            
+                            if has_ml_tags:
+                                results.append({
+                                    'id': defect_id,
+                                    'description': description or '',
+                                    'summary': summary or '',
+                                    'component': component or '',
+                                    'functionalArea': functional_area or '',
+                                    'state': state or '',
+                                    'triageTags': tags,
+                                    'creation_date': creation_date or '',
+                                    'number_builds': number_builds or 0
+                                })
+            
+            conn.close()
+            
+            logger.debug(f"✅ Retrieved {len(results)} cancelled defects with ML tags across all components")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error retrieving cancelled defects with tags: {e}")
+            return []
+    
     
     def delete_cached_descriptions(self, defect_ids: List[str]) -> bool:
         """

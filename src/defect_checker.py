@@ -820,34 +820,25 @@ class DefectChecker:
                         except Exception as e:
                             logger.warning(f"Failed to update state for defect {defect_id}: {e}")
             
-            # ALWAYS add ALL cancelled defects with tags to duplicate detection pool
-            # This ensures defects can find cancelled duplicates even after multiple refreshes
-            logger.info(f"🔄 Querying ALL cancelled defects with tags for duplicate detection...")
-            all_cancelled_with_tags = []
-            for defect in all_cached_for_component:
-                defect_id = str(defect.get('id'))
-                # Skip if already in current API response (not cancelled)
-                if defect_id in all_ids:
-                    continue
-                
-                # Check if defect has tags
-                tags = defect.get('triageTags', [])
-                has_tags = any(
-                    any(keyword in str(tag).lower() for keyword in ['test', 'product', 'infra', 'infrastructure'])
-                    for tag in tags
-                )
-                
-                if has_tags:
-                    all_cancelled_with_tags.append(defect)
+            # ALWAYS add ALL cancelled defects with tags to duplicate detection pool (across ALL components)
+            # This ensures defects can find cancelled duplicates even if they were filed under different components
+            logger.info(f"🔄 Querying ALL cancelled defects with tags across ALL components for duplicate detection...")
+            all_cancelled_with_tags = self.database.get_all_cancelled_defects_with_tags()
             
             if all_cancelled_with_tags:
-                logger.info(f"💾 Adding {len(all_cancelled_with_tags)} cancelled defects with tags to duplicate detection pool")
+                logger.info(f"💾 Found {len(all_cancelled_with_tags)} cancelled defects with tags across all components")
+                added_count = 0
                 for defect in all_cancelled_with_tags:
                     defect_id = str(defect.get('id'))
+                    # Skip if already in current API response (not cancelled)
+                    if defect_id in all_ids:
+                        continue
                     # Only add if not already in the pool
                     if not any(str(d.get('id')) == defect_id for d in all_defects_for_dup_check):
                         all_defects_for_dup_check.append(defect)
-                        logger.info(f"   💾 Added cancelled defect {defect_id} (tags: {defect.get('triageTags', [])})")
+                        added_count += 1
+                        logger.info(f"   💾 Added cancelled defect {defect_id} from {defect.get('component', 'Unknown')} (tags: {defect.get('triageTags', [])})")
+                logger.info(f"✅ Added {added_count} cancelled defects to duplicate detection pool")
             
             # Check cache first (only for defects in current API response)
             logger.info(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
