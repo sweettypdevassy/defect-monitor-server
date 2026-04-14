@@ -793,11 +793,19 @@ class DefectChecker:
                     self.database.delete_cached_descriptions(untriaged_to_delete)
                     logger.info(f"🗑️  Deleted {len(untriaged_to_delete)} untriaged cancelled defects from cache")
                 
-                # Update state for triaged defects to mark them as cancelled
-                # This ensures they're filtered out from insights/dashboard but kept for ML training
+                # Add triaged cancelled defects to duplicate detection pool
+                # This allows new defects to inherit tags from cancelled duplicates
                 if triaged_to_keep:
                     logger.info(f"💾 Kept {len(triaged_to_keep)} triaged cancelled defects for ML training: {triaged_to_keep}")
-                    logger.info(f"🔄 Updating state to 'cancelled' for {len(triaged_to_keep)} triaged defects...")
+                    logger.info(f"🔄 Adding {len(triaged_to_keep)} cancelled defects to duplicate detection pool...")
+                    
+                    # Add cancelled defects with tags to all_defects_for_dup_check
+                    for defect in all_cached_for_component:
+                        defect_id = str(defect.get('id'))
+                        if defect_id in triaged_to_keep:
+                            # Add to duplicate detection pool
+                            all_defects_for_dup_check.append(defect)
+                            logger.info(f"   💾 Added cancelled defect {defect_id} for duplicate detection (tags: {defect.get('triageTags', [])})")
                     
                     # Fetch current state from Jazz/RTC for these defects
                     for defect_id in triaged_to_keep:
