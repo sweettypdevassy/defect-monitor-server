@@ -259,14 +259,14 @@ class DefectDatabase:
             placeholders = ','.join('?' * len(defect_ids))
             
             cursor.execute(f"""
-                SELECT defect_id, description, summary, component, functional_area, state, tags
+                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date
                 FROM defect_descriptions
                 WHERE defect_id IN ({placeholders})
             """, defect_ids)
             
             results = {}
             for row in cursor.fetchall():
-                defect_id, description, summary, component, functional_area, state, tags_str = row
+                defect_id, description, summary, component, functional_area, state, tags_str, creation_date = row
                 results[defect_id] = {
                     'id': defect_id,
                     'description': description or '',
@@ -274,7 +274,8 @@ class DefectDatabase:
                     'component': component or '',
                     'functionalArea': functional_area or '',
                     'state': state or '',
-                    'triageTags': json.loads(tags_str) if tags_str else []
+                    'triageTags': json.loads(tags_str) if tags_str else [],
+                    'creation_date': creation_date or ''
                 }
             
             conn.close()
@@ -497,6 +498,15 @@ class DefectDatabase:
             
             all_untriaged = []
             
+            # Get IDs of defects that have tags in defect_descriptions cache
+            # These should NOT be shown as untriaged even if they appear in daily_snapshots
+            cursor.execute("""
+                SELECT defect_id FROM defect_descriptions
+                WHERE tags IS NOT NULL AND tags != '[]'
+            """)
+            tagged_defect_ids = set(row[0] for row in cursor.fetchall())
+            logger.debug(f"Found {len(tagged_defect_ids)} defects with tags in cache")
+            
             # Get from daily_snapshots (monitored components with full details)
             if latest_date_daily:
                 if component_names:
@@ -517,16 +527,23 @@ class DefectDatabase:
                     """, (latest_date_daily,))
                 
                 rows = cursor.fetchall()
+                filtered_count = 0
                 for component, data_json in rows:
                     data = json.loads(data_json)
                     # The key is 'defects' not 'untriaged_defects' in daily_snapshots
                     untriaged_defects = data.get('defects', [])
                     
-                    # Add component name to each defect
+                    # Filter out defects that have tags in cache (they're triaged now)
                     for defect in untriaged_defects:
-                        defect['component'] = component
-                        all_untriaged.append(defect)
+                        defect_id = str(defect.get('id'))
+                        if defect_id not in tagged_defect_ids:
+                            defect['component'] = component
+                            all_untriaged.append(defect)
+                        else:
+                            filtered_count += 1
                 
+                if filtered_count > 0:
+                    logger.info(f"🔍 Filtered out {filtered_count} defects that now have tags in cache")
                 logger.info(f"✅ Retrieved {len(all_untriaged)} untriaged defects from daily_snapshots ({len(rows)} components)")
             
             # Also check all_components_snapshots for any additional components
@@ -546,17 +563,25 @@ class DefectDatabase:
                     cursor.execute(query, (latest_date_all, *remaining_components))
                     
                     rows = cursor.fetchall()
+                    additional_filtered = 0
                     for component, data_json in rows:
                         data = json.loads(data_json)
                         # Try both keys for compatibility
                         untriaged_defects = data.get('defects', data.get('untriaged_defects', []))
                         
+                        # Filter out defects that have tags in cache
                         for defect in untriaged_defects:
-                            defect['component'] = component
-                            all_untriaged.append(defect)
+                            defect_id = str(defect.get('id'))
+                            if defect_id not in tagged_defect_ids:
+                                defect['component'] = component
+                                all_untriaged.append(defect)
+                            else:
+                                additional_filtered += 1
                     
                     if rows:
                         logger.info(f"✅ Retrieved {len(rows)} additional components from all_components_snapshots")
+                        if additional_filtered > 0:
+                            logger.info(f"🔍 Filtered out {additional_filtered} more defects with tags")
             
             conn.close()
             
