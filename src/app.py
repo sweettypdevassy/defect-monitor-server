@@ -302,42 +302,7 @@ def api_all_components():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/refresh-component/<component_name>', methods=['POST'])
-def api_refresh_component(component_name):
-    """
-    Refresh data for a single component from IBM system
-    This fetches fresh data, processes it (ML + duplicates), and updates the database
-    """
-    try:
-        logger.info(f"🔄 Component refresh triggered for: {component_name}")
-        
-        # Fetch fresh data from IBM for this component
-        defects = defect_checker.fetch_defects_for_component(component_name)
-        
-        if defects is None:
-            return jsonify({"error": f"Failed to fetch defects for {component_name}"}), 500
-        
-        # Process defects (parse, categorize, ML tagging, duplicate detection)
-        result = defect_checker.parse_defects(defects, component_name, collect_triaged=False)
-        
-        # Update database with new data
-        database.store_component_snapshot_single(component_name, result)
-        
-        logger.info(f"✅ Component {component_name} refreshed successfully")
-        logger.info(f"   Total: {result['total']}, Untriaged: {result['untriaged']}")
-        
-        return jsonify({
-            "message": f"Component {component_name} refreshed successfully",
-            "component": component_name,
-            "total": result.get('total', 0),
-            "untriaged": result.get('untriaged', 0),
-            "test_bugs": result.get('test_bugs', 0),
-            "product_bugs": result.get('product_bugs', 0),
-            "infra_bugs": result.get('infra_bugs', 0),
-            "timestamp": datetime.now().isoformat()
-        })
-    except Exception as e:
-        logger.error(f"❌ Error refreshing component {component_name}: {e}")
+# OLD ENDPOINT REMOVED - Now using async version below at line 529
         import traceback
         logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
