@@ -858,13 +858,17 @@ class DefectChecker:
             for id in all_ids:
                 if id not in cached_descriptions:
                     # New defect - fetch everything
+                    logger.debug(f"   📥 Will fetch {id}: NEW defect (not in cache)")
                     ids_to_fetch.append(id)
                 else:
                     # Existing defect - check if it has tags
                     cached_tags = cached_descriptions[id].get('triageTags', [])
                     if not cached_tags:
                         # No tags in cache - might have been added in IBM RTC, fetch to get tags
+                        logger.info(f"   🔄 Will fetch {id}: Has empty tags in cache, checking IBM RTC for updates")
                         ids_to_fetch.append(id)
+                    else:
+                        logger.debug(f"   ✓ Skipping {id}: Has tags in cache: {cached_tags}")
             
             if cached_descriptions:
                 logger.info(f"✅ Found {len(cached_descriptions)} cached descriptions")
