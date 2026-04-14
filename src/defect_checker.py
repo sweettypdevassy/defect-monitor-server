@@ -855,22 +855,33 @@ class DefectChecker:
                     logger.info(f"📥 Fetching tags for {len(cancelled_ids_to_fetch)} cancelled defects from IBM RTC...")
                     cancelled_fetched_details = self.fetch_details_parallel(cancelled_ids_to_fetch, max_workers=3)
                     
-                    # Update cancelled defects in the pool with fresh tags
+                    # Update cancelled defects in the pool with fresh tags AND state
                     for defect_id, details in cancelled_fetched_details.items():
                         tags = details.get('tags', [])
-                        if tags:
-                            # Find and update the defect in the pool
-                            for defect in all_defects_for_dup_check:
-                                if str(defect.get('id')) == defect_id:
+                        state = details.get('state', '')
+                        
+                        # Find and update the defect in the pool
+                        for defect in all_defects_for_dup_check:
+                            if str(defect.get('id')) == defect_id:
+                                # Update tags in the pool
+                                if tags:
                                     defect['triageTags'] = tags
                                     logger.info(f"   ✅ Updated cancelled defect {defect_id} with tags from IBM RTC: {tags}")
-                                    
-                                    # Also update in database cache
-                                    try:
+                                
+                                # Update state in the pool
+                                if state:
+                                    defect['state'] = state
+                                
+                                # Update in database cache (both tags and state)
+                                try:
+                                    if tags:
                                         self.database.update_defect_tags(defect_id, tags)
-                                    except Exception as e:
-                                        logger.warning(f"Failed to update tags in cache for {defect_id}: {e}")
-                                    break
+                                    if state:
+                                        self.database.update_defect_state(defect_id, state)
+                                    logger.info(f"   💾 Updated database for cancelled defect {defect_id}: tags={tags}, state={state[:30]}...")
+                                except Exception as e:
+                                    logger.warning(f"Failed to update database for {defect_id}: {e}")
+                                break
             
             # Check cache first (only for defects in current API response)
             logger.info(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
