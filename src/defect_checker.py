@@ -254,11 +254,18 @@ class DefectChecker:
                     state_obj = data.get('rtc_cm:state', {})
                     state = state_obj.get('rdf:resource', '') if isinstance(state_obj, dict) else ''
                     
-                    # Extract tags from rtc_cm:com.ibm.team.apt.attribute.complexity
-                    # Tags are stored as an array of strings
-                    tags = data.get('rtc_cm:com.ibm.team.apt.attribute.complexity', [])
-                    if not isinstance(tags, list):
-                        tags = []
+                    # Extract tags from dc:subject field
+                    # Tags are stored as a string (e.g., "infrastructure", "test", "product")
+                    # Convert to list format for consistency with the rest of the system
+                    tags = []
+                    subject = data.get('dc:subject', '')
+                    if subject:
+                        # If it's already a list, use it
+                        if isinstance(subject, list):
+                            tags = subject
+                        # If it's a string, convert to list
+                        elif isinstance(subject, str):
+                            tags = [subject]
                     
                     # Check if defect is cancelled
                     is_cancelled = self.is_defect_cancelled(state)
