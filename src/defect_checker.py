@@ -819,6 +819,35 @@ class DefectChecker:
                         except Exception as e:
                             logger.warning(f"Failed to update state for defect {defect_id}: {e}")
             
+            # ALWAYS add ALL cancelled defects with tags to duplicate detection pool
+            # This ensures defects can find cancelled duplicates even after multiple refreshes
+            logger.info(f"🔄 Querying ALL cancelled defects with tags for duplicate detection...")
+            all_cancelled_with_tags = []
+            for defect in all_cached_for_component:
+                defect_id = str(defect.get('id'))
+                # Skip if already in current API response (not cancelled)
+                if defect_id in all_ids:
+                    continue
+                
+                # Check if defect has tags
+                tags = defect.get('triageTags', [])
+                has_tags = any(
+                    any(keyword in str(tag).lower() for keyword in ['test', 'product', 'infra', 'infrastructure'])
+                    for tag in tags
+                )
+                
+                if has_tags:
+                    all_cancelled_with_tags.append(defect)
+            
+            if all_cancelled_with_tags:
+                logger.info(f"💾 Adding {len(all_cancelled_with_tags)} cancelled defects with tags to duplicate detection pool")
+                for defect in all_cancelled_with_tags:
+                    defect_id = str(defect.get('id'))
+                    # Only add if not already in the pool
+                    if not any(str(d.get('id')) == defect_id for d in all_defects_for_dup_check):
+                        all_defects_for_dup_check.append(defect)
+                        logger.info(f"   💾 Added cancelled defect {defect_id} (tags: {defect.get('triageTags', [])})")
+            
             # Check cache first (only for defects in current API response)
             logger.info(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
             cached_descriptions = self.database.get_cached_descriptions(all_ids)
