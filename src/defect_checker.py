@@ -959,8 +959,40 @@ class DefectChecker:
             # DON'T update cache here - it will overwrite descriptions with empty data from IBM API
             # Cache updates should only happen when we fetch NEW descriptions above
         
+        # Get previous snapshot to preserve existing suggested tags
+        previous_snapshot = None
+        previous_defects_map = {}
+        if self.database:
+            try:
+                previous_snapshot = self.database.get_latest_snapshot_for_component(component)
+                if previous_snapshot and 'defects' in previous_snapshot:
+                    for prev_defect in previous_snapshot['defects']:
+                        defect_id = str(prev_defect.get('id'))
+                        previous_defects_map[defect_id] = prev_defect
+            except Exception as e:
+                logger.debug(f"Could not load previous snapshot: {e}")
+        
         # Process untriaged defects with ML suggestions and duplicate detection
         for defect in untriaged_defects:
+                defect_id = str(defect.get('id'))
+                
+                # Check if defect already has a suggested tag from previous run
+                # If so, preserve it instead of recalculating
+                if defect_id in previous_defects_map:
+                    prev_defect = previous_defects_map[defect_id]
+                    if prev_defect.get('suggested_tag') and prev_defect.get('suggested_tag') != 'unknown':
+                        # Preserve existing suggested tag
+                        defect["suggested_tag"] = prev_defect.get('suggested_tag')
+                        defect["suggestion_confidence"] = prev_defect.get('suggestion_confidence', 0.0)
+                        defect["suggestion_reasoning"] = prev_defect.get('suggestion_reasoning', 'Preserved from previous run')
+                        
+                        # Also preserve duplicate info if it exists
+                        if prev_defect.get('duplicate_info'):
+                            defect["duplicate_info"] = prev_defect.get('duplicate_info')
+                        
+                        logger.info(f"   💾 Preserved existing suggested tag for {defect_id}: {defect['suggested_tag']}")
+                        continue  # Skip recalculation
+                
                 # Check for duplicates FIRST
                 duplicate_info = self.duplicate_detector.check_defect_for_duplicates(
                     defect,
