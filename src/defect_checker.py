@@ -914,23 +914,19 @@ class DefectChecker:
                         else:
                             logger.info(f"✅ Cached {len(defects_to_cache)} new defects")
             
-            # Update cached defects with fresh state from IBM API
-            # This ensures state changes (e.g., canceled -> open) are reflected
-            # NOTE: We DON'T update tags here because IBM Build Break Report API doesn't return
-            # manually added triage tags - those come from IBM RTC API
+            # Update cached defects with fresh state AND tags from IBM API
+            # This ensures both state changes and tag changes are reflected
+            # Tags come from IBM RTC API (fetched above), so they are authoritative
             defects_to_update_state = []
             for defect in all_defects_for_dup_check:
                 defect_id = str(defect.get('id'))
                 if defect_id in cached_descriptions:
-                    # Defect is in cache, update its state but KEEP existing tags
+                    # Defect is in cache, update its state AND tags with fresh data from API
                     cached_desc = cached_descriptions[defect_id]
                     api_tags = defect.get('triageTags', [])
-                    cached_tags = cached_desc.get('triageTags', [])
                     
-                    # Only update tags if API has tags AND cache doesn't, or if API has more tags
-                    # This prevents overwriting manually added tags with empty arrays
-                    tags_to_use = cached_tags if (not api_tags and cached_tags) else api_tags
-                    
+                    # ALWAYS use tags from API - they are authoritative from IBM RTC
+                    # If API returns empty tags, the tag was removed in IBM RTC
                     defect_to_update = {
                         'id': defect_id,
                         'description': cached_desc.get('description', ''),
@@ -938,14 +934,14 @@ class DefectChecker:
                         'component': component,
                         'functionalArea': defect.get('functionalArea', ''),
                         'state': defect.get('state', ''),  # Fresh state from API
-                        'triageTags': tags_to_use,  # Keep cached tags if API returns empty
+                        'triageTags': api_tags,  # ALWAYS use fresh tags from API
                         'creation_date': cached_desc.get('creation_date', '')
                     }
                     defects_to_update_state.append(defect_to_update)
             
             if defects_to_update_state:
                 self.database.cache_defect_descriptions(defects_to_update_state)
-                logger.info(f"🔄 Updated state for {len(defects_to_update_state)} cached defects (preserved existing tags)")
+                logger.info(f"🔄 Updated state and tags for {len(defects_to_update_state)} cached defects with fresh data from API")
             
             # Combine cached and newly fetched descriptions
             all_descriptions = {**cached_descriptions}
@@ -971,7 +967,9 @@ class DefectChecker:
                     logger.warning(f"⚠️  No description found for untriaged defect {defect_id}")
                     defect['description'] = ''
             
-            # Apply descriptions AND tags to all defects for duplicate checking
+            # Apply descriptions to all defects for duplicate checking
+            # NOTE: We do NOT restore cached tags here - we want fresh tags from IBM API
+            # Cached tags are only used for cancelled defects (added to duplicate pool above)
             for defect in all_defects_for_dup_check:
                 defect_id = str(defect.get('id'))
                 if defect_id in all_descriptions:
@@ -979,10 +977,8 @@ class DefectChecker:
                     if isinstance(desc_data, dict):
                         defect['description'] = desc_data.get('description', '')
                         defect['creation_date'] = desc_data.get('creation_date', '')
-                        # Apply cached tags so duplicate detection can use them
-                        cached_tags = desc_data.get('triageTags', [])
-                        if cached_tags and not defect.get('triageTags'):
-                            defect['triageTags'] = cached_tags
+                        # DO NOT restore cached tags - use fresh tags from API
+                        # This ensures defects reflect current state in IBM RTC
                     else:
                         defect['description'] = desc_data
             
