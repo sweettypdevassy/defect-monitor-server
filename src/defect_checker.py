@@ -820,20 +820,20 @@ class DefectChecker:
                         except Exception as e:
                             logger.warning(f"Failed to update state for defect {defect_id}: {e}")
             
-            # ALWAYS add ALL cancelled defects with tags to duplicate detection pool (across ALL components)
-            # This ensures defects can find cancelled duplicates even if they were filed under different components
-            logger.info(f"🔄 Querying ALL cancelled defects with tags across ALL components for duplicate detection...")
-            all_cancelled_with_tags = self.database.get_all_cancelled_defects_with_tags()
+            # ALWAYS add ALL cached defects to duplicate detection pool (across ALL components)
+            # This ensures defects can find duplicates even if they were filed under different components
+            logger.info(f"🔄 Querying ALL cached defects across ALL components for duplicate detection...")
+            all_cached_defects = self.database.get_all_cancelled_defects_with_tags()
             
-            # Track cancelled defects with empty tags that need to be fetched from IBM RTC
-            cancelled_ids_to_fetch = []
+            # Track defects with empty tags that need to be fetched from IBM RTC
+            ids_to_fetch_tags = []
             
-            if all_cancelled_with_tags:
-                logger.info(f"💾 Found {len(all_cancelled_with_tags)} cancelled defects with tags across all components")
+            if all_cached_defects:
+                logger.info(f"💾 Found {len(all_cached_defects)} cached defects across all components")
                 added_count = 0
-                for defect in all_cancelled_with_tags:
+                for defect in all_cached_defects:
                     defect_id = str(defect.get('id'))
-                    # Skip if already in current API response (not cancelled)
+                    # Skip if already in current API response
                     if defect_id in all_ids:
                         continue
                     # Only add if not already in the pool
@@ -841,22 +841,23 @@ class DefectChecker:
                         all_defects_for_dup_check.append(defect)
                         added_count += 1
                         tags = defect.get('triageTags', [])
-                        logger.info(f"   💾 Added cancelled defect {defect_id} from {defect.get('component', 'Unknown')} (tags: {tags})")
                         
-                        # If cancelled defect has empty tags, fetch from IBM RTC
+                        # If defect has empty tags, fetch from IBM RTC
                         if not tags:
-                            cancelled_ids_to_fetch.append(defect_id)
-                            logger.info(f"   🔄 Will fetch tags for cancelled defect {defect_id} from IBM RTC")
+                            ids_to_fetch_tags.append(defect_id)
+                            logger.info(f"   💾 Added cached defect {defect_id} from {defect.get('component', 'Unknown')} (will fetch tags)")
+                        else:
+                            logger.info(f"   💾 Added cached defect {defect_id} from {defect.get('component', 'Unknown')} (tags: {tags})")
                 
-                logger.info(f"✅ Added {added_count} cancelled defects to duplicate detection pool")
+                logger.info(f"✅ Added {added_count} cached defects to duplicate detection pool")
                 
-                # Fetch tags for cancelled defects with empty tags
-                if cancelled_ids_to_fetch:
-                    logger.info(f"📥 Fetching tags for {len(cancelled_ids_to_fetch)} cancelled defects from IBM RTC...")
-                    cancelled_fetched_details = self.fetch_details_parallel(cancelled_ids_to_fetch, max_workers=3)
+                # Fetch tags for defects with empty tags
+                if ids_to_fetch_tags:
+                    logger.info(f"📥 Fetching tags for {len(ids_to_fetch_tags)} cached defects from IBM RTC...")
+                    fetched_details = self.fetch_details_parallel(ids_to_fetch_tags, max_workers=3)
                     
-                    # Update cancelled defects in the pool with fresh tags AND state
-                    for defect_id, details in cancelled_fetched_details.items():
+                    # Update defects in the pool with fresh tags AND state
+                    for defect_id, details in fetched_details.items():
                         tags = details.get('tags', [])
                         state = details.get('state', '')
                         
@@ -866,7 +867,7 @@ class DefectChecker:
                                 # Update tags in the pool
                                 if tags:
                                     defect['triageTags'] = tags
-                                    logger.info(f"   ✅ Updated cancelled defect {defect_id} with tags from IBM RTC: {tags}")
+                                    logger.info(f"   ✅ Updated cached defect {defect_id} with tags from IBM RTC: {tags}")
                                 
                                 # Update state in the pool
                                 if state:
@@ -878,7 +879,7 @@ class DefectChecker:
                                         self.database.update_defect_tags(defect_id, tags)
                                     if state:
                                         self.database.update_defect_state(defect_id, state)
-                                    logger.info(f"   💾 Updated database for cancelled defect {defect_id}: tags={tags}, state={state[:30]}...")
+                                    logger.info(f"   💾 Updated database for cached defect {defect_id}")
                                 except Exception as e:
                                     logger.warning(f"Failed to update database for {defect_id}: {e}")
                                 break

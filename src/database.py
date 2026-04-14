@@ -344,9 +344,9 @@ class DefectDatabase:
             return []
     def get_all_cancelled_defects_with_tags(self) -> List[Dict]:
         """
-        Get ALL cancelled defects across ALL components (with or without tags)
-        Used for duplicate detection to find cancelled duplicates regardless of component
-        Tags will be fetched from IBM RTC if empty
+        Get ALL defects with descriptions across ALL components for duplicate detection
+        This includes both active and cancelled defects
+        Used to find duplicates regardless of component or state
         """
         try:
             conn = sqlite3.connect(self.db_path)
@@ -355,33 +355,27 @@ class DefectDatabase:
             cursor.execute("""
                 SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds
                 FROM defect_descriptions
-                WHERE state IS NOT NULL
+                WHERE description IS NOT NULL AND description != ''
             """)
             
             results = []
             for row in cursor.fetchall():
                 defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds = row
                 
-                # Only include cancelled/closed/resolved defects
-                if state and isinstance(state, str):
-                    state_lower = state.lower()
-                    if any(keyword in state_lower for keyword in ['canceled', 'cancelled', 'closed', 'resolved']):
-                        if 'jazz/oslc/workflows' in state_lower:  # Valid RTC state URL
-                            # Include ALL cancelled defects, even those without tags
-                            # Tags will be fetched from IBM RTC later if empty
-                            tags = json.loads(tags_str) if tags_str else []
-                            
-                            results.append({
-                                'id': defect_id,
-                                'description': description or '',
-                                'summary': summary or '',
-                                'component': component or '',
-                                'functionalArea': functional_area or '',
-                                'state': state or '',
-                                'triageTags': tags,
-                                'creation_date': creation_date or '',
-                                'number_builds': number_builds or 0
-                            })
+                # Include ALL defects with descriptions for duplicate detection
+                tags = json.loads(tags_str) if tags_str else []
+                
+                results.append({
+                    'id': defect_id,
+                    'description': description or '',
+                    'summary': summary or '',
+                    'component': component or '',
+                    'functionalArea': functional_area or '',
+                    'state': state or '',
+                    'triageTags': tags,
+                    'creation_date': creation_date or '',
+                    'number_builds': number_builds or 0
+                })
             
             conn.close()
             
