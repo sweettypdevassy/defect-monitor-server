@@ -869,13 +869,15 @@ class DefectChecker:
             
             # CRITICAL FIX: Update cache for ALL defects to reflect current tags from IBM
             # This ensures that when tags are removed in IBM, they're also removed from cache
-            # This must happen AFTER we've applied descriptions but kept fresh tags
+            # IMPORTANT: Only update if defect has description (don't overwrite with empty)
             defects_to_update = []
             for defect in all_defects_for_dup_check:
                 defect_id = str(defect.get('id'))
-                # Update cache with current defect data (including updated tags from IBM)
-                defect['component'] = component
-                defects_to_update.append(defect)
+                # Only update cache if defect has description
+                # This prevents overwriting cached descriptions with empty ones from IBM API
+                if defect.get('description'):
+                    defect['component'] = component
+                    defects_to_update.append(defect)
             
             if defects_to_update:
                 self.database.cache_defect_descriptions(defects_to_update)
