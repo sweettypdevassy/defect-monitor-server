@@ -944,8 +944,8 @@ class DefectChecker:
             for defect in all_defects_for_dup_check:
                 defect_id = str(defect.get('id'))
                 if defect_id in newly_fetched_details:
-                    # Update with freshly fetched tags from IBM RTC
-                    fresh_tags = newly_fetched_details[defect_id].get('triageTags', [])
+                    # Update with freshly fetched tags from IBM RTC (stored as 'tags' in newly_fetched_details)
+                    fresh_tags = newly_fetched_details[defect_id].get('tags', [])
                     defect['triageTags'] = fresh_tags
                     logger.info(f"   ✅ Updated {defect_id} in dup pool with fresh tags: {fresh_tags}")
             
