@@ -938,6 +938,17 @@ class DefectChecker:
                 self.database.cache_defect_descriptions(defects_to_update_state)
                 logger.info(f"🔄 Updated state and tags for {len(defects_to_update_state)} cached defects with fresh data from API")
             
+            # IMPORTANT: Update tags in all_defects_for_dup_check with freshly fetched tags
+            # This ensures duplicate detection uses the most up-to-date tag information
+            logger.info(f"🔄 Updating tags in duplicate detection pool with freshly fetched data...")
+            for defect in all_defects_for_dup_check:
+                defect_id = str(defect.get('id'))
+                if defect_id in newly_fetched_details:
+                    # Update with freshly fetched tags from IBM RTC
+                    fresh_tags = newly_fetched_details[defect_id].get('triageTags', [])
+                    defect['triageTags'] = fresh_tags
+                    logger.info(f"   ✅ Updated {defect_id} in dup pool with fresh tags: {fresh_tags}")
+            
             # Combine cached and newly fetched descriptions
             all_descriptions = {**cached_descriptions}
             for defect_id, details in newly_fetched_details.items():
