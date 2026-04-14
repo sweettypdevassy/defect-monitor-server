@@ -785,14 +785,16 @@ class DefectChecker:
                             logger.warning(f"Failed to update state for defect {defect_id}: {e}")
             
             # Check cache first (only for defects in current API response)
-            logger.debug(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
+            logger.info(f"🔍 Checking cache for {len(all_ids)} defect descriptions...")
             cached_descriptions = self.database.get_cached_descriptions(all_ids)
             
             # Identify NEW defects (not in cache)
             ids_to_fetch = [id for id in all_ids if id not in cached_descriptions]
             
             if cached_descriptions:
-                logger.debug(f"✅ Found {len(cached_descriptions)} cached descriptions")
+                logger.info(f"✅ Found {len(cached_descriptions)} cached descriptions")
+            else:
+                logger.warning(f"⚠️  No cached descriptions found for any of the {len(all_ids)} defects!")
             
             # Fetch descriptions for NEW defects only (fast - typically 5-10 defects)
             newly_fetched_details = {}
@@ -841,6 +843,8 @@ class DefectChecker:
                     'creation_date': details.get('created', '')
                 }
             
+            logger.info(f"📋 Total descriptions available: {len(all_descriptions)} for {len(all_ids)} defects")
+            
             # Apply descriptions to untriaged defects
             for defect in untriaged_defects:
                 defect_id = str(defect.get('id'))
@@ -852,10 +856,10 @@ class DefectChecker:
                     else:
                         defect['description'] = desc_data
                 else:
+                    logger.warning(f"⚠️  No description found for untriaged defect {defect_id}")
                     defect['description'] = ''
             
             # Apply descriptions to all defects for duplicate checking
-            # IMPORTANT: Do NOT overwrite triageTags from cache - use fresh tags from IBM API
             for defect in all_defects_for_dup_check:
                 defect_id = str(defect.get('id'))
                 if defect_id in all_descriptions:
@@ -863,25 +867,11 @@ class DefectChecker:
                     if isinstance(desc_data, dict):
                         defect['description'] = desc_data.get('description', '')
                         defect['creation_date'] = desc_data.get('creation_date', '')
-                        # DO NOT update triageTags from cache - keep fresh tags from IBM API
                     else:
                         defect['description'] = desc_data
             
-            # CRITICAL FIX: Update cache for ALL defects to reflect current tags from IBM
-            # This ensures that when tags are removed in IBM, they're also removed from cache
-            # IMPORTANT: Only update if defect has description (don't overwrite with empty)
-            defects_to_update = []
-            for defect in all_defects_for_dup_check:
-                defect_id = str(defect.get('id'))
-                # Only update cache if defect has description
-                # This prevents overwriting cached descriptions with empty ones from IBM API
-                if defect.get('description'):
-                    defect['component'] = component
-                    defects_to_update.append(defect)
-            
-            if defects_to_update:
-                self.database.cache_defect_descriptions(defects_to_update)
-                logger.debug(f"🔄 Updated cache for {len(defects_to_update)} defects with current tags from IBM")
+            # DON'T update cache here - it will overwrite descriptions with empty data from IBM API
+            # Cache updates should only happen when we fetch NEW descriptions above
         
         # Process untriaged defects with ML suggestions and duplicate detection
         for defect in untriaged_defects:
