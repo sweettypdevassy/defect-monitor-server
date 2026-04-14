@@ -1043,17 +1043,23 @@ class DefectChecker:
                     if duplicate_tags:
                         # Determine primary tag from duplicate
                         tags_lower = [str(tag).lower().strip() for tag in duplicate_tags]
+                        logger.info(f"   🔍 Checking duplicate tags: {duplicate_tags} -> lowercase: {tags_lower}")
                         
                         # Priority: infrastructure > test > product
                         if any('infra' in tag or 'infrastructure' in tag for tag in tags_lower):
                             suggested_tag = 'infrastructure_bug'
                             has_valid_ml_tag = True
+                            logger.info(f"   ✅ Found infrastructure tag in: {tags_lower}")
                         elif any('test' in tag for tag in tags_lower):
                             suggested_tag = 'test_bug'
                             has_valid_ml_tag = True
+                            logger.info(f"   ✅ Found test tag in: {tags_lower}")
                         elif any('product' in tag for tag in tags_lower):
                             suggested_tag = 'product_bug'
                             has_valid_ml_tag = True
+                            logger.info(f"   ✅ Found product tag in: {tags_lower}")
+                        else:
+                            logger.warning(f"   ⚠️  No ML tags found in: {tags_lower}")
                     
                     if has_valid_ml_tag:
                         # Duplicate has valid ML tag - use it
