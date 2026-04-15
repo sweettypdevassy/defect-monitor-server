@@ -654,6 +654,10 @@
                     <button class="explorer-button" id="refresh-selected-btn" onclick="refreshSelectedComponents()" style="background: linear-gradient(135deg, #00d4aa 0%, #00b894 100%);">
                         🔄 Refresh Selected Components
                     </button>
+                    <label style="display: flex; align-items: center; gap: 6px; color: #8899a6; font-size: 13px; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="include-soe-checkbox" style="cursor: pointer; width: 16px; height: 16px;">
+                        <span>Also refresh SOE Triage (+15-20s)</span>
+                    </label>
                     <span id="refresh-status" style="color: #8899a6; font-size: 12px; margin-left: 10px;"></span>
                 </div>
                 
@@ -817,6 +821,6 @@
         <!-- End Explorer Tab -->
     </div>
 
-    <script src="/static/dashboard.js?v=1774272600"></script>
+    <script src="/static/dashboard.js?v=1774272700"></script>
 </body>
 </html>
