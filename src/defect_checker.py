@@ -117,17 +117,22 @@ class DefectChecker:
                     logger.error(f"Unexpected response format for {component}")
                     return None
                 
-                # Extract creation_date and number_builds from reported_builds for each defect
+                # Extract creation_date and number_builds from API response
+                # Note: creation_date will be updated with accurate Jazz/RTC data during tag fetching
                 for defect in defects:
-                    reported_builds = defect.get('reported_builds', '')
-                    if reported_builds:
-                        creation_date = self.extract_creation_date_from_builds(reported_builds)
-                        defect['creation_date'] = creation_date
-                        # Count number of builds (comma-separated list)
-                        defect['number_builds'] = len([b.strip() for b in reported_builds.split(',') if b.strip()])
-                    else:
-                        defect['creation_date'] = ''
-                        defect['number_builds'] = 0
+                    # Only extract from reported_builds as fallback if not already set
+                    # Jazz/RTC API provides more accurate dc:created field
+                    if 'creation_date' not in defect or not defect.get('creation_date'):
+                        reported_builds = defect.get('reported_builds', '')
+                        if reported_builds:
+                            creation_date = self.extract_creation_date_from_builds(reported_builds)
+                            defect['creation_date'] = creation_date
+                        else:
+                            defect['creation_date'] = ''
+                    
+                    # Use the API's build count field directly (not calculated from comma-separated list)
+                    # The API provides 'number_of_builds' or similar field showing actual unique build count
+                    defect['number_builds'] = defect.get('number_of_builds', defect.get('numberBuilds', defect.get('buildCount', 0)))
                 
                 # Debug: Log first defect structure to understand the data
                 return defects
