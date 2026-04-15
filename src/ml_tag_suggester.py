@@ -210,16 +210,9 @@ class MLTagSuggester:
         return text.strip()
     
     def _extract_error_keywords(self, text: str) -> str:
-        """Extract domain-specific error keywords with strong indicators"""
-        keywords = []
-        
-        # Infrastructure indicators only (as requested)
-        if re.search(r'timeout|timed\s+out', text):
-            keywords.append('infra_timeout')
-        if re.search(r'connection\s+refused|connection\s+reset', text):
-            keywords.append('infra_connection')
-        
-        return ' '.join(keywords)
+        """Extract domain-specific error keywords - removed infrastructure bias"""
+        # Return empty string - let ML learn patterns from training data
+        return ''
     
     def _extract_stack_trace_features(self, text: str) -> str:
         """Extract stack trace patterns"""
@@ -785,11 +778,7 @@ class MLTagSuggester:
             probabilities = self.model.predict_proba([text])[0]
             confidence = float(probabilities[predicted_label])
             
-            # Boost confidence for weak infrastructure indicators only
-            if confidence < 0.65:
-                if 'timeout' in description and probabilities[self.tag_mapping['infrastructure_bug']] > 0.30:
-                    return ('infrastructure_bug', 0.70, 'Hybrid: Timeout + ML')
-            
+            # Use pure ML prediction without timeout boosting
             reasoning = self._generate_reasoning(defect, predicted_tag, probabilities)
             return (predicted_tag, confidence, f"ML: {reasoning}")
             

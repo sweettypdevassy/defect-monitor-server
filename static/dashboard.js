@@ -766,28 +766,37 @@ async function renderUntriagedDefects(selectedComponents = null) {
                                    finalTag === 'product_bug' ? '#1d9bf0' :
                                    finalTag === 'infrastructure_bug' ? '#00d4aa' : '#8899a6';
                     
-                    // Determine source and icon
+                    // Determine source and icon - PRIORITY: Check duplicate first
                     let sourceIcon = '';
                     let sourceText = '';
-                    if (suggestedTag === 'unknown' && finalTag !== 'unknown') {
-                        // Tag extracted from duplicate
+                    let tooltipText = '';
+                    
+                    // Priority 1: If there's a duplicate, show duplicate info
+                    if (isDuplicate && duplicateId) {
                         sourceIcon = '🔄';
                         sourceText = 'From duplicate';
-                    } else if (reasoning && reasoning.includes('ML prediction')) {
-                        // ML prediction (duplicate had non-ML tags)
-                        sourceIcon = '🤖';
-                        sourceText = 'ML prediction';
-                    } else if (reasoning && reasoning.includes('duplicate defect')) {
-                        // From duplicate with valid tag
+                        tooltipText = `Duplicate of #${duplicateId} (${similarityPercent}% similar) - Tags: ${duplicateTags.join(', ')}`;
+                    }
+                    // Priority 2: If tag was extracted from duplicate tags
+                    else if (suggestedTag === 'unknown' && finalTag !== 'unknown') {
                         sourceIcon = '🔄';
                         sourceText = 'From duplicate';
-                    } else {
-                        // Pure ML prediction (no duplicate)
+                        tooltipText = `Tag extracted from duplicate defect - ${reasoning}`;
+                    }
+                    // Priority 3: If reasoning mentions duplicate
+                    else if (reasoning && reasoning.includes('duplicate defect')) {
+                        sourceIcon = '🔄';
+                        sourceText = 'From duplicate';
+                        tooltipText = reasoning;
+                    }
+                    // Priority 4: ML prediction (no duplicate involved)
+                    else {
                         sourceIcon = '🤖';
                         sourceText = 'ML prediction';
+                        tooltipText = reasoning || `ML prediction: ${finalTag}`;
                     }
                     
-                    tagDisplay = `<span style="color: ${tagColor}; font-weight: 600;" title="${sourceText}: ${reasoning}">
+                    tagDisplay = `<span style="color: ${tagColor}; font-weight: 600;" title="${tooltipText}">
                         ${sourceIcon} ${finalTag} (${confidencePercent}%)
                     </span>`;
                 } else if (finalTag === 'unknown') {

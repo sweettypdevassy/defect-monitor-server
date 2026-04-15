@@ -33,7 +33,8 @@ class DefectChecker:
             logger.warning("⚠️  ML model not trained. Run: docker-compose exec defect-monitor python3 retrain_model.sh")
         
         # Lower threshold to 0.85 for summary-only matching (was 0.7)
-        # Since we only have summaries, we need high similarity to avoid false positives
+        # Use 80% threshold for duplicate detection
+        # With descriptions, this provides good balance between catching duplicates and avoiding false positives
         self.duplicate_detector = DuplicateDetector(similarity_threshold=0.80)
     
     @property

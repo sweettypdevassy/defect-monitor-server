@@ -96,32 +96,32 @@ class InsightsAnalyzer:
         return insights
     
     def _find_duplicates(self, defects: List[Dict]) -> List[Dict]:
-        """Find duplicate defects based on similarity (95% threshold)"""
+        """Find duplicate defects using the same logic as duplicate detection (75% threshold)"""
         duplicates = []
         
         if not self.duplicate_detector:
             return duplicates
         
-        # Group defects by similarity
+        # Group defects by similarity using the SAME logic as duplicate detection
         seen = set()
         for i, defect in enumerate(defects):
             if defect['id'] in seen:
                 continue
             
+            # Use the duplicate detector's find_duplicates method for consistency
+            # This uses the same weighted calculation (summary + description + key info)
+            similar_matches = self.duplicate_detector.find_duplicates(defect, defects)
+            
             similar_defects = []
-            for j, other_defect in enumerate(defects):
-                if i != j and other_defect['id'] not in seen:
-                    similarity = self.duplicate_detector.calculate_similarity(
-                        defect['summary'],
-                        other_defect['summary']
-                    )
-                    if similarity > 0.80:  # 80% similarity threshold
-                        similar_defects.append({
-                            'id': other_defect['id'],
-                            'summary': other_defect['summary'],
-                            'similarity': round(similarity * 100, 1)
-                        })
-                        seen.add(other_defect['id'])
+            for other_defect, similarity in similar_matches:
+                other_id = other_defect['id']
+                if other_id != defect['id'] and other_id not in seen:
+                    similar_defects.append({
+                        'id': other_id,
+                        'summary': other_defect['summary'],
+                        'similarity': round(similarity * 100, 1)
+                    })
+                    seen.add(other_id)
             
             if similar_defects:
                 duplicates.append({
