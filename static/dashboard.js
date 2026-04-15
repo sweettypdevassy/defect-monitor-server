@@ -696,8 +696,20 @@ async function renderUntriagedDefects(selectedComponents = null) {
             apiUrl += '?components=' + encodeURIComponent(selectedComponents.join(','));
         }
         
-        // Fetch untriaged defects from Flask API
-        const response = await fetch(apiUrl);
+        // Add cache-busting parameter to ensure fresh data
+        const cacheBuster = Date.now();
+        apiUrl += (apiUrl.includes('?') ? '&' : '?') + '_=' + cacheBuster;
+        
+        console.log('🔄 Fetching untriaged defects from:', apiUrl);
+        
+        // Fetch untriaged defects from Flask API with no-cache headers
+        const response = await fetch(apiUrl, {
+            cache: 'no-store',
+            headers: {
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache'
+            }
+        });
         const result = await response.json();
         const allDefects = result.defects || [];
         
@@ -888,10 +900,20 @@ async function renderTriagedDefects(selectedComponents = null) {
             apiUrl += '?components=' + encodeURIComponent(selectedComponents.join(','));
         }
         
+        // Add cache-busting parameter to ensure fresh data
+        const cacheBuster = Date.now();
+        apiUrl += (apiUrl.includes('?') ? '&' : '?') + '_=' + cacheBuster;
+        
         console.log('📡 Fetching from:', apiUrl);
         
-        // Fetch triaged defects from Flask API
-        const response = await fetch(apiUrl);
+        // Fetch triaged defects from Flask API with no-cache headers
+        const response = await fetch(apiUrl, {
+            cache: 'no-store',
+            headers: {
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache'
+            }
+        });
         const result = await response.json();
         
         console.log('📦 API Response:', result);
@@ -1403,7 +1425,15 @@ async function renderComponentInsights(selectedComponents) {
         // Fetch insights for each component
         for (const componentName of selectedComponents) {
             try {
-                const response = await fetch(`/api/insights/${encodeURIComponent(componentName)}`);
+                // Add cache-busting parameter
+                const cacheBuster = Date.now();
+                const response = await fetch(`/api/insights/${encodeURIComponent(componentName)}?_=${cacheBuster}`, {
+                    cache: 'no-store',
+                    headers: {
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache'
+                    }
+                });
                 if (!response.ok) {
                     console.warn(`Failed to fetch insights for ${componentName}`);
                     continue;
