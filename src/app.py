@@ -660,18 +660,21 @@ def api_component_insights(component_name):
             current_defects_map = {}
             # Try to get all_defects from nested data structure or top level
             all_defects_list = component_data.get('data', {}).get('all_defects', component_data.get('all_defects', component_data.get('defects', [])))
+            logger.info(f"📊 Found {len(all_defects_list)} defects in snapshot for number_builds update")
             for defect in all_defects_list:
                 current_defects_map[str(defect['id'])] = defect.get('number_builds', 0)
             
             # Update number_builds in cached defects with current values
+            updated_count = 0
             for defect in cached_defects:
                 defect_id = str(defect['id'])
                 if defect_id in current_defects_map:
                     defect['number_builds'] = current_defects_map[defect_id]
+                    updated_count += 1
                     logger.debug(f"Updated number_builds for {defect_id}: {defect['number_builds']}")
             
             defects = cached_defects
-            logger.info(f"✅ Using {len(defects)} cached defects for insights (with current build counts)")
+            logger.info(f"✅ Using {len(defects)} cached defects for insights ({updated_count} with updated build counts)")
         else:
             # Try to get from historical data
             history = database.get_component_history(component_name, days=30)
