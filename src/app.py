@@ -370,7 +370,10 @@ def _do_refresh_components(component_names: List[str], refresh_id: str):
                     refresh_status[refresh_id]["errors"] = errors
                     refresh_status[refresh_id]["progress"] = idx + 1
         
-        # Also refresh SOE Triage: Overdue Defects
+        logger.info(f"✅ Batch refresh completed: {len(results)} successful, {len(errors)} failed")
+        
+        # Refresh SOE Triage IMMEDIATELY after component refresh
+        # This ensures triaged defects are removed from SOE list
         soe_result = None
         try:
             logger.info("🔄 Refreshing SOE Triage: Overdue Defects...")
@@ -378,50 +381,50 @@ def _do_refresh_components(component_names: List[str], refresh_id: str):
             # Authenticate with Jazz/RTC (same as scheduled checks)
             if not authenticator.authenticate_jazz_rtc():
                 logger.error("❌ Jazz/RTC authentication failed, skipping SOE Triage refresh")
-                raise Exception("Jazz/RTC authentication failed")
-            
-            soe_defects = defect_checker.fetch_soe_triage_defects()
-            
-            if soe_defects is not None:
-                soe_result = {
-                    "total": len(soe_defects),
-                    "defects": soe_defects
-                }
-                
-                # Store SOE Triage data in database
-                date = datetime.now().strftime("%Y-%m-%d")
-                created_at = datetime.now().isoformat()
-                
-                import sqlite3
-                conn = sqlite3.connect(database.db_path)
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT OR REPLACE INTO soe_snapshots
-                    (date, total, data, created_at)
-                    VALUES (?, ?, ?, ?)
-                """, (
-                    date,
-                    soe_result["total"],
-                    json.dumps(soe_result),
-                    created_at
-                ))
-                conn.commit()
-                conn.close()
-                
-                logger.info(f"✅ SOE Triage: {len(soe_defects)} overdue defects refreshed")
             else:
-                logger.warning("⚠️ Failed to fetch SOE Triage defects")
+                soe_defects = defect_checker.fetch_soe_triage_defects()
                 
+                if soe_defects is not None:
+                    soe_result = {
+                        "total": len(soe_defects),
+                        "defects": soe_defects
+                    }
+                    
+                    # Store SOE Triage data in database
+                    date = datetime.now().strftime("%Y-%m-%d")
+                    created_at = datetime.now().isoformat()
+                    
+                    import sqlite3
+                    conn = sqlite3.connect(database.db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO soe_snapshots
+                        (date, total, data, created_at)
+                        VALUES (?, ?, ?, ?)
+                    """, (
+                        date,
+                        soe_result["total"],
+                        json.dumps(soe_result),
+                        created_at
+                    ))
+                    conn.commit()
+                    conn.close()
+                    
+                    logger.info(f"✅ SOE Triage: {len(soe_defects)} overdue defects refreshed")
+                else:
+                    logger.warning("⚠️ Failed to fetch SOE Triage defects")
+                    
         except Exception as e:
             logger.error(f"❌ Error refreshing SOE Triage: {e}")
         
-        logger.info(f"✅ Batch refresh completed: {len(results)} successful, {len(errors)} failed")
-        
-        # Mark as completed
+        # Mark as completed AFTER SOE refresh so both are updated
         with refresh_lock:
             refresh_status[refresh_id]["status"] = "completed"
             refresh_status[refresh_id]["completed_at"] = datetime.now().isoformat()
-            refresh_status[refresh_id]["soe_result"] = soe_result
+            refresh_status[refresh_id]["results"] = results
+            refresh_status[refresh_id]["errors"] = errors
+            if soe_result:
+                refresh_status[refresh_id]["soe_result"] = soe_result
             
     except Exception as e:
         logger.error(f"❌ Background refresh failed: {e}")

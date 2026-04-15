@@ -1944,11 +1944,11 @@ async function refreshSelectedComponents() {
                 const statusResponse = await fetch(`/api/refresh-status/${refreshId}`);
                 if (statusResponse.ok) {
                     const status = await statusResponse.json();
-                    console.log(`📊 Status check ${attempts}:`, status);
+                    console.log(`📊 Status check ${attempts}:`, JSON.stringify(status, null, 2));
                     
                     if (status.status === 'completed') {
                         completed = true;
-                        console.log('✅ Refresh completed!', status);
+                        console.log('✅ Refresh completed!', JSON.stringify(status, null, 2));
                         
                         const successCount = status.results ? status.results.length : 0;
                         const errorCount = status.errors ? status.errors.length : 0;
@@ -1963,7 +1963,7 @@ async function refreshSelectedComponents() {
                         throw new Error('Refresh failed: ' + (status.error || 'Unknown error'));
                     } else {
                         // Still in progress
-                        const progress = status.completed || 0;
+                        const progress = status.progress || 0;
                         const total = status.total || selectedComponents.length;
                         btn.textContent = `⏳ Processing ${progress}/${total}...`;
                     }

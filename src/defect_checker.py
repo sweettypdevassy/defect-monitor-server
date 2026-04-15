@@ -510,12 +510,13 @@ class DefectChecker:
                     if resource_url:
                         functional_area_urls.add(resource_url)
             
-            # Fetch all functional area labels
+            # Fetch all functional area labels IN PARALLEL for speed
             logger.info(f"Resolving {len(functional_area_urls)} functional area URLs...")
             functional_area_map = {}
             session = self.authenticator.get_session()
             
-            for url in functional_area_urls:
+            def resolve_functional_area(url):
+                """Resolve a single functional area URL"""
                 try:
                     response = session.get(
                         url,
@@ -535,10 +536,23 @@ class DefectChecker:
                                 fa_data.get('label') or
                                 fa_data.get('name') or
                                 'Unknown')
-                        functional_area_map[url] = label
                         logger.debug(f"✓ Resolved: {label}")
+                        return (url, label)
+                    else:
+                        return (url, 'Unknown')
                 except Exception as e:
                     logger.warning(f"Failed to resolve functional area {url}: {e}")
+                    return (url, 'Unknown')
+            
+            # Use ThreadPoolExecutor for parallel requests (max 8 workers)
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = {executor.submit(resolve_functional_area, url): url for url in functional_area_urls}
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        url, label = result
+                        functional_area_map[url] = label
             
             # Second pass: process all work items with resolved functional areas
             for item in results:
