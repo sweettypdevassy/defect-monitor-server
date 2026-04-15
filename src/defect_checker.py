@@ -130,9 +130,18 @@ class DefectChecker:
                         else:
                             defect['creation_date'] = ''
                     
-                    # Use the API's build count field directly (not calculated from comma-separated list)
-                    # The API provides 'number_of_builds' or similar field showing actual unique build count
-                    defect['number_builds'] = defect.get('number_of_builds', defect.get('numberBuilds', defect.get('buildCount', 0)))
+                    # Use number_builds from API if available, otherwise calculate from reported_builds
+                    if 'number_builds' not in defect:
+                        reported_builds = defect.get('reported_builds', '')
+                        if reported_builds and not reported_builds.startswith('[No longer available'):
+                            # Count comma-separated build entries
+                            build_count = len([b.strip() for b in reported_builds.split(',') if b.strip() and 'Build' in b])
+                            defect['number_builds'] = max(1, build_count)  # At least 1 if we have reported_builds
+                        elif reported_builds and reported_builds.startswith('[No longer available'):
+                            # Build info no longer available, but defect exists, so assume 1 build
+                            defect['number_builds'] = 1
+                        else:
+                            defect['number_builds'] = 0
                 
                 # Debug: Log first defect structure to understand the data
                 return defects
