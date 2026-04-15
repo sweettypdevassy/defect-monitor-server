@@ -1909,6 +1909,7 @@ async function refreshSelectedComponents() {
     try {
         console.log(`🔄 Refreshing ${selectedComponents.length} components:`, selectedComponents);
         
+        // Start the refresh (returns immediately with refresh_id)
         const response = await fetch('/api/refresh-components', {
             method: 'POST',
             headers: {
@@ -1924,30 +1925,64 @@ async function refreshSelectedComponents() {
         }
         
         const data = await response.json();
-        console.log('✅ Backend refresh complete:', data);
+        const refreshId = data.refresh_id;
+        console.log('✅ Refresh started with ID:', refreshId);
         
-        // Show success message
-        const successCount = data.results ? data.results.length : 0;
-        const errorCount = data.errors ? data.errors.length : 0;
-        
-        btn.textContent = `✅ Refreshed - Waiting for DB...`;
+        btn.textContent = `⏳ Processing...`;
         btn.style.opacity = '1';
         
-        if (errorCount > 0) {
-            console.warn(`⚠️ ${errorCount} component(s) failed to refresh:`, data.errors);
+        // Poll for completion
+        let completed = false;
+        let attempts = 0;
+        const maxAttempts = 60; // 60 seconds max wait
+        
+        while (!completed && attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+            attempts++;
+            
+            try {
+                const statusResponse = await fetch(`/api/refresh-status/${refreshId}`);
+                if (statusResponse.ok) {
+                    const status = await statusResponse.json();
+                    console.log(`📊 Status check ${attempts}:`, status);
+                    
+                    if (status.status === 'completed') {
+                        completed = true;
+                        console.log('✅ Refresh completed!', status);
+                        
+                        const successCount = status.results ? status.results.length : 0;
+                        const errorCount = status.errors ? status.errors.length : 0;
+                        
+                        if (errorCount > 0) {
+                            console.warn(`⚠️ ${errorCount} component(s) failed:`, status.errors);
+                        }
+                        
+                        btn.textContent = `✅ Complete - Updating UI...`;
+                        break;
+                    } else if (status.status === 'error') {
+                        throw new Error('Refresh failed: ' + (status.error || 'Unknown error'));
+                    } else {
+                        // Still in progress
+                        const progress = status.completed || 0;
+                        const total = status.total || selectedComponents.length;
+                        btn.textContent = `⏳ Processing ${progress}/${total}...`;
+                    }
+                }
+            } catch (pollError) {
+                console.warn('Status poll error:', pollError);
+                // Continue polling
+            }
         }
         
-        // Wait longer for database to be fully updated (5 seconds)
-        console.log('⏳ Waiting 5 seconds for database to fully update...');
-        for (let i = 5; i > 0; i--) {
-            btn.textContent = `⏳ Updating DB... ${i}s`;
-            await new Promise(resolve => setTimeout(resolve, 1000));
+        if (!completed) {
+            console.warn('⚠️ Refresh timed out after 60 seconds');
+            btn.textContent = `⚠️ Timeout - Updating anyway...`;
         }
         
-        console.log('🔄 Now reloading dashboard data with fresh queries...');
+        // Now reload the dashboard data with fresh queries
+        console.log('🔄 Reloading dashboard data...');
         btn.textContent = `🔄 Refreshing tables...`;
         
-        // Reload the dashboard data (this will refresh all tables with cache-busting)
         await generateExplorerDashboard();
         
         console.log('✅ Dashboard UI updated successfully');
