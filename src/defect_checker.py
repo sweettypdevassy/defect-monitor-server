@@ -1557,10 +1557,14 @@ class DefectChecker:
                     # Save checkpoint after successful fetch
                     checkpoint.save_checkpoint(completed_components, all_components)
                     
-                    # Clean summary logging showing what was saved to database
-                    logger.info(f"   ✅ Updated defect counts: {parsed['total']} total, {parsed['untriaged']} untriaged, {parsed['test_bugs']} test, {parsed['product_bugs']} product, {parsed['infra_bugs']} infra")
-                    logger.info(f"   ✅ Updated dashboard charts")
-                    logger.info(f"   ✅ Added defects to tables")
+                    # Clean summary logging showing EXACTLY what was done
+                    logger.info(f"   ✅ Fetched from Build Break API: {parsed['total']} total, {parsed['untriaged']} untriaged, {parsed['test_bugs']} test, {parsed['product_bugs']} product, {parsed['infra_bugs']} infra")
+                    logger.info(f"   ✅ Added All Untriaged Defects to table")
+                    logger.info(f"   ✅ Added Product Defects to table")
+                    logger.info(f"   ✅ Added Infrastructure Defects to table")
+                    logger.info(f"   ✅ Added Test Defects to table")
+                    logger.info(f"   ✅ Detected duplicates & applied tags (duplicate tags or ML predictions)")
+                    logger.info(f"   ✅ Identified Best Practices insights (duplicates, old defects with 1 build)")
                     logger.info(f"   💾 Checkpoint saved")
                 else:
                     fetch_summary["failed"] += 1
