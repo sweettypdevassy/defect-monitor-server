@@ -739,7 +739,7 @@ class DefectDatabase:
                     has_infra_bug = any(
                         tag == 'infrastructure_bug' or tag == 'infrastructure' or tag == 'infra' or
                         'infrastructure_bug' in tag or 'infrastructurebug' in tag or
-                        'infra_bug' in tag or 'infrabug' in tag
+                        'infra_bug' in tag or 'infrabug' in tag or 'infrastructure' in tag
                         for tag in tags_lower
                     )
                     
