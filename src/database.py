@@ -1279,7 +1279,7 @@ class DefectDatabase:
             
             # Use all_components_snapshots table for dashboard (background fetch data)
             cursor.execute("""
-                SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs
+                SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data
                 FROM all_components_snapshots
                 WHERE date = (SELECT MAX(date) FROM all_components_snapshots)
             """)
@@ -1296,13 +1296,17 @@ class DefectDatabase:
             }
             
             for row in rows:
-                date, component, total, untriaged, test_bugs, product_bugs, infra_bugs = row
+                date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data_json = row
+                # Parse the data JSON to get all_defects
+                full_data = json.loads(data_json) if data_json else {}
+                
                 snapshot["components"][component] = {
                     "total": total,
                     "untriaged": untriaged,
                     "test_bugs": test_bugs,
                     "product_bugs": product_bugs,
-                    "infra_bugs": infra_bugs
+                    "infra_bugs": infra_bugs,
+                    "all_defects": full_data.get("all_defects", [])
                 }
             
             return snapshot
