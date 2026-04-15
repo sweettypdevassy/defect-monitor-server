@@ -676,13 +676,24 @@ class MLTagSuggester:
             cv_std = np.std(all_accuracies)
             test_accuracy = all_accuracies[0]  # Initial test accuracy
             
-            # Store as pipeline with best model
+            # STEP 7: Retrain winning model on ALL data for maximum strength
+            logger.info(f"🔄 Retraining {best_model_name} on ALL {len(X_texts)} defects for production...")
+            
+            # Transform ALL data with TF-IDF
+            X_all_tfidf = tfidf.transform(X_texts)
+            
+            # Retrain the winning model on ALL data
+            best_model.fit(X_all_tfidf, y_labels, sample_weight=np.array([class_weights[y] for y in y_labels]))
+            
+            logger.info(f"✅ Final model trained on ALL data for production use")
+            
+            # Store as pipeline with retrained model
             self.model = Pipeline([
                 ('tfidf', tfidf),
                 ('classifier', best_model)
             ])
             
-            # Use best model's predictions
+            # Use best model's predictions on original test set for reporting
             y_pred = best_model.predict(X_test_tfidf)
             accuracy = test_accuracy
             
