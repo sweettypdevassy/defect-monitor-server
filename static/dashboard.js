@@ -1907,7 +1907,12 @@ async function refreshSelectedComponents() {
     btn.style.opacity = '0.6';
     
     try {
-        console.log(`🔄 Refreshing ${selectedComponents.length} components:`, selectedComponents);
+        // Check if user wants to include SOE Triage refresh
+        const includeSoeCheckbox = document.getElementById('include-soe-checkbox');
+        const includeSoe = includeSoeCheckbox ? includeSoeCheckbox.checked : false;
+        
+        const soeMsg = includeSoe ? ' + SOE Triage' : '';
+        console.log(`🔄 Refreshing ${selectedComponents.length} components${soeMsg}:`, selectedComponents);
         
         // Start the refresh (returns immediately with refresh_id)
         const response = await fetch('/api/refresh-components', {
@@ -1916,7 +1921,8 @@ async function refreshSelectedComponents() {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                components: selectedComponents
+                components: selectedComponents,
+                include_soe: includeSoe
             })
         });
         

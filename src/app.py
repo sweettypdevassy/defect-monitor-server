@@ -308,7 +308,7 @@ def api_all_components():
         return jsonify({"error": str(e)}), 500
 
 
-def _do_refresh_components(component_names: List[str], refresh_id: str):
+def _do_refresh_components(component_names: List[str], refresh_id: str, include_soe: bool = False):
     """Background task to refresh components"""
     try:
         with refresh_lock:
@@ -318,6 +318,7 @@ def _do_refresh_components(component_names: List[str], refresh_id: str):
                 "total": len(component_names),
                 "results": [],
                 "errors": [],
+                "include_soe": include_soe,
                 "started_at": datetime.now().isoformat()
             }
         
@@ -372,52 +373,54 @@ def _do_refresh_components(component_names: List[str], refresh_id: str):
         
         logger.info(f"✅ Batch refresh completed: {len(results)} successful, {len(errors)} failed")
         
-        # Refresh SOE Triage IMMEDIATELY after component refresh
-        # This ensures triaged defects are removed from SOE list
+        # Optionally refresh SOE Triage if requested
         soe_result = None
-        try:
-            logger.info("🔄 Refreshing SOE Triage: Overdue Defects...")
-            
-            # Authenticate with Jazz/RTC (same as scheduled checks)
-            if not authenticator.authenticate_jazz_rtc():
-                logger.error("❌ Jazz/RTC authentication failed, skipping SOE Triage refresh")
-            else:
-                soe_defects = defect_checker.fetch_soe_triage_defects()
+        if include_soe:
+            try:
+                logger.info("🔄 Refreshing SOE Triage: Overdue Defects...")
                 
-                if soe_defects is not None:
-                    soe_result = {
-                        "total": len(soe_defects),
-                        "defects": soe_defects
-                    }
-                    
-                    # Store SOE Triage data in database
-                    date = datetime.now().strftime("%Y-%m-%d")
-                    created_at = datetime.now().isoformat()
-                    
-                    import sqlite3
-                    conn = sqlite3.connect(database.db_path)
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO soe_snapshots
-                        (date, total, data, created_at)
-                        VALUES (?, ?, ?, ?)
-                    """, (
-                        date,
-                        soe_result["total"],
-                        json.dumps(soe_result),
-                        created_at
-                    ))
-                    conn.commit()
-                    conn.close()
-                    
-                    logger.info(f"✅ SOE Triage: {len(soe_defects)} overdue defects refreshed")
+                # Authenticate with Jazz/RTC (same as scheduled checks)
+                if not authenticator.authenticate_jazz_rtc():
+                    logger.error("❌ Jazz/RTC authentication failed, skipping SOE Triage refresh")
                 else:
-                    logger.warning("⚠️ Failed to fetch SOE Triage defects")
+                    soe_defects = defect_checker.fetch_soe_triage_defects()
                     
-        except Exception as e:
-            logger.error(f"❌ Error refreshing SOE Triage: {e}")
+                    if soe_defects is not None:
+                        soe_result = {
+                            "total": len(soe_defects),
+                            "defects": soe_defects
+                        }
+                        
+                        # Store SOE Triage data in database
+                        date = datetime.now().strftime("%Y-%m-%d")
+                        created_at = datetime.now().isoformat()
+                        
+                        import sqlite3
+                        conn = sqlite3.connect(database.db_path)
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO soe_snapshots
+                            (date, total, data, created_at)
+                            VALUES (?, ?, ?, ?)
+                        """, (
+                            date,
+                            soe_result["total"],
+                            json.dumps(soe_result),
+                            created_at
+                        ))
+                        conn.commit()
+                        conn.close()
+                        
+                        logger.info(f"✅ SOE Triage: {len(soe_defects)} overdue defects refreshed")
+                    else:
+                        logger.warning("⚠️ Failed to fetch SOE Triage defects")
+                        
+            except Exception as e:
+                logger.error(f"❌ Error refreshing SOE Triage: {e}")
+        else:
+            logger.info("ℹ️  Skipping SOE Triage refresh (not requested)")
         
-        # Mark as completed AFTER SOE refresh so both are updated
+        # Mark as completed
         with refresh_lock:
             refresh_status[refresh_id]["status"] = "completed"
             refresh_status[refresh_id]["completed_at"] = datetime.now().isoformat()
@@ -443,6 +446,7 @@ def api_refresh_components():
     try:
         data = request.get_json()
         component_names = data.get('components', [])
+        include_soe = data.get('include_soe', False)  # Optional SOE refresh
         
         if not component_names:
             return jsonify({"error": "No components specified"}), 400
@@ -450,12 +454,13 @@ def api_refresh_components():
         # Generate unique refresh ID
         refresh_id = f"refresh_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
-        logger.info(f"🔄 Batch refresh triggered for {len(component_names)} components (ID: {refresh_id})")
+        soe_msg = " + SOE Triage" if include_soe else ""
+        logger.info(f"🔄 Batch refresh triggered for {len(component_names)} components{soe_msg} (ID: {refresh_id})")
         
         # Start background thread
         thread = threading.Thread(
             target=_do_refresh_components,
-            args=(component_names, refresh_id),
+            args=(component_names, refresh_id, include_soe),
             daemon=True
         )
         thread.start()
