@@ -365,6 +365,9 @@ class DefectChecker:
                 completed = 0
                 total = len(defect_ids)
                 
+                # Log parallel fetch start
+                logger.info(f"   🔄 Using {max_workers} parallel workers to fetch {total} defects...")
+                
                 # Use as_completed with timeout to prevent infinite waiting
                 # Timeout = 600 seconds (10 minutes) to fetch all defects
                 try:
@@ -375,9 +378,9 @@ class DefectChecker:
                             details_map[defect_id] = details
                             completed += 1
                             
-                            # Log progress every 100 defects or at completion
-                            if completed % 100 == 0 or completed == total:
-                                logger.info(f"   📥 Progress: {completed}/{total} defects fetched")
+                            # Log progress every 10 defects or at completion for better visibility
+                            if completed % 10 == 0 or completed == total:
+                                logger.info(f"   📥 Progress: {completed}/{total} defects fetched ({int(completed/total*100)}%)")
                                 
                         except Exception as e:
                             logger.debug(f"Error fetching details for {defect_id}: {e}")
@@ -871,7 +874,8 @@ class DefectChecker:
             newly_fetched_details = {}
             if ids_to_fetch:
                 logger.info(f"📥 Fetching details for {len(ids_to_fetch)} defects from IBM RTC...")
-                newly_fetched_details = self.fetch_details_parallel(ids_to_fetch, max_workers=3)
+                # Increased workers from 3 to 8 for faster parallel fetching
+                newly_fetched_details = self.fetch_details_parallel(ids_to_fetch, max_workers=8)
                 
                 # Cache the newly fetched details
                 if newly_fetched_details:
