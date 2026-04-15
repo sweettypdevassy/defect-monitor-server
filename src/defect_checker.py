@@ -876,29 +876,37 @@ class DefectChecker:
             logger.info(f"🔍 Checking cache for {len(all_ids)} defects...")
             cached_descriptions = self.database.get_cached_descriptions(all_ids)
             
-            # Identify NEW defects (not in cache) OR defects with empty tags that need tag refresh
-            ids_to_fetch = []
-            new_defects = 0
-            needs_tag_update = 0
-            
-            for id in all_ids:
-                if id not in cached_descriptions:
-                    # New defect - fetch everything
-                    ids_to_fetch.append(id)
-                    new_defects += 1
-                else:
-                    # Existing defect - check if it has tags
-                    cached_tags = cached_descriptions[id].get('triageTags', [])
-                    if not cached_tags:
-                        # No tags in cache - might have been added in IBM RTC, fetch to get tags
+            # For manual refresh (collect_triaged=False), ALWAYS fetch fresh tags
+            # This ensures we detect tag changes (additions/removals) in IBM RTC
+            # For background operations (collect_triaged=True), use cache for speed
+            if not collect_triaged:
+                # Manual refresh - fetch all defects to get latest tags
+                ids_to_fetch = list(all_ids)
+                logger.info(f"   🔄 Manual refresh: fetching fresh tags for all {len(ids_to_fetch)} defects")
+            else:
+                # Background operation - only fetch NEW defects or those needing tag updates
+                ids_to_fetch = []
+                new_defects = 0
+                needs_tag_update = 0
+                
+                for id in all_ids:
+                    if id not in cached_descriptions:
+                        # New defect - fetch everything
                         ids_to_fetch.append(id)
-                        needs_tag_update += 1
-            
-            logger.info(f"   ✅ Found {len(cached_descriptions)} in cache")
-            if new_defects > 0:
-                logger.info(f"   📥 {new_defects} new defects to fetch")
-            if needs_tag_update > 0:
-                logger.info(f"   🔄 {needs_tag_update} need tag updates")
+                        new_defects += 1
+                    else:
+                        # Existing defect - check if it has tags
+                        cached_tags = cached_descriptions[id].get('triageTags', [])
+                        if not cached_tags:
+                            # No tags in cache - might have been added in IBM RTC, fetch to get tags
+                            ids_to_fetch.append(id)
+                            needs_tag_update += 1
+                
+                logger.info(f"   ✅ Found {len(cached_descriptions)} in cache")
+                if new_defects > 0:
+                    logger.info(f"   📥 {new_defects} new defects to fetch")
+                if needs_tag_update > 0:
+                    logger.info(f"   🔄 {needs_tag_update} need tag updates")
             
             # Fetch descriptions for NEW defects only (fast - typically 5-10 defects)
             newly_fetched_details = {}
