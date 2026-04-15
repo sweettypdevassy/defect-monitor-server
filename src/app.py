@@ -327,7 +327,8 @@ def _do_refresh_components(component_names: List[str], refresh_id: str, include_
         
         for idx, component_name in enumerate(component_names):
             try:
-                # Fetch fresh data from IBM (SAME as scheduled fetch)
+                # FAST REFRESH: Just get counts from IBM API, no heavy processing
+                # This makes refresh instant (2-5 seconds per component)
                 defects = defect_checker.fetch_defects_for_component(component_name)
                 
                 if defects is None:
@@ -337,28 +338,23 @@ def _do_refresh_components(component_names: List[str], refresh_id: str, include_
                         refresh_status[refresh_id]["progress"] = idx + 1
                     continue
                 
-                # Add component field to each defect for caching
-                for defect in defects:
-                    defect['component'] = component_name
-                
-                # Use FULL parsing for manual refresh to ensure data integrity
-                # The speed issue was from description fetching, not from parsing itself
-                result = defect_checker.parse_defects(defects, component_name, collect_triaged=False)
-                
-                # Store in database for dashboard display
-                database.store_all_components_snapshot(component_name, result, is_monitored=False)
-                database.store_daily_snapshot({"components": {component_name: result}})
+                # Quick count of defects by category (no ML, no duplicate detection, no database update)
+                total = len(defects)
+                untriaged = sum(1 for d in defects if not d.get('triageTags', []))
+                test_bugs = sum(1 for d in defects if any('test' in str(tag).lower() for tag in d.get('triageTags', [])))
+                product_bugs = sum(1 for d in defects if any('product' in str(tag).lower() for tag in d.get('triageTags', [])))
+                infra_bugs = sum(1 for d in defects if any('infra' in str(tag).lower() for tag in d.get('triageTags', [])))
                 
                 results.append({
                     "component": component_name,
-                    "total": result.get('total', 0),
-                    "untriaged": result.get('untriaged', 0),
-                    "test_bugs": result.get('test_bugs', 0),
-                    "product_bugs": result.get('product_bugs', 0),
-                    "infra_bugs": result.get('infra_bugs', 0)
+                    "total": total,
+                    "untriaged": untriaged,
+                    "test_bugs": test_bugs,
+                    "product_bugs": product_bugs,
+                    "infra_bugs": infra_bugs
                 })
                 
-                logger.info(f"✅ {component_name}: Total={result['total']}, Untriaged={result['untriaged']}")
+                logger.info(f"✅ {component_name}: Total={total}, Untriaged={untriaged}")
                 
                 # Update progress
                 with refresh_lock:
