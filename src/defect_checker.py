@@ -1102,6 +1102,45 @@ class DefectChecker:
         if cancelled_count > 0:
             logger.info(f"🚫 Filtered out {cancelled_count} cancelled/closed defects from {component}")
         
+        # Build list of ALL defects (both triaged and untriaged) for dashboard tables
+        all_defects_list = []
+        
+        # Add untriaged defects
+        for defect in untriaged_defects:
+            all_defects_list.append(defect)
+        
+        # Add triaged defects from all_defects_for_dup_check
+        for defect in all_defects_for_dup_check:
+            # Check if this defect has triage tags
+            triage_tags = defect.get("triageTags", defect.get("tags", []))
+            if not isinstance(triage_tags, list):
+                triage_tags = []
+            
+            tags_lower = [str(tag).lower().strip() for tag in triage_tags]
+            
+            has_test_bug = any(
+                tag == 'test_bug' or tag == 'test' or
+                'test_bug' in tag or 'testbug' in tag
+                for tag in tags_lower
+            )
+            
+            has_product_bug = any(
+                tag == 'product_bug' or tag == 'product' or
+                'product_bug' in tag or 'productbug' in tag
+                for tag in tags_lower
+            )
+            
+            has_infra_bug = any(
+                tag == 'infrastructure_bug' or tag == 'infrastructure' or tag == 'infra' or
+                'infrastructure_bug' in tag or 'infrastructurebug' in tag or
+                'infra_bug' in tag or 'infrabug' in tag
+                for tag in tags_lower
+            )
+            
+            # Only add if it has triage tags (triaged defect)
+            if has_test_bug or has_product_bug or has_infra_bug:
+                all_defects_list.append(defect)
+        
         result = {
             "component": component,
             "total": len(defects) - cancelled_count,  # Total ACTIVE defects (excluding cancelled)
@@ -1110,7 +1149,8 @@ class DefectChecker:
             "product_bugs": product_bugs_count,  # Count of triaged product bugs
             "infra_bugs": infra_bugs_count,  # Count of triaged infra bugs
             "defects": untriaged_defects,  # ONLY untriaged defects (with suggested tags and duplicate info)
-            "triaged_defects": triaged_defects if collect_triaged else []  # Triaged defects for training
+            "triaged_defects": triaged_defects if collect_triaged else [],  # Triaged defects for training
+            "all_defects": all_defects_list  # ALL defects (triaged + untriaged) for dashboard tables
         }
         
         return result

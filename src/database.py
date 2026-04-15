@@ -645,7 +645,7 @@ class DefectDatabase:
             return []
     def get_all_triaged_defects_by_category(self, component_names: Optional[List[str]] = None) -> Dict:
         """
-        Get triaged defects from defect_descriptions cache, categorized by tag type
+        Get triaged defects from all_components_snapshots, categorized by tag type
         Returns defects that HAVE triage tags (product_bug, test_bug, infrastructure_bug)
         
         Args:
@@ -658,101 +658,123 @@ class DefectDatabase:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # Query defect_descriptions table for defects with triage tags
-            # Filter out cancelled/closed/resolved defects (state URLs contain these keywords)
+            # Get latest date from all_components_snapshots
+            cursor.execute("SELECT MAX(date) FROM all_components_snapshots")
+            latest_date = cursor.fetchone()[0]
+            
+            if not latest_date:
+                logger.warning("No data in all_components_snapshots")
+                conn.close()
+                return {
+                    "product_bugs": [],
+                    "infra_bugs": [],
+                    "test_bugs": [],
+                    "total_triaged": 0
+                }
+            
+            # Query all_components_snapshots for latest data
             if component_names:
                 placeholders = ','.join('?' * len(component_names))
                 query = f"""
-                    SELECT defect_id, component, summary, state, tags, functional_area
-                    FROM defect_descriptions
-                    WHERE component IN ({placeholders})
-                    AND (state NOT LIKE '%cancel%' AND state NOT LIKE '%closed%' AND state NOT LIKE '%resolved%')
-                    AND (tags LIKE '%test_bug%' OR tags LIKE '%test%' OR tags LIKE '%product_bug%' OR tags LIKE '%product%' OR tags LIKE '%infrastructure_bug%' OR tags LIKE '%infrastructure%' OR tags LIKE '%infra_bug%' OR tags LIKE '%infra%')
-                    ORDER BY component ASC, defect_id DESC
+                    SELECT component, data
+                    FROM all_components_snapshots
+                    WHERE date = ? AND component IN ({placeholders})
+                    ORDER BY component ASC
                 """
-                cursor.execute(query, component_names)
+                cursor.execute(query, [latest_date] + component_names)
             else:
                 cursor.execute("""
-                    SELECT defect_id, component, summary, state, tags, functional_area
-                    FROM defect_descriptions
-                    WHERE (state NOT LIKE '%cancel%' AND state NOT LIKE '%closed%' AND state NOT LIKE '%resolved%')
-                    AND (tags LIKE '%test_bug%' OR tags LIKE '%test%' OR tags LIKE '%product_bug%' OR tags LIKE '%product%' OR tags LIKE '%infra structure_bug%' OR tags LIKE '%infrastructure%' OR tags LIKE '%infra_bug%' OR tags LIKE '%infra%')
-                    ORDER BY component ASC, defect_id DESC
-                """)
+                    SELECT component, data
+                    FROM all_components_snapshots
+                    WHERE date = ?
+                    ORDER BY component ASC
+                """, (latest_date,))
             
             rows = cursor.fetchall()
             conn.close()
             
-            logger.info(f"✅ Retrieved {len(rows)} triaged defects from defect_descriptions")
+            logger.info(f"✅ Retrieved {len(rows)} components from all_components_snapshots (date: {latest_date})")
             
-            # Now categorize defects by their triage tags
+            # Now extract and categorize defects by their triage tags
             product_bugs = []
             infra_bugs = []
             test_bugs = []
             
             for row in rows:
-                defect_id, component, summary, state, tags_json, functional_area = row
+                component, data_json = row
                 
-                # Parse tags JSON
+                # Parse component data JSON
                 try:
-                    tags = json.loads(tags_json) if tags_json else []
+                    comp_data = json.loads(data_json) if data_json else {}
                 except:
-                    tags = []
+                    continue
                 
-                # Ensure it's an array
-                if not isinstance(tags, list):
-                    tags = []
+                # Get all defects from this component (not just untriaged)
+                all_defects = comp_data.get('all_defects', [])
                 
-                # Convert all tags to lowercase strings for comparison
-                tags_lower = [str(tag).lower().strip() for tag in tags]
-                
-                # Check for specific triage tags (same logic as defect_checker.py)
-                has_test_bug = any(
-                    tag == 'test_bug' or tag == 'test' or
-                    'test_bug' in tag or 'testbug' in tag
-                    for tag in tags_lower
-                )
-                
-                has_product_bug = any(
-                    tag == 'product_bug' or tag == 'product' or
-                    'product_bug' in tag or 'productbug' in tag
-                    for tag in tags_lower
-                )
-                
-                has_infra_bug = any(
-                    tag == 'infrastructure_bug' or tag == 'infrastructure' or tag == 'infra' or
-                    'infrastructure_bug' in tag or 'infrastructurebug' in tag or
-                    'infra_bug' in tag or 'infrabug' in tag
-                    for tag in tags_lower
-                )
-                
-                # Parse state if it's a URL
-                parsed_state = state
-                if state and 'oslc/workflows' in state:
-                    # Extract state name from URL like: .../commonWorkflow.state.canceled
-                    state_parts = state.split('.')
-                    if len(state_parts) > 0:
-                        parsed_state = state_parts[-1].capitalize()
-                
-                # Build defect object
-                defect = {
-                    'id': defect_id,
-                    'component': component,
-                    'summary': summary,
-                    'owner': 'Unknown',  # Not stored in defect_descriptions
-                    'state': parsed_state,
-                    'functionalArea': functional_area or 'Unknown',
-                    'triageTags': tags,
-                    'tags': tags
-                }
-                
-                # Categorize by priority: infra_bug > test_bug > product_bug
-                if has_infra_bug:
-                    infra_bugs.append(defect)
-                elif has_test_bug:
-                    test_bugs.append(defect)
-                elif has_product_bug:
-                    product_bugs.append(defect)
+                for defect in all_defects:
+                    tags = defect.get('triageTags', defect.get('tags', []))
+                    
+                    # Ensure it's an array
+                    if not isinstance(tags, list):
+                        tags = []
+                    
+                    # Filter tags to show ONLY test_bug, product_bug, infrastructure_bug
+                    # Remove SOE tags and other tags
+                    filtered_tags = []
+                    for tag in tags:
+                        tag_lower = str(tag).lower().strip()
+                        if tag_lower in ['test_bug', 'product_bug', 'infrastructure_bug', 'test', 'product', 'infrastructure', 'infra']:
+                            # Normalize to standard names
+                            if 'test' in tag_lower:
+                                if 'test_bug' not in [t.lower() for t in filtered_tags]:
+                                    filtered_tags.append('test_bug')
+                            elif 'product' in tag_lower:
+                                if 'product_bug' not in [t.lower() for t in filtered_tags]:
+                                    filtered_tags.append('product_bug')
+                            elif 'infra' in tag_lower:
+                                if 'infrastructure_bug' not in [t.lower() for t in filtered_tags]:
+                                    filtered_tags.append('infrastructure_bug')
+                    
+                    # Skip if no triage tags
+                    if not filtered_tags:
+                        continue
+                    
+                    # Convert all tags to lowercase strings for comparison
+                    tags_lower = [str(tag).lower().strip() for tag in filtered_tags]
+                    
+                    # Check for specific triage tags
+                    has_test_bug = any('test' in tag for tag in tags_lower)
+                    has_product_bug = any('product' in tag for tag in tags_lower)
+                    has_infra_bug = any('infra' in tag for tag in tags_lower)
+                    
+                    # Parse state if it's a URL
+                    state = defect.get('state', 'Unknown')
+                    parsed_state = state
+                    if state and 'oslc/workflows' in state:
+                        state_parts = state.split('.')
+                        if len(state_parts) > 0:
+                            parsed_state = state_parts[-1].capitalize()
+                    
+                    # Build defect object with filtered tags
+                    defect_obj = {
+                        'id': defect.get('id', 'Unknown'),
+                        'component': component,
+                        'summary': defect.get('summary', 'No summary'),
+                        'owner': defect.get('owner', 'Unassigned'),
+                        'state': parsed_state,
+                        'functionalArea': defect.get('functionalArea', 'Unknown'),
+                        'triageTags': filtered_tags,  # Only show test_bug, product_bug, infrastructure_bug
+                        'tags': filtered_tags
+                    }
+                    
+                    # Categorize by priority: infra_bug > test_bug > product_bug
+                    if has_infra_bug:
+                        infra_bugs.append(defect_obj)
+                    elif has_test_bug:
+                        test_bugs.append(defect_obj)
+                    elif has_product_bug:
+                        product_bugs.append(defect_obj)
             
             logger.info(f"✅ Categorized triaged defects: {len(product_bugs)} product, {len(infra_bugs)} infra, {len(test_bugs)} test")
             
