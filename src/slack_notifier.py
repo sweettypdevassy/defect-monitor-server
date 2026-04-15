@@ -387,7 +387,7 @@ class SlackNotifier:
         try:
             if success:
                 message_text = (f"🤖 *ML Model Training Complete for {num_components} components*\n"
-                               f"• Accuracy: {accuracy}\n"
+                               f"• Real-World Accuracy (CV): {accuracy}\n"
                                f"• Training Defects: {total_defects}\n"
                                f"• Status: ✅ Success")
             else:

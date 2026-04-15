@@ -152,7 +152,8 @@ class MLTagSuggester:
         """
         Extract enhanced text features with advanced feature engineering
         
-        Uses: Description (2x), Summary (1x), Functional Area (1x), Stack Trace Features (1x)
+        Uses: Description (3x), Summary (1x), Functional Area (1x), Stack Trace Features (1x)
+        Description has highest weight as it contains the most diagnostic information
         """
         # Get raw text
         description = str(defect.get('description', '')).lower()
@@ -172,8 +173,9 @@ class MLTagSuggester:
         stack_features = self._extract_stack_trace_features(description)
         
         # Combine with intelligent weighting
+        # Description gets 3x weight as it contains the most diagnostic information
         combined = (
-            f"{description} {description} "  # 2x weight
+            f"{description} {description} {description} "  # 3x weight (increased from 2x)
             f"{error_keywords} {error_keywords} "  # 2x weight for strong signals
             f"{stack_features} "  # 1x weight
             f"{summary} "  # 1x weight
@@ -335,14 +337,14 @@ class MLTagSuggester:
             
             logger.info(f"📊 Training data distribution: {dict(tag_counts)}")
             
-            # Check if we can use balanced test set (10 samples per class)
-            min_class_count = min(tag_counts.values())
+            # Create balanced test set with random 10 samples per class
             samples_per_class = 10
+            min_class_count = min(tag_counts.values())
             
             # Split data for validation
             if min_class_count >= samples_per_class + 2:  # Need at least 12 samples per class
-                # Use balanced test set: 10 samples from each class
-                logger.info(f"📊 Using balanced test set: {samples_per_class} samples per class")
+                # Use balanced test set: random 10 samples from each class
+                logger.info(f"📊 Using balanced test set: {samples_per_class} random samples per class")
                 
                 # Separate data by class
                 X_by_class = {tag: [] for tag in self.tag_mapping.values()}
@@ -352,21 +354,18 @@ class MLTagSuggester:
                     X_by_class[y].append(x)
                     y_by_class[y].append(y)
                 
-                # Take 10 samples from each class for testing
+                # Take random 10 samples from each class for testing
                 X_test = []
                 y_test = []
                 X_train = []
                 y_train = []
                 
+                import random
                 for tag in self.tag_mapping.values():
-                    # Use RANDOM selection for diverse test set
-                    # This ensures test set includes defects from different components
-                    import random
+                    # Use RANDOM selection WITHOUT fixed seed for diverse test set
+                    # This ensures different samples are selected each training run
                     indices = list(range(len(X_by_class[tag])))
-                    
-                    # Shuffle indices to get random samples
-                    random.seed(42)  # Fixed seed for reproducibility
-                    random.shuffle(indices)
+                    random.shuffle(indices)  # Random shuffle without seed
                     
                     # Test: Random 10 samples from shuffled indices
                     test_indices = indices[:samples_per_class]
@@ -609,11 +608,46 @@ class MLTagSuggester:
             model_scores['SVM'] = (svm_acc, svm_clf)
             logger.info(f"   SVM accuracy: {svm_acc:.2%}")
             
-            # Select the best model
-            best_model_name = max(model_scores.keys(), key=lambda k: model_scores[k][0])
-            best_accuracy, best_model = model_scores[best_model_name]
+            # IMPROVED SELECTION: Run CV on top 4 models to find true best performer
+            logger.info("🔍 Running cross-validation on top 4 models to find true best...")
             
-            logger.info(f"🏆 Best model: {best_model_name} with {best_accuracy:.2%} accuracy")
+            # Sort models by test accuracy and get top 4
+            sorted_models = sorted(model_scores.items(), key=lambda x: x[1][0], reverse=True)
+            top_4_models = sorted_models[:4]
+            
+            logger.info(f"   Top 4 candidates: {', '.join([name for name, _ in top_4_models])}")
+            
+            # Run 3-fold CV on each of top 4 models
+            cv_results = {}
+            if len(X_train) >= 50:
+                for model_name, (test_acc, model_obj) in top_4_models:
+                    logger.info(f"   Evaluating {model_name} with cross-validation...")
+                    cv_scores = cross_val_score(
+                        model_obj, X_train_tfidf, y_train,
+                        cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
+                        scoring='accuracy',
+                        n_jobs=-1
+                    )
+                    cv_mean = cv_scores.mean()
+                    cv_std = cv_scores.std() * 2
+                    cv_results[model_name] = (cv_mean, cv_std, model_obj, test_acc)
+                    logger.info(f"      {model_name}: CV {cv_mean:.2%} (±{cv_std:.2%}), Test {test_acc:.2%}")
+                
+                # Select model with best CV score (real-world accuracy)
+                best_model_name = max(cv_results.keys(), key=lambda k: cv_results[k][0])
+                cv_accuracy, cv_std, best_model, test_accuracy = cv_results[best_model_name]
+                
+                logger.info(f"🏆 Best model by CV: {best_model_name}")
+                logger.info(f"   Real-world accuracy (CV): {cv_accuracy:.2%} (±{cv_std:.2%})")
+                logger.info(f"   Test set accuracy: {test_accuracy:.2%}")
+            else:
+                # Fallback to test accuracy if not enough data for CV
+                logger.warning("⚠️  Not enough data for cross-validation, using test accuracy")
+                best_model_name = max(model_scores.keys(), key=lambda k: model_scores[k][0])
+                test_accuracy, best_model = model_scores[best_model_name]
+                cv_accuracy = test_accuracy
+                cv_std = 0.0
+                logger.info(f"🏆 Best model: {best_model_name} with {test_accuracy:.2%} accuracy")
             
             # Store as pipeline with best model
             self.model = Pipeline([
@@ -623,27 +657,21 @@ class MLTagSuggester:
             
             # Use best model's predictions
             y_pred = best_model.predict(X_test_tfidf)
-            accuracy = best_accuracy
+            accuracy = test_accuracy
             
             logger.info(f"✅ Best model selected and trained successfully!")
             logger.info(f"   Training samples: {len(X_train)}")
             logger.info(f"   Test samples: {len(X_test)}")
-            logger.info(f"   🎯 BEST MODEL ({best_model_name}) ACCURACY: {accuracy:.2%}")
+            logger.info(f"   🎯 SELECTED MODEL: {best_model_name}")
+            logger.info(f"   📊 Real-world accuracy (CV): {cv_accuracy:.2%}")
+            logger.info(f"   📊 Test set accuracy: {accuracy:.2%}")
             
-            # Cross-validation for robustness check (3-fold for speed)
-            if len(X_train) >= 50:
-                logger.info(f"🔍 Running 3-fold cross-validation on {best_model_name}...")
-                cv_scores = cross_val_score(
-                    best_model, X_train_tfidf, y_train,
-                    cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
-                    scoring='accuracy',
-                    n_jobs=-1
-                )
-                logger.info(f"   CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std() * 2:.2%})")
-            
-            # Store training stats
+            # Store training stats with CV accuracy (real-world accuracy)
             self.training_stats = {
-                'accuracy': f"{accuracy:.2%}",
+                'accuracy': f"{cv_accuracy:.2%}",  # Use CV accuracy (real-world) instead of test accuracy
+                'test_accuracy': f"{accuracy:.2%}",  # Keep test accuracy for reference
+                'cv_std': f"{cv_std:.2%}" if 'cv_std' in locals() else "N/A",
+                'model_name': best_model_name,
                 'total_samples': len(X_texts),
                 'train_samples': len(X_train),
                 'test_samples': len(X_test),
