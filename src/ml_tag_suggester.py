@@ -467,14 +467,6 @@ class MLTagSuggester:
             logger.info("   Training Logistic Regression...")
             lr_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
             
-            # Prepare ensemble estimators and weights
-            estimators = [
-                ('rf', rf_clf),
-                ('gb', gb_clf),
-                ('lr', lr_clf)
-            ]
-            weights = [2, 2, 1]  # Base weights
-            
             # 4. XGBoost - powerful gradient boosting (if available)
             if XGBOOST_AVAILABLE:
                 logger.info("   Training XGBoost (300 estimators)...")
@@ -490,8 +482,6 @@ class MLTagSuggester:
                     verbosity=0
                 )
                 xgb_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
-                estimators.append(('xgb', xgb_clf))
-                weights.append(2)  # Same weight as RF and GB
             
             # 5. LightGBM - fast gradient boosting (if available)
             if LIGHTGBM_AVAILABLE:
@@ -508,62 +498,72 @@ class MLTagSuggester:
                     verbose=-1
                 )
                 lgbm_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
-                estimators.append(('lgbm', lgbm_clf))
-                weights.append(2)  # Same weight as RF and GB
             
-            # Create voting ensemble (soft voting for probability averaging)
-            logger.info(f"🔧 Creating voting ensemble with {len(estimators)} models...")
-            ensemble = VotingClassifier(
-                estimators=estimators,
-                voting='soft',  # Use probability averaging
-                weights=weights
-            )
+            # DYNAMIC MODEL SELECTION: Evaluate all models and pick the best
+            num_models = 3 + (1 if XGBOOST_AVAILABLE else 0) + (1 if LIGHTGBM_AVAILABLE else 0)
+            logger.info(f"🔧 Evaluating {num_models} models to select the best...")
             
-            # Fit ensemble (already fitted, just combines predictions)
-            ensemble.fit(X_train_tfidf, y_train)
+            model_scores = {}
             
-            # Store as pipeline for consistency
-            self.model = Pipeline([
-                ('tfidf', tfidf),
-                ('ensemble', ensemble)
-            ])
-            
-            # Log individual model scores
+            # Log OOB score
             if hasattr(rf_clf, 'oob_score_'):
                 logger.info(f"   Random Forest OOB score: {rf_clf.oob_score_:.2%}")
             
             # Evaluate each model
             rf_pred = rf_clf.predict(X_test_tfidf)
-            gb_pred = gb_clf.predict(X_test_tfidf)
-            lr_pred = lr_clf.predict(X_test_tfidf)
+            rf_acc = accuracy_score(y_test, rf_pred)
+            model_scores['Random Forest'] = (rf_acc, rf_clf)
+            logger.info(f"   Random Forest accuracy: {rf_acc:.2%}")
             
-            logger.info(f"   Random Forest accuracy: {accuracy_score(y_test, rf_pred):.2%}")
-            logger.info(f"   Gradient Boosting accuracy: {accuracy_score(y_test, gb_pred):.2%}")
-            logger.info(f"   Logistic Regression accuracy: {accuracy_score(y_test, lr_pred):.2%}")
+            gb_pred = gb_clf.predict(X_test_tfidf)
+            gb_acc = accuracy_score(y_test, gb_pred)
+            model_scores['Gradient Boosting'] = (gb_acc, gb_clf)
+            logger.info(f"   Gradient Boosting accuracy: {gb_acc:.2%}")
+            
+            lr_pred = lr_clf.predict(X_test_tfidf)
+            lr_acc = accuracy_score(y_test, lr_pred)
+            model_scores['Logistic Regression'] = (lr_acc, lr_clf)
+            logger.info(f"   Logistic Regression accuracy: {lr_acc:.2%}")
             
             if XGBOOST_AVAILABLE:
                 xgb_pred = xgb_clf.predict(X_test_tfidf)
-                logger.info(f"   XGBoost accuracy: {accuracy_score(y_test, xgb_pred):.2%}")
+                xgb_acc = accuracy_score(y_test, xgb_pred)
+                model_scores['XGBoost'] = (xgb_acc, xgb_clf)
+                logger.info(f"   XGBoost accuracy: {xgb_acc:.2%}")
             
             if LIGHTGBM_AVAILABLE:
                 lgbm_pred = lgbm_clf.predict(X_test_tfidf)
-                logger.info(f"   LightGBM accuracy: {accuracy_score(y_test, lgbm_pred):.2%}")
+                lgbm_acc = accuracy_score(y_test, lgbm_pred)
+                model_scores['LightGBM'] = (lgbm_acc, lgbm_clf)
+                logger.info(f"   LightGBM accuracy: {lgbm_acc:.2%}")
             
-            # Evaluate ensemble on test set
-            y_pred = ensemble.predict(X_test_tfidf)
-            accuracy = accuracy_score(y_test, y_pred)
+            # Select the best model
+            best_model_name = max(model_scores.keys(), key=lambda k: model_scores[k][0])
+            best_accuracy, best_model = model_scores[best_model_name]
             
-            logger.info(f"✅ Ensemble model trained successfully!")
+            logger.info(f"🏆 Best model: {best_model_name} with {best_accuracy:.2%} accuracy")
+            
+            # Store as pipeline with best model
+            self.model = Pipeline([
+                ('tfidf', tfidf),
+                ('classifier', best_model)
+            ])
+            
+            # Use best model's predictions
+            y_pred = best_model.predict(X_test_tfidf)
+            accuracy = best_accuracy
+            
+            logger.info(f"✅ Best model selected and trained successfully!")
             logger.info(f"   Training samples: {len(X_train)}")
             logger.info(f"   Test samples: {len(X_test)}")
-            logger.info(f"   🎯 ENSEMBLE ACCURACY: {accuracy:.2%}")
+            logger.info(f"   🎯 BEST MODEL ({best_model_name}) ACCURACY: {accuracy:.2%}")
             
-            # Cross-validation for robustness check
+            # Cross-validation for robustness check (3-fold for speed)
             if len(X_train) >= 50:
-                logger.info("🔍 Running 5-fold cross-validation...")
+                logger.info(f"🔍 Running 3-fold cross-validation on {best_model_name}...")
                 cv_scores = cross_val_score(
-                    ensemble, X_train_tfidf, y_train,
-                    cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=42),
+                    best_model, X_train_tfidf, y_train,
+                    cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
                     scoring='accuracy',
                     n_jobs=-1
                 )
