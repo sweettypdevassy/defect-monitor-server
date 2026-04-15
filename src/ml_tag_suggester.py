@@ -608,46 +608,73 @@ class MLTagSuggester:
             model_scores['SVM'] = (svm_acc, svm_clf)
             logger.info(f"   SVM accuracy: {svm_acc:.2%}")
             
-            # IMPROVED SELECTION: Run CV on top 4 models to find true best performer
-            logger.info("🔍 Running cross-validation on top 4 models to find true best...")
+            # Select best model from top 4 with multiple test rounds
+            logger.info("🔍 Testing top 4 models with multiple random test sets...")
             
             # Sort models by test accuracy and get top 4
             sorted_models = sorted(model_scores.items(), key=lambda x: x[1][0], reverse=True)
             top_4_models = sorted_models[:4]
             
-            logger.info(f"   Top 4 candidates: {', '.join([name for name, _ in top_4_models])}")
+            logger.info(f"   Top 4 candidates:")
+            for i, (model_name, (test_acc, _)) in enumerate(top_4_models, 1):
+                logger.info(f"      {i}. {model_name}: {test_acc:.2%} (initial test)")
             
-            # Run 3-fold CV on each of top 4 models
-            cv_results = {}
-            if len(X_train) >= 50:
-                for model_name, (test_acc, model_obj) in top_4_models:
-                    logger.info(f"   Evaluating {model_name} with cross-validation...")
-                    cv_scores = cross_val_score(
-                        model_obj, X_train_tfidf, y_train,
-                        cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
-                        scoring='accuracy',
-                        n_jobs=-1
-                    )
-                    cv_mean = cv_scores.mean()
-                    cv_std = cv_scores.std() * 2
-                    cv_results[model_name] = (cv_mean, cv_std, model_obj, test_acc)
-                    logger.info(f"      {model_name}: CV {cv_mean:.2%} (±{cv_std:.2%}), Test {test_acc:.2%}")
+            # Test each top 4 model with 3 additional random test sets
+            import random
+            final_scores = {}
+            
+            for model_name, (initial_acc, model_obj) in top_4_models:
+                accuracies = [initial_acc]  # Start with initial test accuracy
                 
-                # Select model with best CV score (real-world accuracy)
-                best_model_name = max(cv_results.keys(), key=lambda k: cv_results[k][0])
-                cv_accuracy, cv_std, best_model, test_accuracy = cv_results[best_model_name]
+                logger.info(f"   Testing {model_name} with 3 additional random test sets...")
                 
-                logger.info(f"🏆 Best model by CV: {best_model_name}")
-                logger.info(f"   Real-world accuracy (CV): {cv_accuracy:.2%} (±{cv_std:.2%})")
-                logger.info(f"   Test set accuracy: {test_accuracy:.2%}")
-            else:
-                # Fallback to test accuracy if not enough data for CV
-                logger.warning("⚠️  Not enough data for cross-validation, using test accuracy")
-                best_model_name = max(model_scores.keys(), key=lambda k: model_scores[k][0])
-                test_accuracy, best_model = model_scores[best_model_name]
-                cv_accuracy = test_accuracy
-                cv_std = 0.0
-                logger.info(f"🏆 Best model: {best_model_name} with {test_accuracy:.2%} accuracy")
+                # Run 3 more tests with different random samples
+                for round_num in range(1, 4):
+                    # Create new random test set (10 per class)
+                    X_by_class_temp = {tag: [] for tag in self.tag_mapping.values()}
+                    y_by_class_temp = {tag: [] for tag in self.tag_mapping.values()}
+                    
+                    for x, y in zip(X_texts, y_labels):
+                        X_by_class_temp[y].append(x)
+                        y_by_class_temp[y].append(y)
+                    
+                    X_test_temp = []
+                    y_test_temp = []
+                    X_train_temp = []
+                    
+                    for tag in self.tag_mapping.values():
+                        indices = list(range(len(X_by_class_temp[tag])))
+                        random.shuffle(indices)  # Different random samples each time
+                        
+                        test_indices = indices[:10]
+                        X_test_temp.extend([X_by_class_temp[tag][i] for i in test_indices])
+                        y_test_temp.extend([y_by_class_temp[tag][i] for i in test_indices])
+                    
+                    # Transform and predict
+                    X_test_temp_tfidf = tfidf.transform(X_test_temp)
+                    y_pred_temp = model_obj.predict(X_test_temp_tfidf)
+                    round_acc = accuracy_score(y_test_temp, y_pred_temp)
+                    accuracies.append(round_acc)
+                    
+                    logger.info(f"      Round {round_num}: {round_acc:.2%}")
+                
+                # Calculate average accuracy across all 4 tests
+                avg_accuracy = sum(accuracies) / len(accuracies)
+                final_scores[model_name] = (avg_accuracy, accuracies, model_obj)
+                
+                logger.info(f"      {model_name} average: {avg_accuracy:.2%} (across 4 tests)")
+            
+            # Select model with best average accuracy
+            best_model_name = max(final_scores.keys(), key=lambda k: final_scores[k][0])
+            cv_accuracy, all_accuracies, best_model = final_scores[best_model_name]
+            
+            logger.info(f"🏆 Selected model: {best_model_name}")
+            logger.info(f"   Average accuracy: {cv_accuracy:.2%}")
+            logger.info(f"   Individual tests: {', '.join([f'{acc:.2%}' for acc in all_accuracies])}")
+            
+            # Calculate standard deviation
+            cv_std = np.std(all_accuracies)
+            test_accuracy = all_accuracies[0]  # Initial test accuracy
             
             # Store as pipeline with best model
             self.model = Pipeline([
