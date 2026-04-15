@@ -1894,65 +1894,21 @@ async function refreshSelectedComponents() {
         }
         
         const data = await response.json();
-        const refreshId = data.refresh_id;
-        console.log(`🔄 Refresh started with ID: ${refreshId}`);
+        console.log('✅ Refresh started:', data);
         
-        // Poll refresh status until complete
-        let pollCount = 0;
-        const maxPolls = 60; // Max 60 seconds (60 polls * 1 second)
+        btn.textContent = `⏳ Refreshing... Please wait`;
+        btn.style.opacity = '0.6';
         
-        const pollStatus = async () => {
-            try {
-                const statusResponse = await fetch(`/api/refresh-status/${refreshId}`);
-                if (!statusResponse.ok) {
-                    throw new Error(`Status check failed: ${statusResponse.status}`);
-                }
-                
-                const statusData = await statusResponse.json();
-                console.log(`📊 Refresh status: ${statusData.status} (${statusData.progress}/${statusData.total})`);
-                
-                if (statusData.status === 'completed') {
-                    // Refresh complete - show success and reload dashboard
-                    const successCount = statusData.results ? statusData.results.length : 0;
-                    const errorCount = statusData.errors ? statusData.errors.length : 0;
-                    
-                    btn.textContent = `✅ Refreshed ${successCount}/${selectedComponents.length}`;
-                    btn.style.opacity = '1';
-                    
-                    if (errorCount > 0) {
-                        console.warn(`⚠️ ${errorCount} component(s) failed to refresh:`, statusData.errors);
-                    }
-                    
-                    console.log('🔄 Reloading dashboard data...');
-                    // Reload the dashboard data
-                    await generateExplorerDashboard();
-                    
-                    btn.textContent = originalText;
-                    btn.disabled = false;
-                    console.log('✅ Dashboard reloaded successfully');
-                    
-                } else if (statusData.status === 'failed') {
-                    throw new Error(statusData.error || 'Refresh failed');
-                    
-                } else if (statusData.status === 'running') {
-                    // Still running - update button text and poll again
-                    btn.textContent = `⏳ Refreshing... (${statusData.progress}/${statusData.total})`;
-                    pollCount++;
-                    
-                    if (pollCount < maxPolls) {
-                        setTimeout(pollStatus, 1000); // Poll every 1 second
-                    } else {
-                        throw new Error('Refresh timeout - taking too long');
-                    }
-                }
-            } catch (pollError) {
-                console.error('❌ Error polling refresh status:', pollError);
-                throw pollError;
-            }
-        };
-        
-        // Start polling
-        setTimeout(pollStatus, 1000); // Start polling after 1 second
+        // Wait longer for background refresh to complete (5 seconds instead of 1.5)
+        // Then reload the dashboard data
+        setTimeout(async () => {
+            console.log('🔄 Reloading dashboard data...');
+            await generateExplorerDashboard();
+            btn.textContent = originalText;
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            console.log('✅ Dashboard reloaded');
+        }, 5000);
         
     } catch (error) {
         console.error('❌ Error refreshing components:', error);
