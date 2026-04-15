@@ -548,14 +548,29 @@ class DefectDatabase:
             
             all_untriaged = []
             
-            # Get IDs of defects that have tags in defect_descriptions cache
-            # These should NOT be shown as untriaged even if they appear in daily_snapshots
+            # Get IDs of defects that have REAL IBM RTC tags in defect_descriptions cache
+            # These should NOT be shown as untriaged
+            # ML-suggested tags should still show as untriaged
+            # Parse JSON tags and check if they contain actual ML tag values
             cursor.execute("""
-                SELECT defect_id FROM defect_descriptions
+                SELECT defect_id, tags FROM defect_descriptions
                 WHERE tags IS NOT NULL AND tags != '[]'
             """)
-            tagged_defect_ids = set(row[0] for row in cursor.fetchall())
-            logger.debug(f"Found {len(tagged_defect_ids)} defects with tags in cache")
+            
+            tagged_defect_ids = set()
+            for defect_id, tags_json in cursor.fetchall():
+                try:
+                    tags = json.loads(tags_json) if isinstance(tags_json, str) else tags_json
+                    if isinstance(tags, list):
+                        # Check if any tag is exactly one of the ML tags
+                        for tag in tags:
+                            tag_str = str(tag).strip().lower()
+                            if tag_str in ['test_bug', 'product_bug', 'infrastructure_bug']:
+                                tagged_defect_ids.add(defect_id)
+                                break
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            logger.debug(f"Found {len(tagged_defect_ids)} defects with real IBM RTC tags in cache")
             
             # Get from daily_snapshots (monitored components with full details)
             if latest_date_daily:

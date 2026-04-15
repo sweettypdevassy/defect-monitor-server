@@ -658,8 +658,15 @@ def api_component_insights(component_name):
             # This ensures we have up-to-date build counts for rare defect detection
             # Use 'all_defects' instead of 'defects' to include BOTH triaged and untriaged defects
             current_defects_map = {}
-            # Try to get all_defects from nested data structure or top level
-            all_defects_list = component_data.get('data', {}).get('all_defects', component_data.get('all_defects', component_data.get('defects', [])))
+            # Get all_defects from the data structure
+            # The structure is: component_data['data']['all_defects'] which contains both triaged and untriaged
+            data_section = component_data.get('data', {})
+            all_defects_list = data_section.get('all_defects', [])
+            
+            # If all_defects is not found, try to combine defects and triaged_defects
+            if not all_defects_list:
+                all_defects_list = data_section.get('defects', []) + data_section.get('triaged_defects', [])
+            
             logger.info(f"📊 Found {len(all_defects_list)} defects in snapshot for number_builds update")
             for defect in all_defects_list:
                 current_defects_map[str(defect['id'])] = defect.get('number_builds', 0)
