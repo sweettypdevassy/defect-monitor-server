@@ -820,80 +820,9 @@ class DefectChecker:
                         except Exception as e:
                             logger.warning(f"Failed to update state for defect {defect_id}: {e}")
             
-            # ALWAYS add ALL cached defects to duplicate detection pool (across ALL components)
-            # This ensures defects can find duplicates even if they were filed under different components
-            logger.info(f"🔄 Loading cached defects for duplicate detection...")
-            all_cached_defects = self.database.get_all_cancelled_defects_with_tags()
-            
-            # Track defects with empty tags that need to be fetched from IBM RTC
-            ids_to_fetch_tags = []
-            
-            if all_cached_defects:
-                added_count = 0
-                with_tags_count = 0
-                without_tags_count = 0
-                
-                for defect in all_cached_defects:
-                    defect_id = str(defect.get('id'))
-                    # Skip if already in current API response
-                    if defect_id in all_ids:
-                        continue
-                    # Only add if not already in the pool
-                    if not any(str(d.get('id')) == defect_id for d in all_defects_for_dup_check):
-                        all_defects_for_dup_check.append(defect)
-                        added_count += 1
-                        tags = defect.get('triageTags', [])
-                        
-                        # SMART OPTIMIZATION: Only fetch tags for defects that ALREADY HAVE tags
-                        # (to catch manual updates in IBM RTC)
-                        # Skip defects with empty tags - they're untriaged anyway
-                        if tags:
-                            # Has tags - might have been updated in IBM RTC, fetch to verify
-                            ids_to_fetch_tags.append(defect_id)
-                            with_tags_count += 1
-                        else:
-                            # No tags - untriaged defect, skip fetch
-                            without_tags_count += 1
-                
-                logger.info(f"   ✅ Loaded {len(all_cached_defects)} cached defects")
-                logger.info(f"   ✅ Added {added_count} to duplicate detection pool")
-                logger.info(f"      • {with_tags_count} with tags (will verify)")
-                logger.info(f"      • {without_tags_count} without tags (skipped)")
-                
-                # Fetch tags ONLY for defects that already have tags (to catch updates)
-                if ids_to_fetch_tags:
-                    logger.info(f"📥 Verifying tags for {len(ids_to_fetch_tags)} triaged defects from IBM RTC...")
-                    fetched_details = self.fetch_details_parallel(ids_to_fetch_tags, max_workers=3)
-                    
-                    # Update defects in the pool with fresh tags AND state
-                    updated_count = 0
-                    for defect_id, details in fetched_details.items():
-                        tags = details.get('tags', [])
-                        state = details.get('state', '')
-                        
-                        # Find and update the defect in the pool
-                        for defect in all_defects_for_dup_check:
-                            if str(defect.get('id')) == defect_id:
-                                # Update tags in the pool
-                                if tags:
-                                    defect['triageTags'] = tags
-                                    updated_count += 1
-                                
-                                # Update state in the pool
-                                if state:
-                                    defect['state'] = state
-                                
-                                # Update in database cache (both tags and state)
-                                try:
-                                    if tags:
-                                        self.database.update_defect_tags(defect_id, tags)
-                                    if state:
-                                        self.database.update_defect_state(defect_id, state)
-                                except Exception as e:
-                                    logger.debug(f"Failed to update database for {defect_id}: {e}")
-                                break
-                    
-                    logger.info(f"   ✅ Updated {updated_count} defects with tags from IBM RTC")
+            # NOTE: Duplicate detection pool is now loaded ONCE per background fetch
+            # See fetch_all_components_background() for the global duplicate detection pool
+            # This avoids loading 1938 cached defects for EVERY component (51 times!)
             
             # Check cache first (only for defects in current API response)
             logger.info(f"🔍 Checking cache for {len(all_ids)} defects...")
