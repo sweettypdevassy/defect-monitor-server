@@ -1039,24 +1039,11 @@ class DefectChecker:
                     # Get duplicate's tags - if empty, fetch from IBM RTC
                     duplicate_tags = duplicate_info.get('duplicate_tags', [])
                     
-                    # If duplicate has empty tags, fetch from IBM RTC to get authoritative tags
+                    # OPTIMIZATION: Don't fetch tags for duplicates during daily operations
+                    # Tags are updated daily from Build Break Report API
+                    # If duplicate has no tags, we'll use ML prediction instead
                     if not duplicate_tags:
-                        logger.info(f"   📥 Duplicate #{duplicate_id} has empty tags, fetching from IBM RTC...")
-                        try:
-                            fetched_details = self.fetch_details_parallel([duplicate_id], max_workers=1)
-                            if duplicate_id in fetched_details:
-                                fresh_tags = fetched_details[duplicate_id].get('tags', [])
-                                duplicate_tags = fresh_tags
-                                logger.info(f"   ✅ Fetched tags for duplicate #{duplicate_id}: {fresh_tags}")
-                                
-                                # Update the duplicate in the pool with fresh tags
-                                for dup_defect in all_defects_for_dup_check:
-                                    if str(dup_defect.get('id')) == duplicate_id:
-                                        dup_defect['triageTags'] = fresh_tags
-                                        logger.info(f"   ✅ Updated duplicate #{duplicate_id} in pool with fresh tags")
-                                        break
-                        except Exception as e:
-                            logger.warning(f"   ⚠️  Failed to fetch tags for duplicate #{duplicate_id}: {e}")
+                        logger.debug(f"   ℹ️  Duplicate #{duplicate_id} has no tags in cache, will use ML prediction")
                     
                     # Use duplicate's tags if they are valid ML tags, otherwise use ML prediction
                     has_valid_ml_tag = False
@@ -1539,7 +1526,7 @@ class DefectChecker:
         # Fetch Build Break Report defects for components
         for idx, component in enumerate(components_to_fetch, 1):
             try:
-                logger.info(f"📥 [{idx}/{len(components_to_fetch)}] Fetching {component}...")
+                logger.info(f"📥 [{idx}/{len(components_to_fetch)}] Processing {component}...")
                 
                 # Save checkpoint BEFORE fetching
                 checkpoint.save_checkpoint(completed_components, all_components)
@@ -1570,13 +1557,18 @@ class DefectChecker:
                     # Save checkpoint after successful fetch
                     checkpoint.save_checkpoint(completed_components, all_components)
                     
-                    logger.info(f"✅ Fetched {component}: {parsed['total']} defects ({parsed['untriaged']} untriaged)")
+                    # Clean summary logging showing what was saved to database
+                    logger.info(f"   ✅ Updated defect counts: {parsed['total']} total, {parsed['untriaged']} untriaged, {parsed['test_bugs']} test, {parsed['product_bugs']} product, {parsed['infra_bugs']} infra")
+                    logger.info(f"   ✅ Updated dashboard charts")
+                    logger.info(f"   ✅ Added defects to tables")
+                    logger.info(f"   💾 Checkpoint saved")
                 else:
                     fetch_summary["failed"] += 1
-                    logger.warning(f"❌ Failed to fetch {component}")
+                    logger.warning(f"   ❌ Failed to fetch {component}")
                     # Still mark as completed to avoid retrying failed components
                     completed_components.append(component)
                     checkpoint.save_checkpoint(completed_components, all_components)
+                    logger.info(f"   💾 Checkpoint saved")
                     
             except Exception as e:
                 fetch_summary["failed"] += 1
@@ -1586,7 +1578,8 @@ class DefectChecker:
                 checkpoint.save_checkpoint(completed_components, all_components)
         
         # Fetch ALL SOE Triage defects (not filtered by components) for dashboard
-        logger.info("📋 Fetching ALL SOE Triage defects for dashboard...")
+        logger.info("")
+        logger.info("📋 Fetching SOE Overdue defects...")
         try:
             # Authenticate with Jazz/RTC first
             if self.authenticator.authenticate_jazz_rtc():
@@ -1617,13 +1610,13 @@ class DefectChecker:
                     conn.commit()
                     conn.close()
                     
-                    logger.info(f"✅ Fetched {len(all_soe_defects)} SOE Triage defects for dashboard")
+                    logger.info(f"   ✅ Fetched {len(all_soe_defects)} SOE Overdue defects")
                 else:
-                    logger.info("No SOE Triage defects found")
+                    logger.info("   ℹ️  No SOE Overdue defects found")
             else:
-                logger.warning("⚠️ Jazz/RTC authentication failed, skipping SOE defects for dashboard")
+                logger.warning("   ⚠️  Jazz/RTC authentication failed, skipping SOE defects")
         except Exception as e:
-            logger.error(f"❌ Error fetching SOE defects for dashboard: {e}")
+            logger.error(f"   ❌ Error fetching SOE defects: {e}")
         
         # Calculate aggregate totals
         total_defects = sum(comp_data.get('total', 0) for comp_data in fetch_summary['components_data'].values())
@@ -1633,9 +1626,11 @@ class DefectChecker:
         fetch_summary['total_untriaged'] = total_untriaged
         
         # Clear checkpoint when all components are fetched
+        logger.info("")
         if len(completed_components) == len(all_components):
             checkpoint.clear_checkpoint()
             logger.info(f"✅ Background fetch complete: {fetch_summary['successful']}/{fetch_summary['total_components']} successful")
+            logger.info(f"   📊 Total: {total_defects} defects ({total_untriaged} untriaged)")
         else:
             remaining = len(all_components) - len(completed_components)
             logger.info(f"✅ Partial fetch complete: {fetch_summary['successful']} successful, {remaining} remaining (checkpoint saved)")
