@@ -120,12 +120,9 @@ class MLTagSuggester:
     
     def _extract_enhanced_features(self, defect: Dict) -> str:
         """
-        Extract enhanced text features from defect with better preprocessing
+        Extract enhanced text features with advanced feature engineering
         
-        Combines multiple fields with balanced weighting:
-        - Description: Primary source (2x weight - actual error details)
-        - Summary: Secondary source (1x weight - cleaned of misleading patterns)
-        - Functional area: Context (1x weight)
+        Uses: Description (2x), Summary (1x), Functional Area (1x), Stack Trace Features (1x)
         """
         # Get raw text
         description = str(defect.get('description', '')).lower()
@@ -140,15 +137,15 @@ class MLTagSuggester:
         summary = re.sub(r'\btest\s+failure\b', '', summary)
         summary = re.sub(r'\bfailed\s+test\b', '', summary)
         
-        # Extract timeout indicator if present
+        # Extract advanced features
         error_keywords = self._extract_error_keywords(description)
+        stack_features = self._extract_stack_trace_features(description)
         
-        # Combine with balanced weighting
-        # Description gets 2x weight (most important)
-        # Summary and functional area get 1x weight each
+        # Combine with intelligent weighting
         combined = (
             f"{description} {description} "  # 2x weight
-            f"{error_keywords} "  # Add timeout indicator if found
+            f"{error_keywords} {error_keywords} "  # 2x weight for strong signals
+            f"{stack_features} "  # 1x weight
             f"{summary} "  # 1x weight
             f"{functional_area}"  # 1x weight
         )
@@ -181,14 +178,37 @@ class MLTagSuggester:
         return text.strip()
     
     def _extract_error_keywords(self, text: str) -> str:
-        """Extract domain-specific error keywords - minimal approach"""
+        """Extract domain-specific error keywords with strong indicators"""
         keywords = []
         
-        # Only timeout for infrastructure (as requested)
+        # Infrastructure indicators only (as requested)
         if re.search(r'timeout|timed\s+out', text):
-            keywords.append('infrastructure_timeout')
+            keywords.append('infra_timeout')
+        if re.search(r'connection\s+refused|connection\s+reset', text):
+            keywords.append('infra_connection')
         
         return ' '.join(keywords)
+    
+    def _extract_stack_trace_features(self, text: str) -> str:
+        """Extract stack trace patterns"""
+        features = []
+        
+        # Exception types
+        exceptions = re.findall(r'(\w+exception|\w+error)', text)
+        if exceptions:
+            unique_ex = list(dict.fromkeys(exceptions))[:2]
+            features.extend([f'ex_{ex}' for ex in unique_ex])
+        
+        # File extensions
+        if re.search(r'\.java\b', text):
+            features.append('java_file')
+        
+        # Line numbers indicate code issues
+        if re.search(r'line\s+\d+|:\d+:', text):
+            features.append('has_line_num')
+        
+        return ' '.join(features)
+    
     
     def _extract_text_features(self, defect: Dict) -> str:
         """Wrapper for backward compatibility"""
@@ -518,7 +538,7 @@ class MLTagSuggester:
     
     def suggest_tag(self, defect: Dict) -> Tuple[str, float, str]:
         """
-        Suggest a triage tag for an untriaged defect using ML model
+        Suggest tag using hybrid rule-based + ML approach
         
         Args:
             defect: Defect dictionary
@@ -533,44 +553,35 @@ class MLTagSuggester:
             return ('unknown', 0.0, 'Model not trained')
         
         try:
-            # Extract text features
             text = self._extract_text_features(defect)
+            description = str(defect.get('description', '')).lower()
+            functional_area = str(defect.get('functionalArea', '')).lower()
             
             if not text.strip():
                 return ('unknown', 0.0, 'No text features available')
             
-            # Check for strong infrastructure indicators (override ML)
-            text_lower = text.lower()
-            infrastructure_keywords = [
-                'timeout occurred',
-                'connection refused',
-                'network issue',
-                'slow download',
-                'connection timed out',
-                'unable to connect',
-                'network interruption',
-                'connection reset',
-                'host unreachable',
-                'no route to host'
-            ]
+            # HYBRID: Strong infrastructure rules only (as requested)
             
-            if any(keyword in text_lower for keyword in infrastructure_keywords):
-                return ('infrastructure_bug', 0.95, 'Rule-based: Strong infrastructure indicator detected (timeout/network issue)')
+            # Rule: Strong infrastructure indicators
+            if any(kw in description for kw in [
+                'timeout occurred', 'connection timed out', 'connection refused',
+                '502 bad gateway', '503 service unavailable'
+            ]):
+                return ('infrastructure_bug', 0.90, 'Rule: Strong infrastructure indicator')
             
-            # Predict tag using ML
+            # Use ML
             predicted_label = self.model.predict([text])[0]
             predicted_tag = self.reverse_tag_mapping[predicted_label]
-            
-            # Get probability scores for all classes
             probabilities = self.model.predict_proba([text])[0]
             confidence = float(probabilities[predicted_label])
             
-            # Generate reasoning
+            # Boost confidence for weak infrastructure indicators only
+            if confidence < 0.65:
+                if 'timeout' in description and probabilities[self.tag_mapping['infrastructure_bug']] > 0.30:
+                    return ('infrastructure_bug', 0.70, 'Hybrid: Timeout + ML')
+            
             reasoning = self._generate_reasoning(defect, predicted_tag, probabilities)
-            
-            logger.debug(f"Defect {defect.get('id')}: Predicted {predicted_tag} (confidence: {confidence:.2f})")
-            
-            return (predicted_tag, confidence, reasoning)
+            return (predicted_tag, confidence, f"ML: {reasoning}")
             
         except Exception as e:
             logger.error(f"Error suggesting tag: {e}")
