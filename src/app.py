@@ -341,9 +341,9 @@ def _do_refresh_components(component_names: List[str], refresh_id: str, include_
                 for defect in defects:
                     defect['component'] = component_name
                 
-                # Use LIGHTWEIGHT parsing for manual refresh (NO ML, NO duplicate detection)
-                # This makes refresh FAST (5-10 seconds instead of 1+ minute)
-                result = defect_checker.parse_defects_simple(defects, component_name)
+                # Use FULL parsing for manual refresh to ensure data integrity
+                # The speed issue was from description fetching, not from parsing itself
+                result = defect_checker.parse_defects(defects, component_name, collect_triaged=False)
                 
                 # Store in database for dashboard display
                 database.store_all_components_snapshot(component_name, result, is_monitored=False)
