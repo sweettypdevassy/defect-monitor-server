@@ -1924,30 +1924,33 @@ async function refreshSelectedComponents() {
         }
         
         const data = await response.json();
-        console.log('✅ Components refreshed:', data);
+        console.log('✅ Backend refresh complete:', data);
         
         // Show success message
         const successCount = data.results ? data.results.length : 0;
         const errorCount = data.errors ? data.errors.length : 0;
         
-        btn.textContent = `✅ Refreshed - Updating UI...`;
+        btn.textContent = `✅ Refreshed - Waiting for DB...`;
         btn.style.opacity = '1';
         
         if (errorCount > 0) {
             console.warn(`⚠️ ${errorCount} component(s) failed to refresh:`, data.errors);
         }
         
-        // Wait a bit for database to be updated, then reload dashboard data
-        console.log('⏳ Waiting for database update...');
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Wait longer for database to be fully updated (5 seconds)
+        console.log('⏳ Waiting 5 seconds for database to fully update...');
+        for (let i = 5; i > 0; i--) {
+            btn.textContent = `⏳ Updating DB... ${i}s`;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
         
-        console.log('🔄 Reloading dashboard data...');
-        btn.textContent = `🔄 Updating tables...`;
+        console.log('🔄 Now reloading dashboard data with fresh queries...');
+        btn.textContent = `🔄 Refreshing tables...`;
         
-        // Reload the dashboard data (this will refresh all tables)
+        // Reload the dashboard data (this will refresh all tables with cache-busting)
         await generateExplorerDashboard();
         
-        console.log('✅ Dashboard data reloaded successfully');
+        console.log('✅ Dashboard UI updated successfully');
         btn.textContent = `✅ Updated!`;
         
         // Reset button after 2 seconds
