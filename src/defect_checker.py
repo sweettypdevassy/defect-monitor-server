@@ -1483,13 +1483,30 @@ class DefectChecker:
         """
         Simple defect parsing for dashboard - NO ML, NO duplicate detection
         Just counts and basic categorization for faster processing
+        Filters out cancelled/closed/resolved defects
+        Builds defect lists for database storage
         """
         untriaged_count = 0
         test_bugs_count = 0
         product_bugs_count = 0
         infra_bugs_count = 0
+        cancelled_count = 0
+        
+        # Lists for storing defects by category
+        untriaged_defects = []
+        test_bugs = []
+        product_bugs = []
+        infra_bugs = []
         
         for defect in defects:
+            # Check if defect is cancelled/closed/resolved
+            state = defect.get("state", "")
+            is_cancelled = self.is_defect_cancelled(state)
+            
+            if is_cancelled:
+                cancelled_count += 1
+                continue  # Skip cancelled defects from counts and lists
+            
             # Get triage tags
             triage_tags = defect.get("triageTags", defect.get("tags", []))
             
@@ -1522,22 +1539,29 @@ class DefectChecker:
             
             if not has_triaged_tag:
                 untriaged_count += 1
+                untriaged_defects.append(defect)
             else:
                 if has_infra_bug:
                     infra_bugs_count += 1
+                    infra_bugs.append(defect)
                 elif has_test_bug:
                     test_bugs_count += 1
+                    test_bugs.append(defect)
                 elif has_product_bug:
                     product_bugs_count += 1
+                    product_bugs.append(defect)
         
         return {
             "component": component,
-            "total": len(defects),
+            "total": len(defects) - cancelled_count,  # Total ACTIVE defects (excluding cancelled)
             "untriaged": untriaged_count,
             "test_bugs": test_bugs_count,
             "product_bugs": product_bugs_count,
             "infra_bugs": infra_bugs_count,
-            "untriaged_defects": [],  # Empty for dashboard
+            "untriaged_defects": untriaged_defects,
+            "test_bug_defects": test_bugs,
+            "product_bug_defects": product_bugs,
+            "infrastructure_bug_defects": infra_bugs,
             "timestamp": datetime.now().isoformat()
         }
     
