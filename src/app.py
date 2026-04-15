@@ -656,16 +656,19 @@ def api_component_insights(component_name):
         if cached_defects:
             # Merge current number_builds from snapshot with cached defect data
             # This ensures we have up-to-date build counts for rare defect detection
-            # Use 'all_defects' instead of 'defects' to include BOTH triaged and untriaged defects
+            # Use 'all_defects' to include BOTH triaged and untriaged defects
             current_defects_map = {}
-            # Get all_defects from the data structure
-            # The structure is: component_data['data']['all_defects'] which contains both triaged and untriaged
-            data_section = component_data.get('data', {})
-            all_defects_list = data_section.get('all_defects', [])
+            # Get all_defects from the component_data structure (at top level, not in 'data')
+            all_defects_list = component_data.get('all_defects', [])
             
-            # If all_defects is not found, try to combine defects and triaged_defects
+            # If all_defects is not found, try to get from data section
             if not all_defects_list:
-                all_defects_list = data_section.get('defects', []) + data_section.get('triaged_defects', [])
+                data_section = component_data.get('data', {})
+                all_defects_list = data_section.get('all_defects', [])
+                
+                # Last resort: combine defects and triaged_defects
+                if not all_defects_list:
+                    all_defects_list = data_section.get('defects', []) + data_section.get('triaged_defects', [])
             
             logger.info(f"📊 Found {len(all_defects_list)} defects in snapshot for number_builds update")
             for defect in all_defects_list:
