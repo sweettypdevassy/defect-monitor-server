@@ -840,25 +840,33 @@ class DefectChecker:
                     logger.info(f"💾 Kept {len(triaged_to_keep)} triaged cancelled defects for ML training: {triaged_to_keep}")
                     logger.info(f"🔄 Adding {len(triaged_to_keep)} cancelled defects to duplicate detection pool...")
                     
-                    # Add cancelled defects with tags to all_defects_for_dup_check
+                    # Fetch current state from Jazz/RTC FIRST, then add to duplicate pool
                     for defect in all_cached_for_component:
                         defect_id = str(defect.get('id'))
                         if defect_id in triaged_to_keep:
-                            # Add to duplicate detection pool
+                            # Fetch current state to confirm it's actually cancelled
+                            try:
+                                details = self.fetch_defect_details(defect_id)
+                                if details:
+                                    state = details.get('state', '')
+                                    # Update the defect's state in memory
+                                    defect['state'] = state
+                                    # Update the cached defect's state in database
+                                    self.database.update_defect_state(defect_id, state)
+                                    logger.debug(f"Updated state for defect {defect_id}: {state}")
+                                    
+                                    # Mark as cancelled so it won't appear in dashboard
+                                    if self.is_defect_cancelled(state):
+                                        defect['is_cancelled'] = True
+                                        logger.info(f"   ✅ Confirmed defect {defect_id} is cancelled (state: {state.split('.')[-1] if '.' in state else state})")
+                            except Exception as e:
+                                logger.warning(f"Failed to update state for defect {defect_id}: {e}")
+                                # If we can't fetch state, assume it's cancelled since it's not in API
+                                defect['is_cancelled'] = True
+                            
+                            # Add to duplicate detection pool (even if cancelled)
                             all_defects_for_dup_check.append(defect)
                             logger.info(f"   💾 Added cancelled defect {defect_id} for duplicate detection (tags: {defect.get('triageTags', [])})")
-                    
-                    # Fetch current state from Jazz/RTC for these defects
-                    for defect_id in triaged_to_keep:
-                        try:
-                            details = self.fetch_defect_details(defect_id)
-                            if details:
-                                state = details.get('state', '')
-                                # Update the cached defect's state
-                                self.database.update_defect_state(defect_id, state)
-                                logger.debug(f"Updated state for defect {defect_id}")
-                        except Exception as e:
-                            logger.warning(f"Failed to update state for defect {defect_id}: {e}")
             
             # NOTE: Duplicate detection pool is now loaded ONCE per background fetch
             # See fetch_all_components_background() for the global duplicate detection pool
@@ -1149,7 +1157,9 @@ class DefectChecker:
         all_defects_list = []
         for defect in all_defects_for_dup_check:
             state = defect.get('state', '')
-            if not self.is_defect_cancelled(state):
+            is_cancelled_flag = defect.get('is_cancelled', False)
+            # Filter out if state indicates cancelled OR if explicitly marked as cancelled
+            if not self.is_defect_cancelled(state) and not is_cancelled_flag:
                 all_defects_list.append(defect)
         
         result = {
