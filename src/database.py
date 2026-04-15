@@ -719,34 +719,46 @@ class DefectDatabase:
                     if not isinstance(tags, list):
                         tags = []
                     
-                    # Filter tags to show ONLY test_bug, product_bug, infrastructure_bug
-                    # Remove SOE tags and other tags
-                    filtered_tags = []
-                    for tag in tags:
-                        tag_lower = str(tag).lower().strip()
-                        if tag_lower in ['test_bug', 'product_bug', 'infrastructure_bug', 'test', 'product', 'infrastructure', 'infra']:
-                            # Normalize to standard names
-                            if 'test' in tag_lower:
-                                if 'test_bug' not in [t.lower() for t in filtered_tags]:
-                                    filtered_tags.append('test_bug')
-                            elif 'product' in tag_lower:
-                                if 'product_bug' not in [t.lower() for t in filtered_tags]:
-                                    filtered_tags.append('product_bug')
-                            elif 'infra' in tag_lower:
-                                if 'infrastructure_bug' not in [t.lower() for t in filtered_tags]:
-                                    filtered_tags.append('infrastructure_bug')
+                    # Convert all tags to lowercase for checking
+                    tags_lower = [str(tag).lower().strip() for tag in tags]
+                    
+                    # Check for specific triage tags (BEFORE filtering)
+                    # This ensures we categorize correctly even if defect has multiple tags
+                    has_test_bug = any(
+                        tag == 'test_bug' or tag == 'test' or
+                        'test_bug' in tag or 'testbug' in tag
+                        for tag in tags_lower
+                    )
+                    
+                    has_product_bug = any(
+                        tag == 'product_bug' or tag == 'product' or
+                        'product_bug' in tag or 'productbug' in tag
+                        for tag in tags_lower
+                    )
+                    
+                    has_infra_bug = any(
+                        tag == 'infrastructure_bug' or tag == 'infrastructure' or tag == 'infra' or
+                        'infrastructure_bug' in tag or 'infrastructurebug' in tag or
+                        'infra_bug' in tag or 'infrabug' in tag
+                        for tag in tags_lower
+                    )
                     
                     # Skip if no triage tags
-                    if not filtered_tags:
+                    if not (has_test_bug or has_product_bug or has_infra_bug):
                         continue
                     
-                    # Convert all tags to lowercase strings for comparison
-                    tags_lower = [str(tag).lower().strip() for tag in filtered_tags]
+                    # Determine PRIMARY category based on priority: infra > test > product
+                    primary_category = None
+                    if has_infra_bug:
+                        primary_category = 'infrastructure_bug'
+                    elif has_test_bug:
+                        primary_category = 'test_bug'
+                    elif has_product_bug:
+                        primary_category = 'product_bug'
                     
-                    # Check for specific triage tags
-                    has_test_bug = any('test' in tag for tag in tags_lower)
-                    has_product_bug = any('product' in tag for tag in tags_lower)
-                    has_infra_bug = any('infra' in tag for tag in tags_lower)
+                    # Filter tags to show ONLY the primary category tag
+                    # This ensures clean display and correct categorization
+                    filtered_tags = [primary_category] if primary_category else []
                     
                     # Parse state if it's a URL
                     state = defect.get('state', 'Unknown')
@@ -764,11 +776,12 @@ class DefectDatabase:
                         'owner': defect.get('owner', 'Unassigned'),
                         'state': parsed_state,
                         'functionalArea': defect.get('functionalArea', 'Unknown'),
-                        'triageTags': filtered_tags,  # Only show test_bug, product_bug, infrastructure_bug
+                        'triageTags': filtered_tags,  # Only show primary category tag
                         'tags': filtered_tags
                     }
                     
                     # Categorize by priority: infra_bug > test_bug > product_bug
+                    # This MUST match the priority used above
                     if has_infra_bug:
                         infra_bugs.append(defect_obj)
                     elif has_test_bug:
