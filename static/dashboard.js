@@ -1900,19 +1900,31 @@ async function refreshSelectedComponents() {
         const successCount = data.results ? data.results.length : 0;
         const errorCount = data.errors ? data.errors.length : 0;
         
-        btn.textContent = `✅ Refreshed ${successCount}/${selectedComponents.length}`;
+        btn.textContent = `✅ Refreshed - Updating UI...`;
         btn.style.opacity = '1';
         
         if (errorCount > 0) {
             console.warn(`⚠️ ${errorCount} component(s) failed to refresh:`, data.errors);
         }
         
-        // Reload the dashboard data after 1 second
-        setTimeout(async () => {
-            await generateExplorerDashboard();
+        // Wait a bit for database to be updated, then reload dashboard data
+        console.log('⏳ Waiting for database update...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        console.log('🔄 Reloading dashboard data...');
+        btn.textContent = `🔄 Updating tables...`;
+        
+        // Reload the dashboard data (this will refresh all tables)
+        await generateExplorerDashboard();
+        
+        console.log('✅ Dashboard data reloaded successfully');
+        btn.textContent = `✅ Updated!`;
+        
+        // Reset button after 2 seconds
+        setTimeout(() => {
             btn.textContent = originalText;
             btn.disabled = false;
-        }, 1500);
+        }, 2000);
         
     } catch (error) {
         console.error('❌ Error refreshing components:', error);
