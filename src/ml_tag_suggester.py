@@ -757,28 +757,17 @@ class MLTagSuggester:
         
         try:
             text = self._extract_text_features(defect)
-            description = str(defect.get('description', '')).lower()
-            functional_area = str(defect.get('functionalArea', '')).lower()
             
             if not text.strip():
                 return ('unknown', 0.0, 'No text features available')
             
-            # HYBRID: Strong infrastructure rules only (as requested)
-            
-            # Rule: Strong infrastructure indicators
-            if any(kw in description for kw in [
-                'timeout occurred', 'connection timed out', 'connection refused',
-                '502 bad gateway', '503 service unavailable'
-            ]):
-                return ('infrastructure_bug', 0.90, 'Rule: Strong infrastructure indicator')
-            
-            # Use ML
+            # PURE ML: No rules, let the model decide based on training data
             predicted_label = self.model.predict([text])[0]
             predicted_tag = self.reverse_tag_mapping[predicted_label]
             probabilities = self.model.predict_proba([text])[0]
             confidence = float(probabilities[predicted_label])
             
-            # Use pure ML prediction without timeout boosting
+            # Generate reasoning based on ML prediction
             reasoning = self._generate_reasoning(defect, predicted_tag, probabilities)
             return (predicted_tag, confidence, f"ML: {reasoning}")
             
