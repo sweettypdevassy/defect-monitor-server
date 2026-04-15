@@ -1894,25 +1894,65 @@ async function refreshSelectedComponents() {
         }
         
         const data = await response.json();
-        console.log('✅ Components refreshed:', data);
+        const refreshId = data.refresh_id;
+        console.log(`🔄 Refresh started with ID: ${refreshId}`);
         
-        // Show success message
-        const successCount = data.results ? data.results.length : 0;
-        const errorCount = data.errors ? data.errors.length : 0;
+        // Poll refresh status until complete
+        let pollCount = 0;
+        const maxPolls = 60; // Max 60 seconds (60 polls * 1 second)
         
-        btn.textContent = `✅ Refreshed ${successCount}/${selectedComponents.length}`;
-        btn.style.opacity = '1';
+        const pollStatus = async () => {
+            try {
+                const statusResponse = await fetch(`/api/refresh-status/${refreshId}`);
+                if (!statusResponse.ok) {
+                    throw new Error(`Status check failed: ${statusResponse.status}`);
+                }
+                
+                const statusData = await statusResponse.json();
+                console.log(`📊 Refresh status: ${statusData.status} (${statusData.progress}/${statusData.total})`);
+                
+                if (statusData.status === 'completed') {
+                    // Refresh complete - show success and reload dashboard
+                    const successCount = statusData.results ? statusData.results.length : 0;
+                    const errorCount = statusData.errors ? statusData.errors.length : 0;
+                    
+                    btn.textContent = `✅ Refreshed ${successCount}/${selectedComponents.length}`;
+                    btn.style.opacity = '1';
+                    
+                    if (errorCount > 0) {
+                        console.warn(`⚠️ ${errorCount} component(s) failed to refresh:`, statusData.errors);
+                    }
+                    
+                    console.log('🔄 Reloading dashboard data...');
+                    // Reload the dashboard data
+                    await generateExplorerDashboard();
+                    
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                    console.log('✅ Dashboard reloaded successfully');
+                    
+                } else if (statusData.status === 'failed') {
+                    throw new Error(statusData.error || 'Refresh failed');
+                    
+                } else if (statusData.status === 'running') {
+                    // Still running - update button text and poll again
+                    btn.textContent = `⏳ Refreshing... (${statusData.progress}/${statusData.total})`;
+                    pollCount++;
+                    
+                    if (pollCount < maxPolls) {
+                        setTimeout(pollStatus, 1000); // Poll every 1 second
+                    } else {
+                        throw new Error('Refresh timeout - taking too long');
+                    }
+                }
+            } catch (pollError) {
+                console.error('❌ Error polling refresh status:', pollError);
+                throw pollError;
+            }
+        };
         
-        if (errorCount > 0) {
-            console.warn(`⚠️ ${errorCount} component(s) failed to refresh:`, data.errors);
-        }
-        
-        // Reload the dashboard data after 1 second
-        setTimeout(async () => {
-            await generateExplorerDashboard();
-            btn.textContent = originalText;
-            btn.disabled = false;
-        }, 1500);
+        // Start polling
+        setTimeout(pollStatus, 1000); // Start polling after 1 second
         
     } catch (error) {
         console.error('❌ Error refreshing components:', error);
