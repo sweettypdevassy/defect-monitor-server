@@ -1894,21 +1894,25 @@ async function refreshSelectedComponents() {
         }
         
         const data = await response.json();
-        console.log('✅ Refresh started:', data);
+        console.log('✅ Components refreshed:', data);
         
-        btn.textContent = `⏳ Refreshing... Please wait`;
-        btn.style.opacity = '0.6';
+        // Show success message
+        const successCount = data.results ? data.results.length : 0;
+        const errorCount = data.errors ? data.errors.length : 0;
         
-        // Wait longer for background refresh to complete (5 seconds instead of 1.5)
-        // Then reload the dashboard data
+        btn.textContent = `✅ Refreshed ${successCount}/${selectedComponents.length}`;
+        btn.style.opacity = '1';
+        
+        if (errorCount > 0) {
+            console.warn(`⚠️ ${errorCount} component(s) failed to refresh:`, data.errors);
+        }
+        
+        // Reload the dashboard data after 1 second
         setTimeout(async () => {
-            console.log('🔄 Reloading dashboard data...');
             await generateExplorerDashboard();
             btn.textContent = originalText;
             btn.disabled = false;
-            btn.style.opacity = '1';
-            console.log('✅ Dashboard reloaded');
-        }, 5000);
+        }, 1500);
         
     } catch (error) {
         console.error('❌ Error refreshing components:', error);

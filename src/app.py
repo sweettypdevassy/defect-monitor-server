@@ -340,10 +340,8 @@ def _do_refresh_components(component_names: List[str], refresh_id: str):
                 for defect in defects:
                     defect['component'] = component_name
                 
-                # Use FULL parsing with ML and duplicate detection + force complete refresh
-                # collect_triaged=True forces fetching ALL defect details (tags, state, etc.)
-                # This ensures cancelled defects and newly triaged defects are detected on first refresh
-                result = defect_checker.parse_defects(defects, component_name, collect_triaged=True)
+                # Use FULL parsing with ML and duplicate detection (SAME as scheduled fetch)
+                result = defect_checker.parse_defects(defects, component_name)
                 
                 # Store in BOTH tables for dashboard and notifications (SAME as scheduled fetch)
                 database.store_all_components_snapshot(component_name, result, is_monitored=False)
