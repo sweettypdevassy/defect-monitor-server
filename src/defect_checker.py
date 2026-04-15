@@ -719,6 +719,7 @@ class DefectChecker:
             if is_untriaged:
                 # This is an untriaged defect - add it to our list
                 untriaged_count += 1
+                # Include ALL fields including ML suggestions and duplicate info
                 untriaged_defects.append({
                     "id": defect.get("id", "Unknown"),
                     "summary": defect.get("summary", "No summary"),
@@ -727,7 +728,14 @@ class DefectChecker:
                     "functionalArea": defect.get("functionalArea", "Unknown"),
                     "buildsReported": defect.get("buildsReported", []),
                     "triageTags": triage_tags,
-                    "is_untriaged": True
+                    "is_untriaged": True,
+                    # Include ML suggestions and duplicate info for dashboard display
+                    "suggested_tag": defect.get("suggested_tag"),
+                    "suggestion_confidence": defect.get("suggestion_confidence"),
+                    "suggestion_reasoning": defect.get("suggestion_reasoning"),
+                    "duplicate_info": defect.get("duplicate_info"),
+                    "number_builds": defect.get("number_builds"),
+                    "creation_date": defect.get("creation_date")
                 })
             else:
                 # Categorize triaged defects by their tags (for statistics)
