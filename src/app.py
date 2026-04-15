@@ -327,8 +327,8 @@ def _do_refresh_components(component_names: List[str], refresh_id: str, include_
         
         for idx, component_name in enumerate(component_names):
             try:
-                # FAST REFRESH: Just get counts from IBM API, no heavy processing
-                # This makes refresh instant (2-5 seconds per component)
+                # FAST REFRESH: Get counts AND update database for selected component
+                # This ensures tables show current data immediately
                 defects = defect_checker.fetch_defects_for_component(component_name)
                 
                 if defects is None:
@@ -338,23 +338,23 @@ def _do_refresh_components(component_names: List[str], refresh_id: str, include_
                         refresh_status[refresh_id]["progress"] = idx + 1
                     continue
                 
-                # Quick count of defects by category (no ML, no duplicate detection, no database update)
-                total = len(defects)
-                untriaged = sum(1 for d in defects if not d.get('triageTags', []))
-                test_bugs = sum(1 for d in defects if any('test' in str(tag).lower() for tag in d.get('triageTags', [])))
-                product_bugs = sum(1 for d in defects if any('product' in str(tag).lower() for tag in d.get('triageTags', [])))
-                infra_bugs = sum(1 for d in defects if any('infra' in str(tag).lower() for tag in d.get('triageTags', [])))
+                # Use parse_defects with collect_triaged=False for faster processing
+                # This skips ML and duplicate detection but includes full defect data
+                parsed_data = defect_checker.parse_defects(defects, component_name, collect_triaged=False)
                 
                 results.append({
                     "component": component_name,
-                    "total": total,
-                    "untriaged": untriaged,
-                    "test_bugs": test_bugs,
-                    "product_bugs": product_bugs,
-                    "infra_bugs": infra_bugs
+                    "total": parsed_data["total"],
+                    "untriaged": parsed_data["untriaged"],
+                    "test_bugs": parsed_data["test_bugs"],
+                    "product_bugs": parsed_data["product_bugs"],
+                    "infra_bugs": parsed_data["infra_bugs"]
                 })
                 
-                logger.info(f"✅ {component_name}: Total={total}, Untriaged={untriaged}")
+                # UPDATE DATABASE: Store in all_components_snapshots so triaged table shows current data
+                database.store_all_components_snapshot(component_name, parsed_data, is_monitored=False)
+                
+                logger.info(f"✅ {component_name}: Total={parsed_data['total']}, Untriaged={parsed_data['untriaged']} (database updated)")
                 
                 # Update progress
                 with refresh_lock:
