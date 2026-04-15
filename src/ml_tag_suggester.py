@@ -718,7 +718,6 @@ class MLTagSuggester:
             
             # Print detailed classification report and confusion matrix
             # Convert to lists and flatten to avoid numpy array hashing issues
-            import numpy as np
             y_test_flat = np.array(y_test).flatten().tolist()
             y_pred_flat = np.array(y_pred).flatten().tolist()
             unique_labels = sorted(set(y_test_flat) | set(y_pred_flat))
