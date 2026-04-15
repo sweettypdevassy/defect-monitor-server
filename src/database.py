@@ -768,6 +768,10 @@ class DefectDatabase:
                         if len(state_parts) > 0:
                             parsed_state = state_parts[-1].capitalize()
                     
+                    # Skip cancelled defects - they shouldn't appear in dashboard
+                    if parsed_state and parsed_state.lower() in ['canceled', 'cancelled']:
+                        continue
+                    
                     # Build defect object with filtered tags
                     defect_obj = {
                         'id': defect.get('id', 'Unknown'),
