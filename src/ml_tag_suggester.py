@@ -1,6 +1,7 @@
 """
 ML-Based Tag Suggester Module
 Uses scikit-learn to train a real machine learning model on historical triaged defects
+Enhanced with better feature engineering and ensemble methods for 60+ accuracy
 """
 
 import logging
@@ -9,19 +10,21 @@ import os
 from typing import Dict, List, Optional, Tuple
 from collections import Counter
 import numpy as np
+import re
 
 logger = logging.getLogger(__name__)
 
 # Try to import ML libraries
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
+    from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import Pipeline
-    from sklearn.model_selection import train_test_split, cross_val_score
-    from sklearn.metrics import classification_report, accuracy_score
+    from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+    from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+    from sklearn.preprocessing import StandardScaler
     from imblearn.over_sampling import SMOTE
     from imblearn.pipeline import Pipeline as ImbPipeline
-    import re
     ML_AVAILABLE = True
     SMOTE_AVAILABLE = True
 except ImportError as e:
@@ -115,25 +118,81 @@ class MLTagSuggester:
             return 'product_bug'
         return None
     
-    def _extract_text_features(self, defect: Dict) -> str:
+    def _extract_enhanced_features(self, defect: Dict) -> str:
         """
-        Extract text features from defect - DESCRIPTION ONLY
+        Extract enhanced text features from defect with better preprocessing
         
-        Summary often contains misleading patterns like "Test Failure:" which
-        doesn't indicate the root cause. Description contains the actual error
-        details (timeouts, exceptions, stack traces) that reveal whether it's:
-        - infrastructure: timeout, network, resource issues
-        - test_bug: test framework errors, assertion issues
-        - product_bug: runtime exceptions, logic errors
-        
-        Functional area is excluded as it doesn't help determine root cause.
+        Combines multiple fields with balanced weighting:
+        - Description: Primary source (2x weight - actual error details)
+        - Summary: Secondary source (1x weight - cleaned of misleading patterns)
+        - Functional area: Context (1x weight)
         """
+        # Get raw text
         description = str(defect.get('description', '')).lower()
+        summary = str(defect.get('summary', '')).lower()
+        functional_area = str(defect.get('functionalArea', '')).lower()
         
-        # Use ONLY description - it has the actual error details
-        # EXCLUDE summary (misleading "Test Failure:" patterns)
-        # EXCLUDE functional_area (doesn't indicate root cause)
-        return description.strip()
+        # Clean and preprocess text
+        description = self._preprocess_text(description)
+        summary = self._preprocess_text(summary)
+        
+        # Remove misleading patterns from summary
+        summary = re.sub(r'\btest\s+failure\b', '', summary)
+        summary = re.sub(r'\bfailed\s+test\b', '', summary)
+        
+        # Extract timeout indicator if present
+        error_keywords = self._extract_error_keywords(description)
+        
+        # Combine with balanced weighting
+        # Description gets 2x weight (most important)
+        # Summary and functional area get 1x weight each
+        combined = (
+            f"{description} {description} "  # 2x weight
+            f"{error_keywords} "  # Add timeout indicator if found
+            f"{summary} "  # 1x weight
+            f"{functional_area}"  # 1x weight
+        )
+        
+        return combined.strip()
+    
+    def _preprocess_text(self, text: str) -> str:
+        """Advanced text preprocessing"""
+        if not text:
+            return ""
+        
+        # Convert to lowercase
+        text = text.lower()
+        
+        # Remove URLs
+        text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', ' url ', text)
+        
+        # Remove email addresses
+        text = re.sub(r'\S+@\S+', ' email ', text)
+        
+        # Remove file paths (but keep error indicators)
+        text = re.sub(r'[/\\][\w/\\.-]+', ' filepath ', text)
+        
+        # Normalize whitespace
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Remove special characters but keep important ones
+        text = re.sub(r'[^\w\s\-_.:()]', ' ', text)
+        
+        return text.strip()
+    
+    def _extract_error_keywords(self, text: str) -> str:
+        """Extract domain-specific error keywords - minimal approach"""
+        keywords = []
+        
+        # Only timeout for infrastructure (as requested)
+        if re.search(r'timeout|timed\s+out', text):
+            keywords.append('infrastructure_timeout')
+        
+        return ' '.join(keywords)
+    
+    def _extract_text_features(self, defect: Dict) -> str:
+        """Wrapper for backward compatibility"""
+        return self._extract_enhanced_features(defect)
     
     def train_from_defects(self, triaged_defects: List[Dict], min_samples: int = 10, incremental: bool = True) -> bool:
         """
@@ -284,67 +343,142 @@ class MLTagSuggester:
                         X_texts, y_labels, test_size=0.2, random_state=42
                     )
             
-            # Don't use SMOTE - it creates unrealistic synthetic samples
-            # Instead: optimize Random Forest with careful hyperparameters
-            logger.info("🔧 Building optimized Random Forest classifier...")
-            logger.info("   Using sample_weight to handle class imbalance naturally")
+            # Build ensemble model with multiple algorithms
+            logger.info("🔧 Building advanced ensemble classifier...")
             
-            # Calculate sample weights to give more importance to minority classes
+            # Calculate sample weights for minority classes
             class_counts = Counter(y_train)
             total_samples = len(y_train)
-            
-            # Weight inversely proportional to class frequency
             class_weights = {cls: total_samples / (len(class_counts) * count)
                            for cls, count in class_counts.items()}
-            
-            # Create sample weights array
             sample_weights = np.array([class_weights[y] for y in y_train])
             
             logger.info(f"   Class distribution: {dict(class_counts)}")
             logger.info(f"   Class weights: {class_weights}")
             
+            # Enhanced TF-IDF with better parameters
+            tfidf = TfidfVectorizer(
+                max_features=5000,  # More features for better representation
+                ngram_range=(1, 3),  # Unigrams, bigrams, and trigrams
+                min_df=2,  # At least 2 occurrences
+                max_df=0.85,  # Filter very common terms
+                stop_words='english',
+                sublinear_tf=True,
+                norm='l2',
+                use_idf=True,
+                smooth_idf=True,
+                token_pattern=r'\b\w+\b'  # Better tokenization
+            )
+            
+            # Transform training data
+            logger.info("🔧 Extracting TF-IDF features...")
+            X_train_tfidf = tfidf.fit_transform(X_train)
+            X_test_tfidf = tfidf.transform(X_test)
+            
+            # Build ensemble of complementary classifiers
+            logger.info("🔧 Training ensemble of 3 complementary classifiers...")
+            
+            # 1. Random Forest - good for non-linear patterns
+            rf_clf = RandomForestClassifier(
+                n_estimators=500,
+                max_depth=15,
+                min_samples_split=8,
+                min_samples_leaf=3,
+                max_features='sqrt',
+                bootstrap=True,
+                oob_score=True,
+                random_state=42,
+                n_jobs=-1,
+                class_weight='balanced',
+                max_samples=0.85
+            )
+            
+            # 2. Gradient Boosting - good for sequential learning
+            gb_clf = GradientBoostingClassifier(
+                n_estimators=200,
+                learning_rate=0.1,
+                max_depth=7,
+                min_samples_split=10,
+                min_samples_leaf=4,
+                subsample=0.8,
+                random_state=42,
+                verbose=0
+            )
+            
+            # 3. Logistic Regression - good for linear patterns
+            lr_clf = LogisticRegression(
+                max_iter=1000,
+                C=1.0,
+                class_weight='balanced',
+                random_state=42,
+                solver='lbfgs',
+                multi_class='multinomial',
+                n_jobs=-1
+            )
+            
+            # Train individual models
+            logger.info("   Training Random Forest (500 trees)...")
+            rf_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
+            
+            logger.info("   Training Gradient Boosting (200 estimators)...")
+            gb_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
+            
+            logger.info("   Training Logistic Regression...")
+            lr_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
+            
+            # Create voting ensemble (soft voting for probability averaging)
+            logger.info("🔧 Creating voting ensemble...")
+            ensemble = VotingClassifier(
+                estimators=[
+                    ('rf', rf_clf),
+                    ('gb', gb_clf),
+                    ('lr', lr_clf)
+                ],
+                voting='soft',  # Use probability averaging
+                weights=[2, 2, 1]  # RF and GB get more weight
+            )
+            
+            # Fit ensemble (already fitted, just combines predictions)
+            ensemble.fit(X_train_tfidf, y_train)
+            
+            # Store as pipeline for consistency
             self.model = Pipeline([
-                ('tfidf', TfidfVectorizer(
-                    max_features=3000,  # Reduced to focus on most important terms
-                    ngram_range=(1, 2),  # Unigrams and bigrams
-                    min_df=3,  # More conservative - need at least 3 occurrences
-                    max_df=0.80,  # Filter common terms more aggressively
-                    stop_words='english',
-                    sublinear_tf=True,
-                    norm='l2'  # L2 normalization
-                )),
-                ('classifier', RandomForestClassifier(
-                    n_estimators=400,  # More trees for stability
-                    max_depth=12,  # Shallower trees to prevent overfitting
-                    min_samples_split=10,  # Require more samples to split
-                    min_samples_leaf=4,  # Require more samples in leaves
-                    max_features='log2',  # Use log2 of features (more conservative)
-                    bootstrap=True,
-                    oob_score=True,
-                    random_state=42,
-                    n_jobs=-1,
-                    class_weight=None,  # We use sample_weight instead
-                    verbose=0,
-                    max_samples=0.8  # Use 80% of samples per tree (regularization)
-                ))
+                ('tfidf', tfidf),
+                ('ensemble', ensemble)
             ])
             
-            logger.info("🔧 Training Random Forest (400 trees) with sample weighting...")
-            self.model.fit(X_train, y_train, classifier__sample_weight=sample_weights)
+            # Log individual model scores
+            if hasattr(rf_clf, 'oob_score_'):
+                logger.info(f"   Random Forest OOB score: {rf_clf.oob_score_:.2%}")
             
-            # Log OOB score
-            if hasattr(self.model.named_steps['classifier'], 'oob_score_'):
-                oob_score = self.model.named_steps['classifier'].oob_score_
-                logger.info(f"   Out-of-bag score: {oob_score:.2%}")
+            # Evaluate each model
+            rf_pred = rf_clf.predict(X_test_tfidf)
+            gb_pred = gb_clf.predict(X_test_tfidf)
+            lr_pred = lr_clf.predict(X_test_tfidf)
             
-            # Evaluate on test set
-            y_pred = self.model.predict(X_test)
+            logger.info(f"   Random Forest accuracy: {accuracy_score(y_test, rf_pred):.2%}")
+            logger.info(f"   Gradient Boosting accuracy: {accuracy_score(y_test, gb_pred):.2%}")
+            logger.info(f"   Logistic Regression accuracy: {accuracy_score(y_test, lr_pred):.2%}")
+            
+            # Evaluate ensemble on test set
+            y_pred = ensemble.predict(X_test_tfidf)
             accuracy = accuracy_score(y_test, y_pred)
             
-            logger.info(f"✅ Model trained successfully!")
+            logger.info(f"✅ Ensemble model trained successfully!")
             logger.info(f"   Training samples: {len(X_train)}")
             logger.info(f"   Test samples: {len(X_test)}")
-            logger.info(f"   Accuracy: {accuracy:.2%}")
+            logger.info(f"   🎯 ENSEMBLE ACCURACY: {accuracy:.2%}")
+            
+            # Cross-validation for robustness check
+            if len(X_train) >= 50:
+                logger.info("🔍 Running 5-fold cross-validation...")
+                cv_scores = cross_val_score(
+                    ensemble, X_train_tfidf, y_train,
+                    cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=42),
+                    scoring='accuracy',
+                    n_jobs=-1
+                )
+                logger.info(f"   CV Accuracy: {cv_scores.mean():.2%} (+/- {cv_scores.std() * 2:.2%})")
             
             # Store training stats
             self.training_stats = {
@@ -355,12 +489,19 @@ class MLTagSuggester:
                 'tag_distribution': dict(tag_counts)
             }
             
-            # Print detailed classification report
-            # Only include classes that are actually in the test set
+            # Print detailed classification report and confusion matrix
             unique_labels = sorted(set(y_test) | set(y_pred))
             target_names = [self.reverse_tag_mapping[i] for i in unique_labels]
             report = classification_report(y_test, y_pred, labels=unique_labels, target_names=target_names, zero_division=0)
             logger.info(f"\n📈 Classification Report:\n{report}")
+            
+            # Confusion matrix
+            cm = confusion_matrix(y_test, y_pred, labels=unique_labels)
+            logger.info(f"\n📊 Confusion Matrix:")
+            logger.info(f"   Predicted →")
+            logger.info(f"   Actual ↓   {' '.join([f'{self.reverse_tag_mapping[i]:>6}' for i in unique_labels])}")
+            for i, row in enumerate(cm):
+                logger.info(f"   {self.reverse_tag_mapping[unique_labels[i]]:>15}  {' '.join([f'{val:>6}' for val in row])}")
             
             self.trained = True
             
