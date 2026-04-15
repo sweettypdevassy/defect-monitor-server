@@ -27,15 +27,35 @@ try:
     from imblearn.pipeline import Pipeline as ImbPipeline
     ML_AVAILABLE = True
     SMOTE_AVAILABLE = True
+    
+    # Try to import XGBoost and LightGBM for better ensemble
+    try:
+        from xgboost import XGBClassifier
+        XGBOOST_AVAILABLE = True
+    except ImportError:
+        XGBOOST_AVAILABLE = False
+        logger.info("ℹ️  XGBoost not available. Install with: pip install xgboost")
+    
+    try:
+        from lightgbm import LGBMClassifier
+        LIGHTGBM_AVAILABLE = True
+    except ImportError:
+        LIGHTGBM_AVAILABLE = False
+        logger.info("ℹ️  LightGBM not available. Install with: pip install lightgbm")
+        
 except ImportError as e:
     if 'imblearn' in str(e):
         ML_AVAILABLE = True
         SMOTE_AVAILABLE = False
+        XGBOOST_AVAILABLE = False
+        LIGHTGBM_AVAILABLE = False
         logger.warning("⚠️ imbalanced-learn not installed. Install with: pip install imbalanced-learn")
         logger.warning("   Continuing without SMOTE (accuracy may be lower)")
     else:
         ML_AVAILABLE = False
         SMOTE_AVAILABLE = False
+        XGBOOST_AVAILABLE = False
+        LIGHTGBM_AVAILABLE = False
         logger.warning("⚠️ scikit-learn not installed. Install with: pip install scikit-learn")
 
 
@@ -395,8 +415,9 @@ class MLTagSuggester:
             X_train_tfidf = tfidf.fit_transform(X_train)
             X_test_tfidf = tfidf.transform(X_test)
             
-            # Build ensemble of complementary classifiers
-            logger.info("🔧 Training ensemble of 3 complementary classifiers...")
+            # Build ensemble with all available classifiers
+            num_models = 3 + (1 if XGBOOST_AVAILABLE else 0) + (1 if LIGHTGBM_AVAILABLE else 0)
+            logger.info(f"🔧 Training ensemble of {num_models} complementary classifiers...")
             
             # 1. Random Forest - good for non-linear patterns
             rf_clf = RandomForestClassifier(
@@ -436,7 +457,7 @@ class MLTagSuggester:
                 n_jobs=-1
             )
             
-            # Train individual models
+            # Train base models
             logger.info("   Training Random Forest (500 trees)...")
             rf_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
             
@@ -446,16 +467,56 @@ class MLTagSuggester:
             logger.info("   Training Logistic Regression...")
             lr_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
             
+            # Prepare ensemble estimators and weights
+            estimators = [
+                ('rf', rf_clf),
+                ('gb', gb_clf),
+                ('lr', lr_clf)
+            ]
+            weights = [2, 2, 1]  # Base weights
+            
+            # 4. XGBoost - powerful gradient boosting (if available)
+            if XGBOOST_AVAILABLE:
+                logger.info("   Training XGBoost (300 estimators)...")
+                xgb_clf = XGBClassifier(
+                    n_estimators=300,
+                    learning_rate=0.1,
+                    max_depth=6,
+                    min_child_weight=3,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
+                    random_state=42,
+                    n_jobs=-1,
+                    verbosity=0
+                )
+                xgb_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
+                estimators.append(('xgb', xgb_clf))
+                weights.append(2)  # Same weight as RF and GB
+            
+            # 5. LightGBM - fast gradient boosting (if available)
+            if LIGHTGBM_AVAILABLE:
+                logger.info("   Training LightGBM (300 estimators)...")
+                lgbm_clf = LGBMClassifier(
+                    n_estimators=300,
+                    learning_rate=0.1,
+                    max_depth=6,
+                    min_child_samples=10,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
+                    random_state=42,
+                    n_jobs=-1,
+                    verbose=-1
+                )
+                lgbm_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
+                estimators.append(('lgbm', lgbm_clf))
+                weights.append(2)  # Same weight as RF and GB
+            
             # Create voting ensemble (soft voting for probability averaging)
-            logger.info("🔧 Creating voting ensemble...")
+            logger.info(f"🔧 Creating voting ensemble with {len(estimators)} models...")
             ensemble = VotingClassifier(
-                estimators=[
-                    ('rf', rf_clf),
-                    ('gb', gb_clf),
-                    ('lr', lr_clf)
-                ],
+                estimators=estimators,
                 voting='soft',  # Use probability averaging
-                weights=[2, 2, 1]  # RF and GB get more weight
+                weights=weights
             )
             
             # Fit ensemble (already fitted, just combines predictions)
@@ -479,6 +540,14 @@ class MLTagSuggester:
             logger.info(f"   Random Forest accuracy: {accuracy_score(y_test, rf_pred):.2%}")
             logger.info(f"   Gradient Boosting accuracy: {accuracy_score(y_test, gb_pred):.2%}")
             logger.info(f"   Logistic Regression accuracy: {accuracy_score(y_test, lr_pred):.2%}")
+            
+            if XGBOOST_AVAILABLE:
+                xgb_pred = xgb_clf.predict(X_test_tfidf)
+                logger.info(f"   XGBoost accuracy: {accuracy_score(y_test, xgb_pred):.2%}")
+            
+            if LIGHTGBM_AVAILABLE:
+                lgbm_pred = lgbm_clf.predict(X_test_tfidf)
+                logger.info(f"   LightGBM accuracy: {accuracy_score(y_test, lgbm_pred):.2%}")
             
             # Evaluate ensemble on test set
             y_pred = ensemble.predict(X_test_tfidf)
