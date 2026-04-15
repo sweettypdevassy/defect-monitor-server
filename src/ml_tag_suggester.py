@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 # Try to import ML libraries
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
+    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier, ExtraTreesClassifier
     from sklearn.linear_model import LogisticRegression
+    from sklearn.svm import SVC
     from sklearn.pipeline import Pipeline
     from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
     from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
@@ -28,7 +29,7 @@ try:
     ML_AVAILABLE = True
     SMOTE_AVAILABLE = True
     
-    # Try to import XGBoost and LightGBM for better ensemble
+    # Try to import advanced gradient boosting libraries
     try:
         from xgboost import XGBClassifier
         XGBOOST_AVAILABLE = True
@@ -42,6 +43,13 @@ try:
     except ImportError:
         LIGHTGBM_AVAILABLE = False
         logger.info("ℹ️  LightGBM not available. Install with: pip install lightgbm")
+    
+    try:
+        from catboost import CatBoostClassifier
+        CATBOOST_AVAILABLE = True
+    except ImportError:
+        CATBOOST_AVAILABLE = False
+        logger.info("ℹ️  CatBoost not available. Install with: pip install catboost")
         
 except ImportError as e:
     if 'imblearn' in str(e):
@@ -49,6 +57,7 @@ except ImportError as e:
         SMOTE_AVAILABLE = False
         XGBOOST_AVAILABLE = False
         LIGHTGBM_AVAILABLE = False
+        CATBOOST_AVAILABLE = False
         logger.warning("⚠️ imbalanced-learn not installed. Install with: pip install imbalanced-learn")
         logger.warning("   Continuing without SMOTE (accuracy may be lower)")
     else:
@@ -56,6 +65,7 @@ except ImportError as e:
         SMOTE_AVAILABLE = False
         XGBOOST_AVAILABLE = False
         LIGHTGBM_AVAILABLE = False
+        CATBOOST_AVAILABLE = False
         logger.warning("⚠️ scikit-learn not installed. Install with: pip install scikit-learn")
 
 
@@ -499,8 +509,50 @@ class MLTagSuggester:
                 )
                 lgbm_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
             
+            # 6. CatBoost - excellent gradient boosting (if available)
+            if CATBOOST_AVAILABLE:
+                logger.info("   Training CatBoost (300 iterations)...")
+                catboost_clf = CatBoostClassifier(
+                    iterations=300,
+                    learning_rate=0.1,
+                    depth=6,
+                    l2_leaf_reg=3,
+                    random_seed=42,
+                    verbose=False,
+                    thread_count=-1
+                )
+                catboost_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
+            
+            # 7. Extra Trees - faster alternative to Random Forest
+            logger.info("   Training Extra Trees (500 trees)...")
+            et_clf = ExtraTreesClassifier(
+                n_estimators=500,
+                max_depth=20,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                max_features='sqrt',
+                bootstrap=True,
+                oob_score=True,
+                random_state=42,
+                n_jobs=-1,
+                class_weight='balanced'
+            )
+            et_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
+            
+            # 8. Support Vector Machine - powerful for text classification
+            logger.info("   Training SVM (RBF kernel)...")
+            svm_clf = SVC(
+                C=1.0,
+                kernel='rbf',
+                gamma='scale',
+                class_weight='balanced',
+                random_state=42,
+                probability=True  # Enable probability estimates
+            )
+            svm_clf.fit(X_train_tfidf, y_train, sample_weight=sample_weights)
+            
             # DYNAMIC MODEL SELECTION: Evaluate all models and pick the best
-            num_models = 3 + (1 if XGBOOST_AVAILABLE else 0) + (1 if LIGHTGBM_AVAILABLE else 0)
+            num_models = 6 + (1 if XGBOOST_AVAILABLE else 0) + (1 if LIGHTGBM_AVAILABLE else 0) + (1 if CATBOOST_AVAILABLE else 0)
             logger.info(f"🔧 Evaluating {num_models} models to select the best...")
             
             model_scores = {}
@@ -536,6 +588,26 @@ class MLTagSuggester:
                 lgbm_acc = accuracy_score(y_test, lgbm_pred)
                 model_scores['LightGBM'] = (lgbm_acc, lgbm_clf)
                 logger.info(f"   LightGBM accuracy: {lgbm_acc:.2%}")
+            
+            if CATBOOST_AVAILABLE:
+                catboost_pred = catboost_clf.predict(X_test_tfidf)
+                catboost_acc = accuracy_score(y_test, catboost_pred)
+                model_scores['CatBoost'] = (catboost_acc, catboost_clf)
+                logger.info(f"   CatBoost accuracy: {catboost_acc:.2%}")
+            
+            # Log OOB score for Extra Trees
+            if hasattr(et_clf, 'oob_score_'):
+                logger.info(f"   Extra Trees OOB score: {et_clf.oob_score_:.2%}")
+            
+            et_pred = et_clf.predict(X_test_tfidf)
+            et_acc = accuracy_score(y_test, et_pred)
+            model_scores['Extra Trees'] = (et_acc, et_clf)
+            logger.info(f"   Extra Trees accuracy: {et_acc:.2%}")
+            
+            svm_pred = svm_clf.predict(X_test_tfidf)
+            svm_acc = accuracy_score(y_test, svm_pred)
+            model_scores['SVM'] = (svm_acc, svm_clf)
+            logger.info(f"   SVM accuracy: {svm_acc:.2%}")
             
             # Select the best model
             best_model_name = max(model_scores.keys(), key=lambda k: model_scores[k][0])
