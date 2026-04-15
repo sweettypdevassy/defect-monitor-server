@@ -351,8 +351,9 @@ def _do_refresh_components(component_names: List[str], refresh_id: str, include_
                     "infra_bugs": parsed_data["infra_bugs"]
                 })
                 
-                # UPDATE DATABASE: Store in all_components_snapshots so triaged table shows current data
-                database.store_all_components_snapshot(component_name, parsed_data, is_monitored=False)
+                # UPDATE DATABASE: Store in BOTH tables so all tables show current data
+                # This updates all_components_snapshots (for triaged table) AND daily_snapshots (for untriaged table)
+                database.store_component_snapshot_single(component_name, parsed_data)
                 
                 logger.info(f"✅ {component_name}: Total={parsed_data['total']}, Untriaged={parsed_data['untriaged']} (database updated)")
                 
