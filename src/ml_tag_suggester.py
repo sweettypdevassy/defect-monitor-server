@@ -706,7 +706,10 @@ class MLTagSuggester:
             }
             
             # Print detailed classification report and confusion matrix
-            unique_labels = sorted(set(y_test) | set(y_pred))
+            # Convert to lists to avoid numpy array hashing issues
+            y_test_list = y_test if isinstance(y_test, list) else y_test.tolist()
+            y_pred_list = y_pred if isinstance(y_pred, list) else y_pred.tolist()
+            unique_labels = sorted(set(y_test_list) | set(y_pred_list))
             target_names = [self.reverse_tag_mapping[i] for i in unique_labels]
             report = classification_report(y_test, y_pred, labels=unique_labels, target_names=target_names, zero_division=0)
             logger.info(f"\n📈 Classification Report:\n{report}")
