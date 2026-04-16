@@ -61,7 +61,7 @@ class DefectChecker:
                     return None
                 
                 if attempt > 0:
-                    logger.warning(f"🔄 Retry {attempt}/{max_retries-1} for {component}")
+                    logger.info(f"🔄 Retry {attempt}/{max_retries-1} for {component}")
                 
                 # Build URL with component as query parameter
                 api_url = f"{self.build_break_base_url}?fas={component}"
@@ -148,11 +148,13 @@ class DefectChecker:
                 return defects
                 
             except requests.exceptions.Timeout as e:
-                logger.warning(f"⏱️ Timeout fetching {component} (attempt {attempt+1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
+                    # Log as debug for first attempts (normal network variance)
+                    logger.debug(f"⏱️ Timeout fetching {component} (attempt {attempt+1}/{max_retries}), retrying...")
                     time.sleep(2 ** attempt)
                 else:
-                    logger.error(f"❌ All {max_retries} retries exhausted for {component}")
+                    # Only log as warning if all retries exhausted
+                    logger.warning(f"⚠️ Timeout after {max_retries} attempts for {component}, skipping...")
                     return None
             except Exception as e:
                 logger.error(f"Error fetching defects for {component}: {e}")

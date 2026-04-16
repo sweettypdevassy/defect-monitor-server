@@ -330,14 +330,15 @@ class MLTagSuggester:
             
             logger.info(f"📊 Training data distribution: {dict(tag_counts)}")
             
-            # Create balanced test set with random 10 samples per class
-            samples_per_class = 10
+            # IMPROVED: Reserve 25 samples per class for testing (75 total)
+            # Use 10 for initial test, then 5+5+5 for additional validation rounds
+            test_samples_per_class = 25
             min_class_count = min(tag_counts.values())
             
             # Split data for validation
-            if min_class_count >= samples_per_class + 2:  # Need at least 12 samples per class
-                # Use balanced test set: random 10 samples from each class
-                logger.info(f"📊 Using balanced test set: {samples_per_class} random samples per class")
+            if min_class_count >= test_samples_per_class + 2:  # Need at least 27 samples per class
+                # Reserve 25 samples per class for testing
+                logger.info(f"📊 Reserving {test_samples_per_class} samples per class for testing (75 total)")
                 
                 # Separate data by class
                 X_by_class = {tag: [] for tag in self.tag_mapping.values()}
@@ -347,29 +348,33 @@ class MLTagSuggester:
                     X_by_class[y].append(x)
                     y_by_class[y].append(y)
                 
-                # Take random 10 samples from each class for testing
-                X_test = []
-                y_test = []
+                # Reserve 25 samples per class for testing
+                X_test_reserved = []
+                y_test_reserved = []
                 X_train = []
                 y_train = []
                 
                 import random
                 for tag in self.tag_mapping.values():
                     # Use RANDOM selection WITHOUT fixed seed for diverse test set
-                    # This ensures different samples are selected each training run
                     indices = list(range(len(X_by_class[tag])))
                     random.shuffle(indices)  # Random shuffle without seed
                     
-                    # Test: Random 10 samples from shuffled indices
-                    test_indices = indices[:samples_per_class]
-                    train_indices = indices[samples_per_class:]
+                    # Reserve first 25 for testing, rest for training
+                    test_indices = indices[:test_samples_per_class]
+                    train_indices = indices[test_samples_per_class:]
                     
-                    X_test.extend([X_by_class[tag][i] for i in test_indices])
-                    y_test.extend([y_by_class[tag][i] for i in test_indices])
+                    X_test_reserved.extend([X_by_class[tag][i] for i in test_indices])
+                    y_test_reserved.extend([y_by_class[tag][i] for i in test_indices])
                     X_train.extend([X_by_class[tag][i] for i in train_indices])
                     y_train.extend([y_by_class[tag][i] for i in train_indices])
                 
-                logger.info(f"   Test set: {len(X_test)} samples ({samples_per_class} per class)")
+                # Initial test set: First 10 samples per class (30 total)
+                X_test = X_test_reserved[:30]  # 10 per class × 3 classes
+                y_test = y_test_reserved[:30]
+                
+                logger.info(f"   Reserved test pool: {len(X_test_reserved)} samples ({test_samples_per_class} per class)")
+                logger.info(f"   Initial test set: {len(X_test)} samples (10 per class)")
                 logger.info(f"   Train set: {len(X_train)} samples")
             else:
                 # Fall back to stratified split if not enough samples
@@ -612,36 +617,28 @@ class MLTagSuggester:
             for i, (model_name, (test_acc, _)) in enumerate(top_4_models, 1):
                 logger.info(f"      {i}. {model_name}: {test_acc:.2%} (initial test)")
             
-            # Test each top 4 model with 3 additional random test sets
+            # Test each top 4 model with 3 additional test sets from RESERVED samples
+            # Use remaining 15 samples per class (45 total) split into 3 rounds of 5 per class
             import random
             final_scores = {}
             
             for model_name, (initial_acc, model_obj) in top_4_models:
-                accuracies = [initial_acc]  # Start with initial test accuracy
+                accuracies = [initial_acc]  # Start with initial test accuracy (10 per class)
                 
-                logger.info(f"   Testing {model_name} with 3 additional random test sets...")
+                logger.info(f"   Testing {model_name} with 3 additional test sets from reserved samples...")
                 
-                # Run 3 more tests with different random samples
+                # Remaining reserved samples: indices 30-75 (15 per class × 3 classes = 45 samples)
+                # Split into 3 rounds of 5 per class (15 samples per round)
                 for round_num in range(1, 4):
-                    # Create new random test set (10 per class)
-                    X_by_class_temp = {tag: [] for tag in self.tag_mapping.values()}
-                    y_by_class_temp = {tag: [] for tag in self.tag_mapping.values()}
+                    # Calculate indices for this round
+                    # Round 1: samples 30-44 (indices 10-14 per class)
+                    # Round 2: samples 45-59 (indices 15-19 per class)
+                    # Round 3: samples 60-74 (indices 20-24 per class)
+                    start_idx = 30 + (round_num - 1) * 15
+                    end_idx = start_idx + 15
                     
-                    for x, y in zip(X_texts, y_labels):
-                        X_by_class_temp[y].append(x)
-                        y_by_class_temp[y].append(y)
-                    
-                    X_test_temp = []
-                    y_test_temp = []
-                    X_train_temp = []
-                    
-                    for tag in self.tag_mapping.values():
-                        indices = list(range(len(X_by_class_temp[tag])))
-                        random.shuffle(indices)  # Different random samples each time
-                        
-                        test_indices = indices[:10]
-                        X_test_temp.extend([X_by_class_temp[tag][i] for i in test_indices])
-                        y_test_temp.extend([y_by_class_temp[tag][i] for i in test_indices])
+                    X_test_temp = X_test_reserved[start_idx:end_idx]
+                    y_test_temp = y_test_reserved[start_idx:end_idx]
                     
                     # Transform and predict
                     X_test_temp_tfidf = tfidf.transform(X_test_temp)
@@ -649,13 +646,13 @@ class MLTagSuggester:
                     round_acc = accuracy_score(y_test_temp, y_pred_temp)
                     accuracies.append(round_acc)
                     
-                    logger.info(f"      Round {round_num}: {round_acc:.2%}")
+                    logger.info(f"      Round {round_num}: {round_acc:.2%} (5 samples per class)")
                 
                 # Calculate average accuracy across all 4 tests
                 avg_accuracy = sum(accuracies) / len(accuracies)
                 final_scores[model_name] = (avg_accuracy, accuracies, model_obj)
                 
-                logger.info(f"      {model_name} average: {avg_accuracy:.2%} (across 4 tests)")
+                logger.info(f"      {model_name} average: {avg_accuracy:.2%} (across 4 test sets, 60 total predictions)")
             
             # Select model with best average accuracy
             best_model_name = max(final_scores.keys(), key=lambda k: final_scores[k][0])
