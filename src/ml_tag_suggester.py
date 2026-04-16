@@ -504,7 +504,7 @@ class MLTagSuggester:
                 return False
             
             logger.info(f"📊 Creating VALIDATION SET: {validation_samples_per_class} samples per class")
-            logger.info(f"   Validation set age: {self.validation_set_age} weeks (refreshes every 4 weeks)")
+            logger.info(f"   Validation set age: {self.validation_set_age} weeks (refreshes every 100 weeks)")
             
             X_validation = []
             y_validation = []

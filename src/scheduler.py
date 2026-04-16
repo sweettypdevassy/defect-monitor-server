@@ -704,18 +704,19 @@ class DefectScheduler:
                         stats = self.defect_checker.tag_suggester.get_training_stats()
                         
                         if stats.get('trained'):
-                            # Accuracy is already formatted as string (e.g., "58.67%")
-                            accuracy_str = stats.get('accuracy', '0.00%')
+                            # Use TEST accuracy (unbiased) instead of validation accuracy
+                            test_accuracy_str = stats.get('test_accuracy', 'N/A')
+                            validation_accuracy_str = stats.get('validation_accuracy', stats.get('accuracy', '0.00%'))
                             total_samples = stats.get('total_samples', 0)
                             
                             # Extract previous accuracy and improvement if available
-                            previous_acc = stats.get('previous_accuracy')
+                            previous_acc = stats.get('previous_test_accuracy')
                             improvement = stats.get('improvement')
                             
-                            # Send Slack notification
+                            # Send Slack notification with TEST accuracy
                             self.slack_notifier.send_ml_training_notification(
                                 num_components=len(training_components),
-                                accuracy=accuracy_str,
+                                accuracy=test_accuracy_str,
                                 total_defects=total_samples,
                                 success=True,
                                 previous_accuracy=previous_acc,
