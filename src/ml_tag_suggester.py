@@ -661,20 +661,36 @@ class MLTagSuggester:
             
             # STEP 8: Compare with previous model accuracy
             previous_accuracy = 0.0
+            previous_train_samples = 0
             if self.training_stats and 'accuracy' in self.training_stats:
                 # Parse previous accuracy (format: "65.50%")
                 prev_acc_str = self.training_stats['accuracy'].rstrip('%')
                 previous_accuracy = float(prev_acc_str) / 100.0
-                logger.info(f"   📊 Previous model accuracy: {previous_accuracy:.2%}")
+                previous_train_samples = self.training_stats.get('train_samples', 0)
+                logger.info(f"   📊 Previous model accuracy: {previous_accuracy:.2%} (trained on {previous_train_samples} samples)")
             else:
                 logger.info(f"   📊 No previous model found - will train new model")
             
-            # Check if new model (ensemble or single) is better than previous model
-            if previous_accuracy > 0 and final_model_accuracy <= previous_accuracy:
-                logger.warning(f"⚠️ New model accuracy ({final_model_accuracy:.2%}) ≤ Previous accuracy ({previous_accuracy:.2%})")
+            # Check if new model is better than previous model
+            # Train if: accuracy is better OR (accuracy is same but more training data)
+            current_train_samples = len(X_train)
+            should_skip = False
+            
+            if previous_accuracy > 0:
+                if final_model_accuracy < previous_accuracy:
+                    # New model is worse - skip
+                    should_skip = True
+                    skip_reason = f"accuracy decreased ({final_model_accuracy:.2%} < {previous_accuracy:.2%})"
+                elif final_model_accuracy == previous_accuracy and current_train_samples <= previous_train_samples:
+                    # Same accuracy but not more data - skip
+                    should_skip = True
+                    skip_reason = f"same accuracy ({final_model_accuracy:.2%}) with same/less training data ({current_train_samples} ≤ {previous_train_samples})"
+            
+            if should_skip:
                 logger.warning(f"⚠️ New model is NOT better - SKIPPING training")
+                logger.warning(f"⚠️ Reason: {skip_reason}")
                 logger.warning(f"⚠️ Keeping previous model")
-                logger.warning(f"💡 Suggestion: Need more/better training data to improve accuracy")
+                logger.warning(f"💡 Suggestion: Need better accuracy or significantly more training data")
                 
                 # Store stats for skipped training (for Slack notification)
                 self.training_stats['new_accuracy'] = f"{final_model_accuracy:.2%}"
@@ -686,8 +702,13 @@ class MLTagSuggester:
             # Calculate improvement
             improvement = None
             if previous_accuracy > 0:
-                improvement = final_model_accuracy - previous_accuracy
-                logger.info(f"✅ New model ({final_model_accuracy:.2%}) > Previous ({previous_accuracy:.2%}) - Improvement: {improvement:+.2%}")
+                if final_model_accuracy > previous_accuracy:
+                    improvement = final_model_accuracy - previous_accuracy
+                    logger.info(f"✅ New model ({final_model_accuracy:.2%}) > Previous ({previous_accuracy:.2%}) - Improvement: {improvement:+.2%}")
+                else:
+                    # Same accuracy but more data
+                    logger.info(f"✅ Same accuracy ({final_model_accuracy:.2%}) but MORE training data ({current_train_samples} > {previous_train_samples})")
+                    logger.info(f"✅ Training new model for better generalization")
             else:
                 logger.info(f"✅ New model accuracy: {final_model_accuracy:.2%} - Proceeding with training")
             
