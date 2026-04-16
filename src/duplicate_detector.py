@@ -193,11 +193,21 @@ class DuplicateDetector:
             best_match, similarity = duplicates[0]
             
             # Return duplicate information
+            # Only include triageTags if duplicate is actually triaged (has real tags from IBM RTC)
+            # Don't include ML suggested_tag as it's not a real triaged tag
+            duplicate_tags = best_match.get('triageTags', [])
+            duplicate_state = best_match.get('state', '')
+            
+            # Check if duplicate is truly triaged (not just has ML suggestions)
+            is_duplicate_triaged = bool(duplicate_tags) and duplicate_state.lower() not in ['new', 'open', 'in progress']
+            
             return {
                 'is_duplicate': True,
                 'duplicate_id': best_match.get('id'),
                 'duplicate_summary': best_match.get('summary'),
-                'duplicate_tags': best_match.get('triageTags', []),
+                'duplicate_tags': duplicate_tags if is_duplicate_triaged else [],
+                'duplicate_state': duplicate_state,
+                'is_duplicate_triaged': is_duplicate_triaged,
                 'similarity': similarity,
                 'total_similar': len(duplicates)
             }
