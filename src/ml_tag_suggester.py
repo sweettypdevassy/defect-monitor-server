@@ -111,6 +111,11 @@ class MLTagSuggester:
                 self.trained = True
                 logger.info(f"✅ Loaded ML model: {self.training_stats.get('accuracy', 'N/A')} accuracy")
                 logger.info(f"   Validation set age: {self.validation_set_age} weeks")
+                
+                # IMPORTANT: Load test and validation sets even when model loads successfully
+                self._load_test_set()
+                self._load_validation_set()
+                
                 return True
         except Exception as e:
             logger.warning(f"Could not load model: {e}")
