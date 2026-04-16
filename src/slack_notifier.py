@@ -120,15 +120,12 @@ class SlackNotifier:
                 duplicate_info = defect.get('duplicate_info')
                 if duplicate_info and duplicate_info.get('is_duplicate'):
                     dup_id = duplicate_info.get('duplicate_id')
-                    dup_tags = duplicate_info.get('duplicate_tags', [])
                     similarity = duplicate_info.get('similarity', 0.0)
                     similarity_pct = int(similarity * 100)
                     
                     dup_link = f"https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id={dup_id}"
                     
                     message += f"   🔄 Possible Duplicate of #{dup_id} ({similarity_pct}% similar): {dup_link}\n"
-                    if dup_tags:
-                        message += f"   📋 Previous Tags: {dup_tags}\n"
                 
                 # Add AI-suggested tag if available
                 suggested_tag = defect.get('suggested_tag')
@@ -141,10 +138,6 @@ class SlackNotifier:
                     message += f"   🤖 Suggested Tag: {suggested_tag} ({confidence_pct}% confidence)\n"
                     if reasoning:
                         message += f"   💡 Reason: {reasoning}\n"
-                
-                message += f"   Triage Tags: {defect.get('triageTags', '[]')}\n"
-                message += f"   State: {defect.get('state', 'Open')}\n"
-                message += f"   Owner: {defect.get('owner', 'Unassigned')}\n"
                 
                 if index < len(defects_to_show) - 1:
                     message += "\n"

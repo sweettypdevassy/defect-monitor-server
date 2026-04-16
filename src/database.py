@@ -1167,6 +1167,27 @@ class DefectDatabase:
                 "from_cache": True  # Flag to indicate this is from cache
             }
             
+            # Add SOE defects filtered by team components
+            soe_data = self.get_soe_defects()
+            if soe_data:
+                all_soe_defects = soe_data.get("defects", [])
+                
+                # Filter SOE defects by team's functional areas
+                filtered_soe = [
+                    defect for defect in all_soe_defects
+                    if any(
+                        component.lower() in (defect.get("functionalArea", "") or defect.get("functional_area", "")).lower()
+                        for component in component_names
+                    )
+                ]
+                
+                if filtered_soe:
+                    results["soe_triage"] = {
+                        "total": len(filtered_soe),
+                        "defects": filtered_soe
+                    }
+                    logger.info(f"✅ Added {len(filtered_soe)} SOE defects (filtered from {len(all_soe_defects)} total)")
+            
             logger.info(f"✅ Retrieved cached snapshot for {len(components_dict)} components")
             return results
             
