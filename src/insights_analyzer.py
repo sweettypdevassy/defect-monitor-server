@@ -140,11 +140,11 @@ class InsightsAnalyzer:
         """Find defects that occurred only once (or never) and are older than 30 days"""
         rare_defects = []
         
-        logger.debug(f"🔍 Checking {len(defects)} defects for rare defects (number_builds==1, age>=30 days)")
+        logger.debug(f"🔍 Checking {len(defects)} defects for rare defects (number_builds<=1, age>=30 days)")
         
         try:
-            # Find defects with EXACTLY 1 build AND older than 30 days
-            # This identifies defects that appeared once and never recurred
+            # Find defects with 0 or 1 build AND older than 30 days
+            # This identifies defects that appeared once (or never) and never recurred
             for defect in defects:
                 defect_id = defect['id']
                 # Use the number_builds field (calculated from buildsReported array)
@@ -153,9 +153,9 @@ class InsightsAnalyzer:
                 
                 logger.debug(f"  Checking defect {defect_id}: number_builds={build_count}, creation_date={creation_date}")
                 
-                # MUST have exactly 1 build (not 0, not 2+)
-                if build_count == 1:
-                    logger.debug(f"    → Defect {defect_id} has exactly 1 build, checking age...")
+                # MUST have 0 or 1 build (not 2+)
+                if build_count <= 1:
+                    logger.debug(f"    → Defect {defect_id} has {build_count} build(s), checking age...")
                     # Skip if no creation date (can't determine age)
                     if not creation_date:
                         logger.warning(f"    → Defect {defect_id} has no creation_date, skipping")
