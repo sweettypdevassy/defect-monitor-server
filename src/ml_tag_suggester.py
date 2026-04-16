@@ -626,8 +626,11 @@ class MLTagSuggester:
                 n_jobs=-1
             )
             
+            # Convert sparse matrix to dense array to avoid CatBoost read-only buffer error
+            X_train_tfidf_array = X_train_tfidf.toarray()
+            
             # Fit temp ensemble on training data (not all data yet)
-            temp_ensemble.fit(X_train_tfidf, y_train)
+            temp_ensemble.fit(X_train_tfidf_array, y_train)
             
             # Test ensemble on SAME test set (reuse X_test)
             y_pred_ensemble = temp_ensemble.predict(X_test_tfidf)
