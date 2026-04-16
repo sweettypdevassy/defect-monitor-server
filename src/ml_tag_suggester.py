@@ -118,6 +118,9 @@ class MLTagSuggester:
         # Try to load fixed test set
         self._load_test_set()
         
+        # Try to load validation set
+        self._load_validation_set()
+        
         return False
     
     def _load_test_set(self) -> bool:
@@ -492,39 +495,74 @@ class MLTagSuggester:
                     y_by_class[tag] = filtered_y
                     defect_by_class[tag] = filtered_defects
             
-            # Step 3: Create VALIDATION SET (refreshes monthly)
-            # ADAPTIVE sizing: Use 25% of remaining smallest class, max 40, min 20
-            remaining_min = min(len(X_by_class[tag]) for tag in self.tag_mapping.values())
-            validation_samples_per_class = max(20, min(40, int(remaining_min * 0.25)))
-            
-            if validation_samples_per_class < 15:
-                logger.warning(f"⚠️ Not enough data for proper validation/test split")
-                logger.warning(f"   Need at least 60 samples per class (20 test + 20 validation + 20 training)")
-                logger.warning(f"   Current: {min_class_count} samples per class")
-                return False
-            
-            logger.info(f"📊 Creating VALIDATION SET: {validation_samples_per_class} samples per class")
-            logger.info(f"   Validation set age: {self.validation_set_age} weeks (refreshes every 100 weeks)")
-            
-            X_validation = []
-            y_validation = []
-            X_train = []
-            y_train = []
-            
-            import random
-            # Use different seed each time for validation set diversity
-            for tag in self.tag_mapping.values():
-                indices = list(range(len(X_by_class[tag])))
-                random.shuffle(indices)  # Random shuffle without fixed seed
+            # Step 3: Use or Create VALIDATION SET (refreshes every 100 weeks)
+            # Check if we should use existing validation set or create new one
+            if self.fixed_validation_set is not None and self.validation_set_age < 100:
+                # Use existing validation set
+                logger.info(f"📌 Using existing VALIDATION SET: {len(self.fixed_validation_set['X'])} samples")
+                logger.info(f"   Validation set age: {self.validation_set_age} weeks (refreshes every 100 weeks)")
                 
-                # Reserve for validation
-                val_indices = indices[:validation_samples_per_class]
-                train_indices = indices[validation_samples_per_class:]
+                X_validation = self.fixed_validation_set['X']
+                y_validation = self.fixed_validation_set['y']
                 
-                X_validation.extend([X_by_class[tag][i] for i in val_indices])
-                y_validation.extend([y_by_class[tag][i] for i in val_indices])
-                X_train.extend([X_by_class[tag][i] for i in train_indices])
-                y_train.extend([y_by_class[tag][i] for i in train_indices])
+                # Remove validation set defects from training pool
+                val_ids = {str(d.get('id')) for d in self.fixed_validation_set.get('defects', [])}
+                
+                X_train = []
+                y_train = []
+                for tag in self.tag_mapping.values():
+                    for x, y, defect in zip(X_by_class[tag], y_by_class[tag], defect_by_class[tag]):
+                        if str(defect.get('id')) not in val_ids:
+                            X_train.append(x)
+                            y_train.append(y)
+            else:
+                # Create new validation set (first time or refresh needed)
+                if self.validation_set_age >= 100:
+                    logger.info(f"🔄 Validation set is {self.validation_set_age} weeks old - creating new one")
+                    self.validation_set_age = 0  # Reset age
+                
+                # ADAPTIVE sizing: Use 25% of remaining smallest class, max 40, min 20
+                remaining_min = min(len(X_by_class[tag]) for tag in self.tag_mapping.values())
+                validation_samples_per_class = max(20, min(40, int(remaining_min * 0.25)))
+                
+                if validation_samples_per_class < 15:
+                    logger.warning(f"⚠️ Not enough data for proper validation/test split")
+                    logger.warning(f"   Need at least 60 samples per class (20 test + 20 validation + 20 training)")
+                    logger.warning(f"   Current: {min_class_count} samples per class")
+                    return False
+                
+                logger.info(f"📊 Creating NEW VALIDATION SET: {validation_samples_per_class} samples per class")
+                logger.info(f"   Validation set age: {self.validation_set_age} weeks (refreshes every 100 weeks)")
+                
+                X_validation = []
+                y_validation = []
+                validation_defects = []
+                X_train = []
+                y_train = []
+                
+                import random
+                # Use different seed each time for validation set diversity
+                for tag in self.tag_mapping.values():
+                    indices = list(range(len(X_by_class[tag])))
+                    random.shuffle(indices)  # Random shuffle without fixed seed
+                    
+                    # Reserve for validation
+                    val_indices = indices[:validation_samples_per_class]
+                    train_indices = indices[validation_samples_per_class:]
+                    
+                    X_validation.extend([X_by_class[tag][i] for i in val_indices])
+                    y_validation.extend([y_by_class[tag][i] for i in val_indices])
+                    validation_defects.extend([defect_by_class[tag][i] for i in val_indices])
+                    X_train.extend([X_by_class[tag][i] for i in train_indices])
+                    y_train.extend([y_by_class[tag][i] for i in train_indices])
+                
+                # Save new validation set
+                self.fixed_validation_set = {
+                    'X': X_validation,
+                    'y': y_validation,
+                    'defects': validation_defects
+                }
+                self._save_validation_set(self.fixed_validation_set, self.validation_set_age)
             
             logger.info(f"✅ Data split complete:")
             logger.info(f"   Training set: {len(X_train)} samples")
