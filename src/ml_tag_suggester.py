@@ -637,7 +637,27 @@ class MLTagSuggester:
             y_pred_ensemble = temp_ensemble.predict(X_test_tfidf_array)
             ensemble_test_accuracy = accuracy_score(y_test, y_pred_ensemble)
             
-            logger.info(f"   🎯 New ensemble accuracy: {ensemble_test_accuracy:.2%}")
+            logger.info(f"   🎯 Ensemble accuracy: {ensemble_test_accuracy:.2%}")
+            
+            # STEP 7.5: Smart Fallback - If ensemble worse than best single model, use best single model
+            best_single_model_name, (best_single_accuracy, best_single_model) = top_4_models[0]
+            logger.info(f"   🏆 Best single model: {best_single_model_name} ({best_single_accuracy:.2%})")
+            
+            use_ensemble = True
+            if ensemble_test_accuracy < best_single_accuracy:
+                logger.warning(f"⚠️ Ensemble ({ensemble_test_accuracy:.2%}) < Best single model ({best_single_accuracy:.2%})")
+                logger.info(f"💡 Falling back to best single model: {best_single_model_name}")
+                use_ensemble = False
+                final_model_accuracy = best_single_accuracy
+                final_model_name = best_single_model_name
+                final_model_to_train = best_single_model
+            else:
+                logger.info(f"✅ Ensemble ({ensemble_test_accuracy:.2%}) ≥ Best single model ({best_single_accuracy:.2%})")
+                logger.info(f"💡 Using ensemble of 4 models")
+                use_ensemble = True
+                final_model_accuracy = ensemble_test_accuracy
+                final_model_name = "+".join([name for name, _ in ensemble_models])
+                final_model_to_train = None  # Will create ensemble later
             
             # STEP 8: Compare with previous model accuracy
             previous_accuracy = 0.0
@@ -649,15 +669,15 @@ class MLTagSuggester:
             else:
                 logger.info(f"   📊 No previous model found - will train new model")
             
-            # Check if new ensemble is better than previous model
-            if previous_accuracy > 0 and ensemble_test_accuracy <= previous_accuracy:
-                logger.warning(f"⚠️ New ensemble accuracy ({ensemble_test_accuracy:.2%}) ≤ Previous accuracy ({previous_accuracy:.2%})")
+            # Check if new model (ensemble or single) is better than previous model
+            if previous_accuracy > 0 and final_model_accuracy <= previous_accuracy:
+                logger.warning(f"⚠️ New model accuracy ({final_model_accuracy:.2%}) ≤ Previous accuracy ({previous_accuracy:.2%})")
                 logger.warning(f"⚠️ New model is NOT better - SKIPPING training")
                 logger.warning(f"⚠️ Keeping previous model")
                 logger.warning(f"💡 Suggestion: Need more/better training data to improve accuracy")
                 
                 # Store stats for skipped training (for Slack notification)
-                self.training_stats['new_accuracy'] = f"{ensemble_test_accuracy:.2%}"
+                self.training_stats['new_accuracy'] = f"{final_model_accuracy:.2%}"
                 self.training_stats['previous_accuracy'] = f"{previous_accuracy:.2%}"
                 self.training_stats['trained'] = False
                 
@@ -666,63 +686,69 @@ class MLTagSuggester:
             # Calculate improvement
             improvement = None
             if previous_accuracy > 0:
-                improvement = ensemble_test_accuracy - previous_accuracy
-                logger.info(f"✅ New ensemble ({ensemble_test_accuracy:.2%}) > Previous ({previous_accuracy:.2%}) - Improvement: {improvement:+.2%}")
+                improvement = final_model_accuracy - previous_accuracy
+                logger.info(f"✅ New model ({final_model_accuracy:.2%}) > Previous ({previous_accuracy:.2%}) - Improvement: {improvement:+.2%}")
             else:
-                logger.info(f"✅ New ensemble accuracy: {ensemble_test_accuracy:.2%} - Proceeding with training")
+                logger.info(f"✅ New model accuracy: {final_model_accuracy:.2%} - Proceeding with training")
             
             logger.info(f"🔄 Proceeding with full training on all data...")
             
-            # STEP 9: Train ensemble on ALL data (since accuracy > 50%)
-            logger.info(f"🔄 Training ensemble on ALL {len(X_texts)} defects for production...")
+            # STEP 9: Train final model on ALL data
+            logger.info(f"🔄 Training {'ensemble' if use_ensemble else 'single model'} on ALL {len(X_texts)} defects for production...")
             
             # Transform ALL data with TF-IDF
             X_all_tfidf = tfidf.transform(X_texts)
+            X_all_tfidf_array = X_all_tfidf.toarray()  # Convert to dense for compatibility
             
-            # Retrain all 4 models on ALL data
-            for model_name, model_obj in ensemble_models:
-                model_obj.fit(X_all_tfidf, y_labels, sample_weight=np.array([class_weights[y] for y in y_labels]))
+            if use_ensemble:
+                # Retrain all 4 models on ALL data
+                for model_name, model_obj in ensemble_models:
+                    model_obj.fit(X_all_tfidf_array, y_labels, sample_weight=np.array([class_weights[y] for y in y_labels]))
+                
+                # Create final Voting Classifier (soft voting = uses probabilities)
+                final_classifier = VotingClassifier(
+                    estimators=ensemble_models,
+                    voting='soft',  # Use probability-based voting
+                    n_jobs=-1
+                )
+                
+                # Fit ensemble (this just sets up the voting, models already trained)
+                final_classifier.fit(X_all_tfidf_array, y_labels)
+                
+                logger.info(f"✅ Ensemble model trained on ALL data for production use")
+            else:
+                # Train single best model on ALL data
+                final_classifier = final_model_to_train
+                final_classifier.fit(X_all_tfidf_array, y_labels, sample_weight=np.array([class_weights[y] for y in y_labels]))
+                
+                logger.info(f"✅ Single model ({final_model_name}) trained on ALL data for production use")
             
-            # Create final Voting Classifier (soft voting = uses probabilities)
-            ensemble = VotingClassifier(
-                estimators=ensemble_models,
-                voting='soft',  # Use probability-based voting
-                n_jobs=-1
-            )
-            
-            # Fit ensemble (this just sets up the voting, models already trained)
-            ensemble.fit(X_all_tfidf, y_labels)
-            
-            logger.info(f"✅ Ensemble model trained on ALL data for production use")
-            
-            # Store as pipeline with ensemble
+            # Store as pipeline
             self.model = Pipeline([
                 ('tfidf', tfidf),
-                ('classifier', ensemble)
+                ('classifier', final_classifier)
             ])
             
             # Final test on original test set (for logging purposes)
-            y_pred = ensemble.predict(X_test_tfidf)
+            y_pred = final_classifier.predict(X_test_tfidf_array)
             accuracy = accuracy_score(y_test, y_pred)
-            cv_accuracy = sum(ensemble_accuracies) / len(ensemble_accuracies)  # Average of top 4
+            cv_accuracy = final_model_accuracy  # Use the selected model's accuracy
             
-            logger.info(f"   🎯 Final ensemble test accuracy: {accuracy:.2%}")
+            logger.info(f"   🎯 Final model test accuracy: {accuracy:.2%}")
             
-            logger.info(f"✅ Ensemble model selected and trained successfully!")
+            logger.info(f"✅ Model selected and trained successfully!")
             logger.info(f"   Training samples: {len(X_train)}")
             logger.info(f"   Test samples: {len(X_test)}")
-            ensemble_model_names = " + ".join([name for name, _ in ensemble_models])
-            logger.info(f"   🎯 ENSEMBLE: {ensemble_model_names}")
-            logger.info(f"   📊 Average accuracy: {cv_accuracy:.2%}")
-            logger.info(f"   📊 Ensemble test accuracy: {accuracy:.2%}")
+            logger.info(f"   🎯 MODEL: {final_model_name}")
+            logger.info(f"   📊 Selected accuracy: {cv_accuracy:.2%}")
+            logger.info(f"   📊 Final test accuracy: {accuracy:.2%}")
             
             # Store training stats with CV accuracy (real-world accuracy)
-            ensemble_name = "+".join([name for name, _ in ensemble_models])
             self.training_stats = {
                 'accuracy': f"{cv_accuracy:.2%}",  # Use CV accuracy (real-world) instead of test accuracy
                 'test_accuracy': f"{accuracy:.2%}",  # Keep test accuracy for reference
                 'cv_std': "N/A",  # Not applicable for ensemble
-                'model_name': ensemble_name,
+                'model_name': final_model_name,
                 'total_samples': len(X_texts),
                 'train_samples': len(X_train),
                 'test_samples': len(X_test),
