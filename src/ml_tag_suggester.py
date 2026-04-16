@@ -654,52 +654,68 @@ class MLTagSuggester:
                 
                 logger.info(f"      {model_name} average: {avg_accuracy:.2%} (across 4 test sets, 60 total predictions)")
             
-            # Select model with best average accuracy
-            best_model_name = max(final_scores.keys(), key=lambda k: final_scores[k][0])
-            cv_accuracy, all_accuracies, best_model = final_scores[best_model_name]
+            # Select TOP 4 models for ensemble (better accuracy through diverse voting)
+            sorted_models = sorted(final_scores.items(), key=lambda x: x[1][0], reverse=True)
+            top_4_models = sorted_models[:4]
             
-            logger.info(f"🏆 Selected model: {best_model_name}")
-            logger.info(f"   Average accuracy: {cv_accuracy:.2%}")
-            logger.info(f"   Individual tests: {', '.join([f'{acc:.2%}' for acc in all_accuracies])}")
+            logger.info(f"🏆 Creating ensemble of TOP 4 models:")
+            ensemble_models = []
+            ensemble_accuracies = []
+            for i, (model_name, (acc, _, model_obj)) in enumerate(top_4_models, 1):
+                logger.info(f"   {i}. {model_name}: {acc:.2%}")
+                ensemble_models.append((model_name, model_obj))
+                ensemble_accuracies.append(acc)
             
-            # Calculate standard deviation
-            cv_std = np.std(all_accuracies)
-            test_accuracy = all_accuracies[0]  # Initial test accuracy
-            
-            # STEP 7: Retrain winning model on ALL data for maximum strength
-            logger.info(f"🔄 Retraining {best_model_name} on ALL {len(X_texts)} defects for production...")
+            # STEP 7: Create Voting Classifier with top 4 models
+            logger.info(f"🔄 Training ensemble on ALL {len(X_texts)} defects for production...")
             
             # Transform ALL data with TF-IDF
             X_all_tfidf = tfidf.transform(X_texts)
             
-            # Retrain the winning model on ALL data
-            best_model.fit(X_all_tfidf, y_labels, sample_weight=np.array([class_weights[y] for y in y_labels]))
+            # Retrain all 4 models on ALL data
+            for model_name, model_obj in ensemble_models:
+                model_obj.fit(X_all_tfidf, y_labels, sample_weight=np.array([class_weights[y] for y in y_labels]))
             
-            logger.info(f"✅ Final model trained on ALL data for production use")
+            # Create Voting Classifier (soft voting = uses probabilities)
+            ensemble = VotingClassifier(
+                estimators=ensemble_models,
+                voting='soft',  # Use probability-based voting
+                n_jobs=-1
+            )
             
-            # Store as pipeline with retrained model
+            # Fit ensemble (this just sets up the voting, models already trained)
+            ensemble.fit(X_all_tfidf, y_labels)
+            
+            logger.info(f"✅ Ensemble model trained on ALL data for production use")
+            
+            # Store as pipeline with ensemble
             self.model = Pipeline([
                 ('tfidf', tfidf),
-                ('classifier', best_model)
+                ('classifier', ensemble)
             ])
             
-            # Use best model's predictions on original test set for reporting
-            y_pred = best_model.predict(X_test_tfidf)
-            accuracy = test_accuracy
+            # Test ensemble on original test set
+            y_pred = ensemble.predict(X_test_tfidf)
+            accuracy = accuracy_score(y_test, y_pred)
+            cv_accuracy = sum(ensemble_accuracies) / len(ensemble_accuracies)  # Average of top 4
             
-            logger.info(f"✅ Best model selected and trained successfully!")
+            logger.info(f"   🎯 Ensemble test accuracy: {accuracy:.2%}")
+            
+            logger.info(f"✅ Ensemble model selected and trained successfully!")
             logger.info(f"   Training samples: {len(X_train)}")
             logger.info(f"   Test samples: {len(X_test)}")
-            logger.info(f"   🎯 SELECTED MODEL: {best_model_name}")
-            logger.info(f"   📊 Real-world accuracy (CV): {cv_accuracy:.2%}")
-            logger.info(f"   📊 Test set accuracy: {accuracy:.2%}")
+            ensemble_model_names = " + ".join([name for name, _ in ensemble_models])
+            logger.info(f"   🎯 ENSEMBLE: {ensemble_model_names}")
+            logger.info(f"   📊 Average accuracy: {cv_accuracy:.2%}")
+            logger.info(f"   📊 Ensemble test accuracy: {accuracy:.2%}")
             
             # Store training stats with CV accuracy (real-world accuracy)
+            ensemble_name = "+".join([name for name, _ in ensemble_models])
             self.training_stats = {
                 'accuracy': f"{cv_accuracy:.2%}",  # Use CV accuracy (real-world) instead of test accuracy
                 'test_accuracy': f"{accuracy:.2%}",  # Keep test accuracy for reference
-                'cv_std': f"{cv_std:.2%}" if 'cv_std' in locals() else "N/A",
-                'model_name': best_model_name,
+                'cv_std': "N/A",  # Not applicable for ensemble
+                'model_name': ensemble_name,
                 'total_samples': len(X_texts),
                 'train_samples': len(X_train),
                 'test_samples': len(X_test),
