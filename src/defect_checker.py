@@ -912,6 +912,7 @@ class DefectChecker:
                                 defect_info['state'] = state
                                 defect_info['is_cancelled'] = is_cancelled
                                 defect_info['component'] = component
+                                # Preserve number_builds from API (already in defect_info)
                                 # Use tags from IBM RTC API if available, otherwise keep existing tags
                                 if tags:
                                     defect_info['triageTags'] = tags
@@ -945,7 +946,8 @@ class DefectChecker:
                         'functionalArea': defect.get('functionalArea', ''),
                         'state': defect.get('state', ''),  # Fresh state from API
                         'triageTags': api_tags,  # ALWAYS use fresh tags from API
-                        'creation_date': cached_desc.get('creation_date', '')
+                        'creation_date': cached_desc.get('creation_date', ''),
+                        'number_builds': defect.get('number_builds', 0)  # Include number_builds from API
                     }
                     defects_to_update_state.append(defect_to_update)
             
