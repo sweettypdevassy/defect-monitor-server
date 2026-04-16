@@ -164,8 +164,9 @@ class MLTagSuggester:
                 with open(self.validation_set_path, 'rb') as f:
                     data = pickle.load(f)
                     self.fixed_validation_set = data['validation_set']
-                    self.validation_set_age = data.get('age', 0)
-                logger.info(f"✅ Loaded validation set: {len(self.fixed_validation_set['X'])} samples (age: {self.validation_set_age} weeks)")
+                    # Don't overwrite age if model.pkl has a newer age
+                    # (age from model.pkl is the source of truth)
+                logger.info(f"✅ Loaded validation set: {len(self.fixed_validation_set['X'])} samples")
                 return True
         except Exception as e:
             logger.warning(f"Could not load validation set: {e}")
@@ -923,6 +924,16 @@ class MLTagSuggester:
                 self.training_stats['previous_test_accuracy'] = f"{previous_accuracy:.2%}"
                 self.training_stats['trained'] = False
                 
+                # IMPORTANT: Increment validation set age even when skipping
+                # This ensures validation set ages properly across weeks
+                self.validation_set_age += 1
+                logger.info(f"📊 Incremented validation set age to {self.validation_set_age} weeks")
+                
+                # Save model with updated age (even though we're not retraining)
+                # This preserves the validation set age for next run
+                self._save_model(training_data=unique_training_data)
+                logger.info(f"✅ Saved model with updated validation set age")
+                
                 return False
             
             # Calculate improvement
@@ -938,19 +949,18 @@ class MLTagSuggester:
             else:
                 logger.info(f"✅ New model TEST accuracy: {comparison_accuracy:.2%} - Proceeding with training")
             
-            logger.info(f"🔄 Proceeding with full training on all data...")
+            logger.info(f"🔄 Proceeding with full training on training data...")
             
-            # STEP 9: Train final model on ALL data
-            logger.info(f"🔄 Training {'ensemble' if use_ensemble else 'single model'} on ALL {len(X_texts)} defects for production...")
+            # STEP 9: Train final model on TRAINING data ONLY (not validation/test)
+            logger.info(f"🔄 Training {'ensemble' if use_ensemble else 'single model'} on {len(X_train)} TRAINING defects for production...")
             
-            # Transform ALL data with TF-IDF
-            X_all_tfidf = tfidf.transform(X_texts)
-            X_all_tfidf_array = X_all_tfidf.toarray()  # Convert to dense for compatibility
+            # Use TRAINING data only (already transformed as X_train_tfidf)
+            X_train_tfidf_array = X_train_tfidf.toarray()  # Convert to dense for compatibility
             
             if use_ensemble:
-                # Retrain all 4 models on ALL data
+                # Retrain all 4 models on TRAINING data ONLY
                 for model_name, model_obj in ensemble_models:
-                    model_obj.fit(X_all_tfidf_array, y_labels, sample_weight=np.array([class_weights[y] for y in y_labels]))
+                    model_obj.fit(X_train_tfidf_array, y_train, sample_weight=sample_weights)
                 
                 # Create final Voting Classifier (soft voting = uses probabilities)
                 final_classifier = VotingClassifier(
@@ -960,15 +970,15 @@ class MLTagSuggester:
                 )
                 
                 # Fit ensemble (this just sets up the voting, models already trained)
-                final_classifier.fit(X_all_tfidf_array, y_labels)
+                final_classifier.fit(X_train_tfidf_array, y_train)
                 
-                logger.info(f"✅ Ensemble model trained on ALL data for production use")
+                logger.info(f"✅ Ensemble model trained on TRAINING data for production use")
             else:
-                # Train single best model on ALL data
+                # Train single best model on TRAINING data ONLY
                 final_classifier = final_model_to_train
-                final_classifier.fit(X_all_tfidf_array, y_labels, sample_weight=np.array([class_weights[y] for y in y_labels]))
+                final_classifier.fit(X_train_tfidf_array, y_train, sample_weight=sample_weights)
                 
-                logger.info(f"✅ Single model ({final_model_name}) trained on ALL data for production use")
+                logger.info(f"✅ Single model ({final_model_name}) trained on TRAINING data for production use")
             
             # Store as pipeline
             self.model = Pipeline([
