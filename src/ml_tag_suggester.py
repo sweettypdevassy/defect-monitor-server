@@ -72,9 +72,10 @@ except ImportError as e:
 class MLTagSuggester:
     """ML-based tag suggester using scikit-learn"""
     
-    def __init__(self, model_path: str = "data/tag_model.pkl", test_set_path: str = "data/test_set.pkl"):
+    def __init__(self, model_path: str = "data/tag_model.pkl", test_set_path: str = "data/test_set.pkl", validation_set_path: str = "data/validation_set.pkl"):
         self.model_path = model_path
         self.test_set_path = test_set_path
+        self.validation_set_path = validation_set_path
         self.model = None
         self.trained = False
         self.tag_mapping = {
@@ -85,6 +86,7 @@ class MLTagSuggester:
         self.reverse_tag_mapping = {v: k for k, v in self.tag_mapping.items()}
         self.training_stats = {}
         self.fixed_test_set = None  # Fixed test set for unbiased evaluation
+        self.fixed_validation_set = None  # Validation set (refreshes every 4 weeks)
         self.validation_set_age = 0  # Track how old validation set is (in weeks)
         
         if not ML_AVAILABLE:
@@ -127,7 +129,7 @@ class MLTagSuggester:
             if os.path.exists(self.test_set_path):
                 with open(self.test_set_path, 'rb') as f:
                     self.fixed_test_set = pickle.load(f)
-                logger.info(f"✅ Loaded fixed test set: {len(self.fixed_test_set)} samples")
+                logger.info(f"✅ Loaded fixed test set: {len(self.fixed_test_set['X'])} samples")
                 return True
         except Exception as e:
             logger.warning(f"Could not load test set: {e}")
@@ -147,6 +149,43 @@ class MLTagSuggester:
             return True
         except Exception as e:
             logger.error(f"Error saving test set: {e}")
+            return False
+    
+    def _load_validation_set(self) -> bool:
+        """Load validation set from disk (refreshes every 4 weeks)"""
+        if not ML_AVAILABLE:
+            return False
+        
+        try:
+            if os.path.exists(self.validation_set_path):
+                with open(self.validation_set_path, 'rb') as f:
+                    data = pickle.load(f)
+                    self.fixed_validation_set = data['validation_set']
+                    self.validation_set_age = data.get('age', 0)
+                logger.info(f"✅ Loaded validation set: {len(self.fixed_validation_set['X'])} samples (age: {self.validation_set_age} weeks)")
+                return True
+        except Exception as e:
+            logger.warning(f"Could not load validation set: {e}")
+        
+        return False
+    
+    def _save_validation_set(self, validation_data: Dict, age: int = 0) -> bool:
+        """Save validation set to disk"""
+        if not ML_AVAILABLE:
+            return False
+        
+        try:
+            os.makedirs(os.path.dirname(self.validation_set_path), exist_ok=True)
+            data = {
+                'validation_set': validation_data,
+                'age': age
+            }
+            with open(self.validation_set_path, 'wb') as f:
+                pickle.dump(data, f)
+            logger.info(f"✅ Saved validation set: {len(validation_data['X'])} samples (age: {age} weeks)")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving validation set: {e}")
             return False
     
     def _save_model(self, training_data: Optional[List[Dict]] = None) -> bool:
@@ -396,10 +435,12 @@ class MLTagSuggester:
                 defect_by_class[y].append(defect)
             
             # Step 2: Create or use FIXED TEST SET
-            if self.fixed_test_set is None and min_class_count >= 70:
-                # Create fixed test set: 30-40 samples per class (~100 total)
-                test_samples_per_class = min(40, min_class_count // 3)
-                logger.info(f"🎯 Creating FIXED TEST SET: {test_samples_per_class} samples per class")
+            if self.fixed_test_set is None and min_class_count >= 60:
+                # ADAPTIVE sizing: Use 25% of smallest class, max 40, min 20
+                # This gives more training data to small classes
+                test_samples_per_class = max(20, min(40, int(min_class_count * 0.25)))
+                logger.info(f"🎯 Creating FIXED TEST SET: {test_samples_per_class} samples per class (adaptive)")
+                logger.info(f"   Smallest class: {min_class_count} samples → {test_samples_per_class} for test")
                 
                 X_test_fixed = []
                 y_test_fixed = []
@@ -452,12 +493,13 @@ class MLTagSuggester:
                     defect_by_class[tag] = filtered_defects
             
             # Step 3: Create VALIDATION SET (refreshes monthly)
-            # Check if validation set needs refresh (every 4 weeks)
-            validation_samples_per_class = min(40, min(len(X_by_class[tag]) for tag in self.tag_mapping.values()) // 2)
+            # ADAPTIVE sizing: Use 25% of remaining smallest class, max 40, min 20
+            remaining_min = min(len(X_by_class[tag]) for tag in self.tag_mapping.values())
+            validation_samples_per_class = max(20, min(40, int(remaining_min * 0.25)))
             
-            if validation_samples_per_class < 10:
+            if validation_samples_per_class < 15:
                 logger.warning(f"⚠️ Not enough data for proper validation/test split")
-                logger.warning(f"   Need at least 70 samples per class (30 test + 30 validation + 10 training)")
+                logger.warning(f"   Need at least 60 samples per class (20 test + 20 validation + 20 training)")
                 logger.warning(f"   Current: {min_class_count} samples per class")
                 return False
             
