@@ -733,8 +733,8 @@ class DefectScheduler:
                     try:
                         # Get stats from the suggester
                         stats = self.defect_checker.tag_suggester.get_training_stats()
-                        new_acc = stats.get('new_accuracy', 'N/A')
-                        prev_acc = stats.get('previous_accuracy', 'N/A')
+                        new_acc = stats.get('new_test_accuracy', 'N/A')
+                        prev_acc = stats.get('previous_test_accuracy', 'N/A')
                         
                         self.slack_notifier.send_ml_training_notification(
                             num_components=len(training_components),
