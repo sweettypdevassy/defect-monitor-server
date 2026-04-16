@@ -72,8 +72,9 @@ except ImportError as e:
 class MLTagSuggester:
     """ML-based tag suggester using scikit-learn"""
     
-    def __init__(self, model_path: str = "data/tag_model.pkl"):
+    def __init__(self, model_path: str = "data/tag_model.pkl", test_set_path: str = "data/test_set.pkl"):
         self.model_path = model_path
+        self.test_set_path = test_set_path
         self.model = None
         self.trained = False
         self.tag_mapping = {
@@ -83,6 +84,8 @@ class MLTagSuggester:
         }
         self.reverse_tag_mapping = {v: k for k, v in self.tag_mapping.items()}
         self.training_stats = {}
+        self.fixed_test_set = None  # Fixed test set for unbiased evaluation
+        self.validation_set_age = 0  # Track how old validation set is (in weeks)
         
         if not ML_AVAILABLE:
             logger.error("❌ scikit-learn not available. Cannot use ML-based suggestions.")
@@ -102,15 +105,51 @@ class MLTagSuggester:
                     data = pickle.load(f)
                     self.model = data['model']
                     self.training_stats = data.get('stats', {})
+                    self.validation_set_age = data.get('validation_set_age', 0)
                 self.trained = True
                 logger.info(f"✅ Loaded ML model: {self.training_stats.get('accuracy', 'N/A')} accuracy")
+                logger.info(f"   Validation set age: {self.validation_set_age} weeks")
                 return True
         except Exception as e:
             logger.warning(f"Could not load model: {e}")
         
+        # Try to load fixed test set
+        self._load_test_set()
+        
         return False
     
-    def _save_model(self, training_data: List[Dict] = None) -> bool:
+    def _load_test_set(self) -> bool:
+        """Load fixed test set from disk"""
+        if not ML_AVAILABLE:
+            return False
+        
+        try:
+            if os.path.exists(self.test_set_path):
+                with open(self.test_set_path, 'rb') as f:
+                    self.fixed_test_set = pickle.load(f)
+                logger.info(f"✅ Loaded fixed test set: {len(self.fixed_test_set)} samples")
+                return True
+        except Exception as e:
+            logger.warning(f"Could not load test set: {e}")
+        
+        return False
+    
+    def _save_test_set(self, test_data: List[Dict]) -> bool:
+        """Save fixed test set to disk"""
+        if not ML_AVAILABLE:
+            return False
+        
+        try:
+            os.makedirs(os.path.dirname(self.test_set_path), exist_ok=True)
+            with open(self.test_set_path, 'wb') as f:
+                pickle.dump(test_data, f)
+            logger.info(f"✅ Saved fixed test set: {len(test_data)} samples")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving test set: {e}")
+            return False
+    
+    def _save_model(self, training_data: Optional[List[Dict]] = None) -> bool:
         """
         Save trained model to disk with training data for incremental learning
         
@@ -125,13 +164,15 @@ class MLTagSuggester:
             data = {
                 'model': self.model,
                 'stats': self.training_stats,
-                'training_data': training_data or []  # Store training data for incremental learning
+                'training_data': training_data or [],  # Store training data for incremental learning
+                'validation_set_age': self.validation_set_age  # Track validation set age
             }
             with open(self.model_path, 'wb') as f:
                 pickle.dump(data, f)
             logger.info(f"✅ Saved trained model to {self.model_path}")
             if training_data:
                 logger.info(f"   Stored {len(training_data)} training samples for incremental learning")
+            logger.info(f"   Validation set age: {self.validation_set_age} weeks")
             return True
         except Exception as e:
             logger.error(f"Error saving model: {e}")
@@ -330,60 +371,131 @@ class MLTagSuggester:
             
             logger.info(f"📊 Training data distribution: {dict(tag_counts)}")
             
-            # OPTIMIZED: Reserve only 5 samples per class for testing (15 total)
-            # This maximizes training data while still validating model quality
-            test_samples_per_class = 5
+            # ============================================================================
+            # IMPROVED STRATEGY: Separate Validation and Test Sets
+            # ============================================================================
+            # 1. Fixed Test Set (~100 defects, 30-40 per class) - NEVER changes
+            # 2. Validation Set (~100 defects, 30-40 per class) - Refreshes monthly
+            # 3. Training Set - All remaining defects
+            # ============================================================================
+            
             min_class_count = min(tag_counts.values())
             
-            # Split data for validation
-            if min_class_count >= test_samples_per_class + 2:  # Need at least 7 samples per class
-                # Reserve 5 samples per class for testing
-                logger.info(f"📊 Reserving {test_samples_per_class} samples per class for testing (15 total)")
+            # Step 1: Load or create FIXED TEST SET (only once)
+            if self.fixed_test_set is None:
+                self._load_test_set()
+            
+            # Separate data by class for stratified splitting
+            X_by_class = {tag: [] for tag in self.tag_mapping.values()}
+            y_by_class = {tag: [] for tag in self.tag_mapping.values()}
+            defect_by_class = {tag: [] for tag in self.tag_mapping.values()}
+            
+            for x, y, defect in zip(X_texts, y_labels, unique_training_data):
+                X_by_class[y].append(x)
+                y_by_class[y].append(y)
+                defect_by_class[y].append(defect)
+            
+            # Step 2: Create or use FIXED TEST SET
+            if self.fixed_test_set is None and min_class_count >= 70:
+                # Create fixed test set: 30-40 samples per class (~100 total)
+                test_samples_per_class = min(40, min_class_count // 3)
+                logger.info(f"🎯 Creating FIXED TEST SET: {test_samples_per_class} samples per class")
                 
-                # Separate data by class
-                X_by_class = {tag: [] for tag in self.tag_mapping.values()}
-                y_by_class = {tag: [] for tag in self.tag_mapping.values()}
-                
-                for x, y in zip(X_texts, y_labels):
-                    X_by_class[y].append(x)
-                    y_by_class[y].append(y)
-                
-                # Reserve 5 samples per class for testing
-                X_test = []
-                y_test = []
-                X_train = []
-                y_train = []
+                X_test_fixed = []
+                y_test_fixed = []
+                test_defects = []
                 
                 import random
-                for tag in self.tag_mapping.values():
-                    # Use RANDOM selection WITHOUT fixed seed for diverse test set
-                    indices = list(range(len(X_by_class[tag])))
-                    random.shuffle(indices)  # Random shuffle without seed
-                    
-                    # Reserve first 5 for testing, rest for training
-                    test_indices = indices[:test_samples_per_class]
-                    train_indices = indices[test_samples_per_class:]
-                    
-                    X_test.extend([X_by_class[tag][i] for i in test_indices])
-                    y_test.extend([y_by_class[tag][i] for i in test_indices])
-                    X_train.extend([X_by_class[tag][i] for i in train_indices])
-                    y_train.extend([y_by_class[tag][i] for i in train_indices])
+                random.seed(42)  # Fixed seed for test set only
                 
-                logger.info(f"   Test set: {len(X_test)} samples ({test_samples_per_class} per class)")
-                logger.info(f"   Train set: {len(X_train)} samples")
-            else:
-                # Fall back to stratified split if not enough samples
-                logger.info(f"⚠️ Not enough samples for balanced test set (need {samples_per_class+2} per class)")
-                logger.info(f"   Using stratified 80/20 split instead")
-                try:
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X_texts, y_labels, test_size=0.2, random_state=42, stratify=y_labels
-                    )
-                except ValueError:
-                    logger.warning(f"⚠️ Cannot use stratified split, using random split")
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X_texts, y_labels, test_size=0.2, random_state=42
-                    )
+                for tag in self.tag_mapping.values():
+                    indices = list(range(len(X_by_class[tag])))
+                    random.shuffle(indices)
+                    
+                    # Reserve for fixed test set
+                    test_indices = indices[:test_samples_per_class]
+                    X_test_fixed.extend([X_by_class[tag][i] for i in test_indices])
+                    y_test_fixed.extend([y_by_class[tag][i] for i in test_indices])
+                    test_defects.extend([defect_by_class[tag][i] for i in test_indices])
+                    
+                    # Remove from available data
+                    for idx in sorted(test_indices, reverse=True):
+                        X_by_class[tag].pop(idx)
+                        y_by_class[tag].pop(idx)
+                        defect_by_class[tag].pop(idx)
+                
+                self.fixed_test_set = {
+                    'X': X_test_fixed,
+                    'y': y_test_fixed,
+                    'defects': test_defects
+                }
+                self._save_test_set(test_defects)
+                logger.info(f"✅ Fixed test set created: {len(X_test_fixed)} samples")
+            elif self.fixed_test_set is not None:
+                # Remove fixed test set defects from training pool
+                test_ids = {str(d.get('id')) for d in self.fixed_test_set.get('defects', [])}
+                logger.info(f"📌 Using existing FIXED TEST SET: {len(test_ids)} samples")
+                
+                for tag in self.tag_mapping.values():
+                    filtered_X = []
+                    filtered_y = []
+                    filtered_defects = []
+                    
+                    for x, y, defect in zip(X_by_class[tag], y_by_class[tag], defect_by_class[tag]):
+                        if str(defect.get('id')) not in test_ids:
+                            filtered_X.append(x)
+                            filtered_y.append(y)
+                            filtered_defects.append(defect)
+                    
+                    X_by_class[tag] = filtered_X
+                    y_by_class[tag] = filtered_y
+                    defect_by_class[tag] = filtered_defects
+            
+            # Step 3: Create VALIDATION SET (refreshes monthly)
+            # Check if validation set needs refresh (every 4 weeks)
+            validation_samples_per_class = min(40, min(len(X_by_class[tag]) for tag in self.tag_mapping.values()) // 2)
+            
+            if validation_samples_per_class < 10:
+                logger.warning(f"⚠️ Not enough data for proper validation/test split")
+                logger.warning(f"   Need at least 70 samples per class (30 test + 30 validation + 10 training)")
+                logger.warning(f"   Current: {min_class_count} samples per class")
+                return False
+            
+            logger.info(f"📊 Creating VALIDATION SET: {validation_samples_per_class} samples per class")
+            logger.info(f"   Validation set age: {self.validation_set_age} weeks (refreshes every 4 weeks)")
+            
+            X_validation = []
+            y_validation = []
+            X_train = []
+            y_train = []
+            
+            import random
+            # Use different seed each time for validation set diversity
+            for tag in self.tag_mapping.values():
+                indices = list(range(len(X_by_class[tag])))
+                random.shuffle(indices)  # Random shuffle without fixed seed
+                
+                # Reserve for validation
+                val_indices = indices[:validation_samples_per_class]
+                train_indices = indices[validation_samples_per_class:]
+                
+                X_validation.extend([X_by_class[tag][i] for i in val_indices])
+                y_validation.extend([y_by_class[tag][i] for i in val_indices])
+                X_train.extend([X_by_class[tag][i] for i in train_indices])
+                y_train.extend([y_by_class[tag][i] for i in train_indices])
+            
+            logger.info(f"✅ Data split complete:")
+            logger.info(f"   Training set: {len(X_train)} samples")
+            logger.info(f"   Validation set: {len(X_validation)} samples")
+            if self.fixed_test_set:
+                logger.info(f"   Fixed test set: {len(self.fixed_test_set['X'])} samples (NEVER changes)")
+            
+            # Increment validation set age
+            self.validation_set_age += 1
+            
+            # Use validation set for model selection (not test set!)
+            X_test = X_validation
+            y_test = y_validation
             
             # Build ensemble model with multiple algorithms
             logger.info("🔧 Building advanced ensemble classifier...")
@@ -659,11 +771,45 @@ class MLTagSuggester:
                 final_model_name = "+".join([name for name, _ in ensemble_models])
                 final_model_to_train = None  # Will create ensemble later
             
-            # STEP 8: Compare with previous model accuracy
+            # STEP 8: FINAL EVALUATION on FIXED TEST SET (unbiased)
+            logger.info("=" * 80)
+            logger.info("🎯 FINAL EVALUATION: Testing on FIXED TEST SET (unbiased)")
+            logger.info("=" * 80)
+            
+            if self.fixed_test_set is not None:
+                # Transform fixed test set
+                X_test_fixed_tfidf = tfidf.transform(self.fixed_test_set['X'])
+                X_test_fixed_array = X_test_fixed_tfidf.toarray()
+                y_test_fixed = self.fixed_test_set['y']
+                
+                # Evaluate on fixed test set
+                if use_ensemble:
+                    y_pred_fixed = temp_ensemble.predict(X_test_fixed_array)
+                else:
+                    y_pred_fixed = final_model_to_train.predict(X_test_fixed_array)
+                
+                final_test_accuracy = accuracy_score(y_test_fixed, y_pred_fixed)
+                logger.info(f"📊 Validation set accuracy: {final_model_accuracy:.2%} (used for model selection)")
+                logger.info(f"🎯 FIXED TEST SET accuracy: {final_test_accuracy:.2%} (TRUE performance)")
+                
+                # Use fixed test set accuracy for comparison
+                comparison_accuracy = final_test_accuracy
+            else:
+                logger.warning("⚠️ No fixed test set available - using validation accuracy")
+                comparison_accuracy = final_model_accuracy
+                final_test_accuracy = None
+            
+            # STEP 9: Compare with previous model accuracy
             previous_accuracy = 0.0
             previous_train_samples = 0
-            if self.training_stats and 'accuracy' in self.training_stats:
-                # Parse previous accuracy (format: "65.50%")
+            if self.training_stats and 'test_accuracy' in self.training_stats:
+                # Parse previous TEST accuracy (the real one)
+                prev_acc_str = self.training_stats['test_accuracy'].rstrip('%')
+                previous_accuracy = float(prev_acc_str) / 100.0
+                previous_train_samples = self.training_stats.get('train_samples', 0)
+                logger.info(f"   📊 Previous model TEST accuracy: {previous_accuracy:.2%} (trained on {previous_train_samples} samples)")
+            elif self.training_stats and 'accuracy' in self.training_stats:
+                # Fallback to old accuracy field
                 prev_acc_str = self.training_stats['accuracy'].rstrip('%')
                 previous_accuracy = float(prev_acc_str) / 100.0
                 previous_train_samples = self.training_stats.get('train_samples', 0)
@@ -672,29 +818,29 @@ class MLTagSuggester:
                 logger.info(f"   📊 No previous model found - will train new model")
             
             # Check if new model is better than previous model
-            # Train if: accuracy is better OR (accuracy is same but more training data)
+            # Train if: TEST accuracy is better OR (accuracy is same but more training data)
             current_train_samples = len(X_train)
             should_skip = False
             
             if previous_accuracy > 0:
-                if final_model_accuracy < previous_accuracy:
+                if comparison_accuracy < previous_accuracy:
                     # New model is worse - skip
                     should_skip = True
-                    skip_reason = f"accuracy decreased ({final_model_accuracy:.2%} < {previous_accuracy:.2%})"
-                elif final_model_accuracy == previous_accuracy and current_train_samples <= previous_train_samples:
+                    skip_reason = f"TEST accuracy decreased ({comparison_accuracy:.2%} < {previous_accuracy:.2%})"
+                elif comparison_accuracy == previous_accuracy and current_train_samples <= previous_train_samples:
                     # Same accuracy but not more data - skip
                     should_skip = True
-                    skip_reason = f"same accuracy ({final_model_accuracy:.2%}) with same/less training data ({current_train_samples} ≤ {previous_train_samples})"
+                    skip_reason = f"same TEST accuracy ({comparison_accuracy:.2%}) with same/less training data ({current_train_samples} ≤ {previous_train_samples})"
             
             if should_skip:
                 logger.warning(f"⚠️ New model is NOT better - SKIPPING training")
                 logger.warning(f"⚠️ Reason: {skip_reason}")
                 logger.warning(f"⚠️ Keeping previous model")
-                logger.warning(f"💡 Suggestion: Need better accuracy or significantly more training data")
+                logger.warning(f"💡 Suggestion: Need better TEST accuracy or significantly more training data")
                 
                 # Store stats for skipped training (for Slack notification)
-                self.training_stats['new_accuracy'] = f"{final_model_accuracy:.2%}"
-                self.training_stats['previous_accuracy'] = f"{previous_accuracy:.2%}"
+                self.training_stats['new_test_accuracy'] = f"{comparison_accuracy:.2%}"
+                self.training_stats['previous_test_accuracy'] = f"{previous_accuracy:.2%}"
                 self.training_stats['trained'] = False
                 
                 return False
@@ -702,15 +848,15 @@ class MLTagSuggester:
             # Calculate improvement
             improvement = None
             if previous_accuracy > 0:
-                if final_model_accuracy > previous_accuracy:
-                    improvement = final_model_accuracy - previous_accuracy
-                    logger.info(f"✅ New model ({final_model_accuracy:.2%}) > Previous ({previous_accuracy:.2%}) - Improvement: {improvement:+.2%}")
+                if comparison_accuracy > previous_accuracy:
+                    improvement = comparison_accuracy - previous_accuracy
+                    logger.info(f"✅ New model TEST ({comparison_accuracy:.2%}) > Previous ({previous_accuracy:.2%}) - Improvement: {improvement:+.2%}")
                 else:
                     # Same accuracy but more data
-                    logger.info(f"✅ Same accuracy ({final_model_accuracy:.2%}) but MORE training data ({current_train_samples} > {previous_train_samples})")
+                    logger.info(f"✅ Same TEST accuracy ({comparison_accuracy:.2%}) but MORE training data ({current_train_samples} > {previous_train_samples})")
                     logger.info(f"✅ Training new model for better generalization")
             else:
-                logger.info(f"✅ New model accuracy: {final_model_accuracy:.2%} - Proceeding with training")
+                logger.info(f"✅ New model TEST accuracy: {comparison_accuracy:.2%} - Proceeding with training")
             
             logger.info(f"🔄 Proceeding with full training on all data...")
             
@@ -750,29 +896,35 @@ class MLTagSuggester:
                 ('classifier', final_classifier)
             ])
             
-            cv_accuracy = final_model_accuracy  # Use the selected model's accuracy
-            
             logger.info(f"✅ Model selected and trained successfully!")
             logger.info(f"   Training samples: {len(X_train)}")
-            logger.info(f"   Test samples: {len(X_test)}")
+            logger.info(f"   Validation samples: {len(X_validation)}")
+            if self.fixed_test_set:
+                logger.info(f"   Fixed test samples: {len(self.fixed_test_set['X'])}")
             logger.info(f"   🎯 MODEL: {final_model_name}")
-            logger.info(f"   📊 Model accuracy: {cv_accuracy:.2%}")
+            logger.info(f"   📊 Validation accuracy: {final_model_accuracy:.2%}")
+            if final_test_accuracy:
+                logger.info(f"   🎯 TEST accuracy (unbiased): {final_test_accuracy:.2%}")
             
-            # Store training stats with CV accuracy (real-world accuracy)
+            # Store training stats with BOTH validation and test accuracies
             self.training_stats = {
-                'accuracy': f"{cv_accuracy:.2%}",  # Real-world accuracy from validation
+                'accuracy': f"{final_model_accuracy:.2%}",  # Validation accuracy (for backward compatibility)
+                'validation_accuracy': f"{final_model_accuracy:.2%}",  # Validation set accuracy
+                'test_accuracy': f"{final_test_accuracy:.2%}" if final_test_accuracy else "N/A",  # Fixed test set accuracy (TRUE performance)
                 'cv_std': "N/A",  # Not applicable for ensemble
                 'model_name': final_model_name,
                 'total_samples': len(X_texts),
                 'train_samples': len(X_train),
-                'test_samples': len(X_test),
+                'validation_samples': len(X_validation),
+                'test_samples': len(self.fixed_test_set['X']) if self.fixed_test_set else 0,
                 'tag_distribution': dict(tag_counts),
+                'validation_set_age': self.validation_set_age,
                 'trained': True
             }
             
             # Add previous accuracy and improvement if applicable
             if previous_accuracy > 0:
-                self.training_stats['previous_accuracy'] = f"{previous_accuracy:.2%}"
+                self.training_stats['previous_test_accuracy'] = f"{previous_accuracy:.2%}"
                 if improvement:
                     self.training_stats['improvement'] = f"{improvement:+.2%}"
             

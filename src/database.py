@@ -634,7 +634,7 @@ class DefectDatabase:
                     for component, data_json in rows:
                         data = json.loads(data_json)
                         # Try both keys for compatibility
-                        untriaged_defects = data.get('defects', data.get('untriaged_defects', []))
+                        untriaged_defects = data.get('untriaged_defects', []) or data.get('defects', [])
                         
                         # Filter out defects that have tags in cache
                         for defect in untriaged_defects:
