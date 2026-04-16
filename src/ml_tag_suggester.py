@@ -136,7 +136,7 @@ class MLTagSuggester:
         
         return False
     
-    def _save_test_set(self, test_data: List[Dict]) -> bool:
+    def _save_test_set(self, test_data: Dict) -> bool:
         """Save fixed test set to disk"""
         if not ML_AVAILABLE:
             return False
@@ -145,7 +145,7 @@ class MLTagSuggester:
             os.makedirs(os.path.dirname(self.test_set_path), exist_ok=True)
             with open(self.test_set_path, 'wb') as f:
                 pickle.dump(test_data, f)
-            logger.info(f"✅ Saved fixed test set: {len(test_data)} samples")
+            logger.info(f"✅ Saved fixed test set: {len(test_data.get('X', []))} samples")
             return True
         except Exception as e:
             logger.error(f"Error saving test set: {e}")
@@ -470,7 +470,7 @@ class MLTagSuggester:
                     'y': y_test_fixed,
                     'defects': test_defects
                 }
-                self._save_test_set(test_defects)
+                self._save_test_set(self.fixed_test_set)
                 logger.info(f"✅ Fixed test set created: {len(X_test_fixed)} samples")
             elif self.fixed_test_set is not None:
                 # Remove fixed test set defects from training pool
