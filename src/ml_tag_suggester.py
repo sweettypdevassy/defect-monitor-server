@@ -929,6 +929,10 @@ class MLTagSuggester:
                 self.validation_set_age += 1
                 logger.info(f"📊 Incremented validation set age to {self.validation_set_age} weeks")
                 
+                # Save validation set with updated age
+                if self.fixed_validation_set is not None:
+                    self._save_validation_set(self.fixed_validation_set, self.validation_set_age)
+                
                 # Save model with updated age (even though we're not retraining)
                 # This preserves the validation set age for next run
                 self._save_model(training_data=unique_training_data)
