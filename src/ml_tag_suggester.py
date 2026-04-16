@@ -729,24 +729,17 @@ class MLTagSuggester:
                 ('classifier', final_classifier)
             ])
             
-            # Final test on original test set (for logging purposes)
-            y_pred = final_classifier.predict(X_test_tfidf_array)
-            accuracy = accuracy_score(y_test, y_pred)
             cv_accuracy = final_model_accuracy  # Use the selected model's accuracy
-            
-            logger.info(f"   🎯 Final model test accuracy: {accuracy:.2%}")
             
             logger.info(f"✅ Model selected and trained successfully!")
             logger.info(f"   Training samples: {len(X_train)}")
             logger.info(f"   Test samples: {len(X_test)}")
             logger.info(f"   🎯 MODEL: {final_model_name}")
-            logger.info(f"   📊 Selected accuracy: {cv_accuracy:.2%}")
-            logger.info(f"   📊 Final test accuracy: {accuracy:.2%}")
+            logger.info(f"   📊 Model accuracy: {cv_accuracy:.2%}")
             
             # Store training stats with CV accuracy (real-world accuracy)
             self.training_stats = {
-                'accuracy': f"{cv_accuracy:.2%}",  # Use CV accuracy (real-world) instead of test accuracy
-                'test_accuracy': f"{accuracy:.2%}",  # Keep test accuracy for reference
+                'accuracy': f"{cv_accuracy:.2%}",  # Real-world accuracy from validation
                 'cv_std': "N/A",  # Not applicable for ensemble
                 'model_name': final_model_name,
                 'total_samples': len(X_texts),
@@ -761,23 +754,6 @@ class MLTagSuggester:
                 self.training_stats['previous_accuracy'] = f"{previous_accuracy:.2%}"
                 if improvement:
                     self.training_stats['improvement'] = f"{improvement:+.2%}"
-            
-            # Print detailed classification report and confusion matrix
-            # Convert to lists and flatten to avoid numpy array hashing issues
-            y_test_flat = np.array(y_test).flatten().tolist()
-            y_pred_flat = np.array(y_pred).flatten().tolist()
-            unique_labels = sorted(set(y_test_flat) | set(y_pred_flat))
-            target_names = [self.reverse_tag_mapping[i] for i in unique_labels]
-            report = classification_report(y_test, y_pred, labels=unique_labels, target_names=target_names, zero_division=0)
-            logger.info(f"\n📈 Classification Report:\n{report}")
-            
-            # Confusion matrix
-            cm = confusion_matrix(y_test, y_pred, labels=unique_labels)
-            logger.info(f"\n📊 Confusion Matrix:")
-            logger.info(f"   Predicted →")
-            logger.info(f"   Actual ↓   {' '.join([f'{self.reverse_tag_mapping[i]:>6}' for i in unique_labels])}")
-            for i, row in enumerate(cm):
-                logger.info(f"   {self.reverse_tag_mapping[unique_labels[i]]:>15}  {' '.join([f'{val:>6}' for val in row])}")
             
             self.trained = True
             
