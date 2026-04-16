@@ -374,7 +374,7 @@ class SlackNotifier:
         except Exception as e:
             logger.error(f"Error sending error notification: {e}")
     
-    def send_ml_training_notification(self, num_components: int, accuracy: str, total_defects: int, success: bool = True) -> bool:
+    def send_ml_training_notification(self, num_components: int, accuracy: str, total_defects: int, success: bool = True, previous_accuracy: str = None, improvement: str = None, skipped: bool = False) -> bool:
         """
         Send ML training completion notification to Slack
         
@@ -383,13 +383,30 @@ class SlackNotifier:
             accuracy: Training accuracy (e.g., "56.25%")
             total_defects: Total number of defects used for training
             success: Whether training was successful
+            previous_accuracy: Previous model accuracy (if exists)
+            improvement: Accuracy improvement (e.g., "+5.2%")
+            skipped: Whether training was skipped due to no improvement
         """
         try:
-            if success:
-                message_text = (f"🤖 *ML Model Training Complete for {num_components} components*\n"
-                               f"• Real-World Accuracy (CV): {accuracy}\n"
-                               f"• Training Defects: {total_defects}\n"
-                               f"• Status: ✅ Success")
+            if skipped:
+                message_text = (f"🤖 *ML Model Training Skipped*\n"
+                               f"• New Model Accuracy: {accuracy}\n"
+                               f"• Previous Model Accuracy: {previous_accuracy}\n"
+                               f"• Reason: New model not better than previous\n"
+                               f"• Status: ⏭️ Keeping previous model")
+            elif success:
+                if previous_accuracy and improvement:
+                    message_text = (f"🤖 *ML Model Training Complete for {num_components} components*\n"
+                                   f"• New Accuracy: {accuracy}\n"
+                                   f"• Previous Accuracy: {previous_accuracy}\n"
+                                   f"• Improvement: {improvement}\n"
+                                   f"• Training Defects: {total_defects}\n"
+                                   f"• Status: ✅ Model Updated")
+                else:
+                    message_text = (f"🤖 *ML Model Training Complete for {num_components} components*\n"
+                                   f"• Accuracy: {accuracy}\n"
+                                   f"• Training Defects: {total_defects}\n"
+                                   f"• Status: ✅ New Model Created")
             else:
                 message_text = (f"🤖 *ML Model Training Failed*\n"
                                f"• Components: {num_components}\n"

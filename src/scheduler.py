@@ -693,9 +693,9 @@ class DefectScheduler:
                 logger.info(f"🎓 Incremental training on {len(component_names)} components...")
                 logger.info("   (Keeping existing training data + adding new defects)")
                 
-                success = self.defect_checker.train_ml_model_on_all_components(component_names)
+                training_result = self.defect_checker.train_ml_model_on_all_components(component_names)
                 
-                if success:
+                if training_result == True:
                     logger.info("✅ ML model incrementally trained successfully")
                     
                     # Extract ML stats and send notification
@@ -708,17 +708,44 @@ class DefectScheduler:
                             accuracy_str = stats.get('accuracy', '0.00%')
                             total_samples = stats.get('total_samples', 0)
                             
+                            # Extract previous accuracy and improvement if available
+                            previous_acc = stats.get('previous_accuracy')
+                            improvement = stats.get('improvement')
+                            
                             # Send Slack notification
                             self.slack_notifier.send_ml_training_notification(
                                 num_components=len(training_components),
                                 accuracy=accuracy_str,
                                 total_defects=total_samples,
-                                success=True
+                                success=True,
+                                previous_accuracy=previous_acc,
+                                improvement=improvement,
+                                skipped=False
                             )
                         else:
                             logger.warning("ML model trained but stats not available")
                     except Exception as notify_error:
                         logger.error(f"Error sending ML training notification: {notify_error}")
+                elif training_result == False:
+                    # Training was skipped (new model not better)
+                    logger.warning("⚠️ ML model training skipped - new model not better than previous")
+                    try:
+                        # Get stats from the suggester
+                        stats = self.defect_checker.tag_suggester.get_training_stats()
+                        new_acc = stats.get('new_accuracy', 'N/A')
+                        prev_acc = stats.get('previous_accuracy', 'N/A')
+                        
+                        self.slack_notifier.send_ml_training_notification(
+                            num_components=len(training_components),
+                            accuracy=new_acc,
+                            total_defects=0,
+                            success=False,
+                            previous_accuracy=prev_acc,
+                            improvement=None,
+                            skipped=True
+                        )
+                    except Exception as notify_error:
+                        logger.error(f"Error sending ML training skip notification: {notify_error}")
                 else:
                     logger.error("❌ ML model training failed")
                     # Send failure notification
@@ -727,7 +754,8 @@ class DefectScheduler:
                             num_components=len(training_components),
                             accuracy="N/A",
                             total_defects=0,
-                            success=False
+                            success=False,
+                            skipped=False
                         )
                     except Exception as notify_error:
                         logger.error(f"Error sending ML training failure notification: {notify_error}")

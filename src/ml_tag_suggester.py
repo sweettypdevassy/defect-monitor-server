@@ -330,15 +330,15 @@ class MLTagSuggester:
             
             logger.info(f"📊 Training data distribution: {dict(tag_counts)}")
             
-            # IMPROVED: Reserve 25 samples per class for testing (75 total)
-            # Use 10 for initial test, then 5+5+5 for additional validation rounds
-            test_samples_per_class = 25
+            # OPTIMIZED: Reserve only 5 samples per class for testing (15 total)
+            # This maximizes training data while still validating model quality
+            test_samples_per_class = 5
             min_class_count = min(tag_counts.values())
             
             # Split data for validation
-            if min_class_count >= test_samples_per_class + 2:  # Need at least 27 samples per class
-                # Reserve 25 samples per class for testing
-                logger.info(f"📊 Reserving {test_samples_per_class} samples per class for testing (75 total)")
+            if min_class_count >= test_samples_per_class + 2:  # Need at least 7 samples per class
+                # Reserve 5 samples per class for testing
+                logger.info(f"📊 Reserving {test_samples_per_class} samples per class for testing (15 total)")
                 
                 # Separate data by class
                 X_by_class = {tag: [] for tag in self.tag_mapping.values()}
@@ -348,9 +348,9 @@ class MLTagSuggester:
                     X_by_class[y].append(x)
                     y_by_class[y].append(y)
                 
-                # Reserve 25 samples per class for testing
-                X_test_reserved = []
-                y_test_reserved = []
+                # Reserve 5 samples per class for testing
+                X_test = []
+                y_test = []
                 X_train = []
                 y_train = []
                 
@@ -360,21 +360,16 @@ class MLTagSuggester:
                     indices = list(range(len(X_by_class[tag])))
                     random.shuffle(indices)  # Random shuffle without seed
                     
-                    # Reserve first 25 for testing, rest for training
+                    # Reserve first 5 for testing, rest for training
                     test_indices = indices[:test_samples_per_class]
                     train_indices = indices[test_samples_per_class:]
                     
-                    X_test_reserved.extend([X_by_class[tag][i] for i in test_indices])
-                    y_test_reserved.extend([y_by_class[tag][i] for i in test_indices])
+                    X_test.extend([X_by_class[tag][i] for i in test_indices])
+                    y_test.extend([y_by_class[tag][i] for i in test_indices])
                     X_train.extend([X_by_class[tag][i] for i in train_indices])
                     y_train.extend([y_by_class[tag][i] for i in train_indices])
                 
-                # Initial test set: First 10 samples per class (30 total)
-                X_test = X_test_reserved[:30]  # 10 per class × 3 classes
-                y_test = y_test_reserved[:30]
-                
-                logger.info(f"   Reserved test pool: {len(X_test_reserved)} samples ({test_samples_per_class} per class)")
-                logger.info(f"   Initial test set: {len(X_test)} samples (10 per class)")
+                logger.info(f"   Test set: {len(X_test)} samples ({test_samples_per_class} per class)")
                 logger.info(f"   Train set: {len(X_train)} samples")
             else:
                 # Fall back to stratified split if not enough samples
@@ -606,67 +601,75 @@ class MLTagSuggester:
             model_scores['SVM'] = (svm_acc, svm_clf)
             logger.info(f"   SVM accuracy: {svm_acc:.2%}")
             
-            # Select best model from top 4 with multiple test rounds
-            logger.info("🔍 Testing top 4 models with multiple random test sets...")
-            
-            # Sort models by test accuracy and get top 4
+            # STEP 6: Select TOP 4 models based on test accuracy
             sorted_models = sorted(model_scores.items(), key=lambda x: x[1][0], reverse=True)
             top_4_models = sorted_models[:4]
             
-            logger.info(f"   Top 4 candidates:")
+            logger.info("🏆 Selected TOP 4 models based on test accuracy:")
             for i, (model_name, (test_acc, _)) in enumerate(top_4_models, 1):
-                logger.info(f"      {i}. {model_name}: {test_acc:.2%} (initial test)")
+                logger.info(f"   {i}. {model_name}: {test_acc:.2%}")
             
-            # Test each top 4 model with 3 additional test sets from RESERVED samples
-            # Use remaining 15 samples per class (45 total) split into 3 rounds of 5 per class
-            import random
-            final_scores = {}
+            # STEP 7: Test TOP 4 ensemble with SAME test set (reuse test data)
+            logger.info("🔍 Testing TOP 4 ensemble with same test set...")
             
-            for model_name, (initial_acc, model_obj) in top_4_models:
-                accuracies = [initial_acc]  # Start with initial test accuracy (10 per class)
-                
-                logger.info(f"   Testing {model_name} with 3 additional test sets from reserved samples...")
-                
-                # Remaining reserved samples: indices 30-75 (15 per class × 3 classes = 45 samples)
-                # Split into 3 rounds of 5 per class (15 samples per round)
-                for round_num in range(1, 4):
-                    # Calculate indices for this round
-                    # Round 1: samples 30-44 (indices 10-14 per class)
-                    # Round 2: samples 45-59 (indices 15-19 per class)
-                    # Round 3: samples 60-74 (indices 20-24 per class)
-                    start_idx = 30 + (round_num - 1) * 15
-                    end_idx = start_idx + 15
-                    
-                    X_test_temp = X_test_reserved[start_idx:end_idx]
-                    y_test_temp = y_test_reserved[start_idx:end_idx]
-                    
-                    # Transform and predict
-                    X_test_temp_tfidf = tfidf.transform(X_test_temp)
-                    y_pred_temp = model_obj.predict(X_test_temp_tfidf)
-                    round_acc = accuracy_score(y_test_temp, y_pred_temp)
-                    accuracies.append(round_acc)
-                    
-                    logger.info(f"      Round {round_num}: {round_acc:.2%} (5 samples per class)")
-                
-                # Calculate average accuracy across all 4 tests
-                avg_accuracy = sum(accuracies) / len(accuracies)
-                final_scores[model_name] = (avg_accuracy, accuracies, model_obj)
-                
-                logger.info(f"      {model_name} average: {avg_accuracy:.2%} (across 4 test sets, 60 total predictions)")
-            
-            # Select TOP 4 models for ensemble (better accuracy through diverse voting)
-            sorted_models = sorted(final_scores.items(), key=lambda x: x[1][0], reverse=True)
-            top_4_models = sorted_models[:4]
-            
-            logger.info(f"🏆 Creating ensemble of TOP 4 models:")
+            # Prepare ensemble models list
             ensemble_models = []
             ensemble_accuracies = []
-            for i, (model_name, (acc, _, model_obj)) in enumerate(top_4_models, 1):
-                logger.info(f"   {i}. {model_name}: {acc:.2%}")
+            for model_name, (test_acc, model_obj) in top_4_models:
                 ensemble_models.append((model_name, model_obj))
-                ensemble_accuracies.append(acc)
+                ensemble_accuracies.append(test_acc)
             
-            # STEP 7: Create Voting Classifier with top 4 models
+            # Create temporary ensemble for testing
+            temp_ensemble = VotingClassifier(
+                estimators=ensemble_models,
+                voting='soft',
+                n_jobs=-1
+            )
+            
+            # Fit temp ensemble on training data (not all data yet)
+            temp_ensemble.fit(X_train_tfidf, y_train)
+            
+            # Test ensemble on SAME test set (reuse X_test)
+            y_pred_ensemble = temp_ensemble.predict(X_test_tfidf)
+            ensemble_test_accuracy = accuracy_score(y_test, y_pred_ensemble)
+            
+            logger.info(f"   🎯 New ensemble accuracy: {ensemble_test_accuracy:.2%}")
+            
+            # STEP 8: Compare with previous model accuracy
+            previous_accuracy = 0.0
+            if self.training_stats and 'accuracy' in self.training_stats:
+                # Parse previous accuracy (format: "65.50%")
+                prev_acc_str = self.training_stats['accuracy'].rstrip('%')
+                previous_accuracy = float(prev_acc_str) / 100.0
+                logger.info(f"   📊 Previous model accuracy: {previous_accuracy:.2%}")
+            else:
+                logger.info(f"   📊 No previous model found - will train new model")
+            
+            # Check if new ensemble is better than previous model
+            if previous_accuracy > 0 and ensemble_test_accuracy <= previous_accuracy:
+                logger.warning(f"⚠️ New ensemble accuracy ({ensemble_test_accuracy:.2%}) ≤ Previous accuracy ({previous_accuracy:.2%})")
+                logger.warning(f"⚠️ New model is NOT better - SKIPPING training")
+                logger.warning(f"⚠️ Keeping previous model")
+                logger.warning(f"💡 Suggestion: Need more/better training data to improve accuracy")
+                
+                # Store stats for skipped training (for Slack notification)
+                self.training_stats['new_accuracy'] = f"{ensemble_test_accuracy:.2%}"
+                self.training_stats['previous_accuracy'] = f"{previous_accuracy:.2%}"
+                self.training_stats['trained'] = False
+                
+                return False
+            
+            # Calculate improvement
+            improvement = None
+            if previous_accuracy > 0:
+                improvement = ensemble_test_accuracy - previous_accuracy
+                logger.info(f"✅ New ensemble ({ensemble_test_accuracy:.2%}) > Previous ({previous_accuracy:.2%}) - Improvement: {improvement:+.2%}")
+            else:
+                logger.info(f"✅ New ensemble accuracy: {ensemble_test_accuracy:.2%} - Proceeding with training")
+            
+            logger.info(f"🔄 Proceeding with full training on all data...")
+            
+            # STEP 9: Train ensemble on ALL data (since accuracy > 50%)
             logger.info(f"🔄 Training ensemble on ALL {len(X_texts)} defects for production...")
             
             # Transform ALL data with TF-IDF
@@ -676,7 +679,7 @@ class MLTagSuggester:
             for model_name, model_obj in ensemble_models:
                 model_obj.fit(X_all_tfidf, y_labels, sample_weight=np.array([class_weights[y] for y in y_labels]))
             
-            # Create Voting Classifier (soft voting = uses probabilities)
+            # Create final Voting Classifier (soft voting = uses probabilities)
             ensemble = VotingClassifier(
                 estimators=ensemble_models,
                 voting='soft',  # Use probability-based voting
@@ -694,12 +697,12 @@ class MLTagSuggester:
                 ('classifier', ensemble)
             ])
             
-            # Test ensemble on original test set
+            # Final test on original test set (for logging purposes)
             y_pred = ensemble.predict(X_test_tfidf)
             accuracy = accuracy_score(y_test, y_pred)
             cv_accuracy = sum(ensemble_accuracies) / len(ensemble_accuracies)  # Average of top 4
             
-            logger.info(f"   🎯 Ensemble test accuracy: {accuracy:.2%}")
+            logger.info(f"   🎯 Final ensemble test accuracy: {accuracy:.2%}")
             
             logger.info(f"✅ Ensemble model selected and trained successfully!")
             logger.info(f"   Training samples: {len(X_train)}")
@@ -719,8 +722,15 @@ class MLTagSuggester:
                 'total_samples': len(X_texts),
                 'train_samples': len(X_train),
                 'test_samples': len(X_test),
-                'tag_distribution': dict(tag_counts)
+                'tag_distribution': dict(tag_counts),
+                'trained': True
             }
+            
+            # Add previous accuracy and improvement if applicable
+            if previous_accuracy > 0:
+                self.training_stats['previous_accuracy'] = f"{previous_accuracy:.2%}"
+                if improvement:
+                    self.training_stats['improvement'] = f"{improvement:+.2%}"
             
             # Print detailed classification report and confusion matrix
             # Convert to lists and flatten to avoid numpy array hashing issues
