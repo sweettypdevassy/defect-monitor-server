@@ -811,10 +811,16 @@ class MLTagSuggester:
             if not text.strip():
                 return ('unknown', 0.0, 'No text features available')
             
+            # Transform text to TF-IDF features
+            text_tfidf = self.model.named_steps['tfidf'].transform([text])
+            
+            # Convert sparse to dense for SVM compatibility
+            text_tfidf_dense = text_tfidf.toarray()
+            
             # PURE ML: No rules, let the model decide based on training data
-            predicted_label = self.model.predict([text])[0]
+            predicted_label = self.model.named_steps['classifier'].predict(text_tfidf_dense)[0]
             predicted_tag = self.reverse_tag_mapping[predicted_label]
-            probabilities = self.model.predict_proba([text])[0]
+            probabilities = self.model.named_steps['classifier'].predict_proba(text_tfidf_dense)[0]
             confidence = float(probabilities[predicted_label])
             
             # Generate reasoning based on ML prediction
