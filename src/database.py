@@ -596,8 +596,9 @@ class DefectDatabase:
                 filtered_count = 0
                 for component, data_json in rows:
                     data = json.loads(data_json)
-                    # The key is 'defects' not 'untriaged_defects' in daily_snapshots
-                    untriaged_defects = data.get('defects', [])
+                    # Try both keys for backward compatibility
+                    # Some snapshots use 'untriaged_defects', others use 'defects'
+                    untriaged_defects = data.get('untriaged_defects', []) or data.get('defects', [])
                     
                     # Filter out defects that have tags in cache (they're triaged now)
                     for defect in untriaged_defects:
