@@ -576,14 +576,20 @@ class DefectDatabase:
             # Get from daily_snapshots (monitored components with full details)
             if latest_date_daily:
                 if component_names:
-                    placeholders = ','.join('?' * len(component_names))
+                    # Extract base component names (before parentheses) for flexible matching
+                    base_names = [name.split('(')[0].strip() for name in component_names]
+                    
+                    # Build LIKE conditions for each component
+                    like_conditions = ' OR '.join(['component LIKE ?' for _ in base_names])
                     query = f"""
                         SELECT component, data
                         FROM daily_snapshots
-                        WHERE date = ? AND untriaged > 0 AND component IN ({placeholders})
+                        WHERE date = ? AND untriaged > 0 AND ({like_conditions})
                         ORDER BY untriaged DESC, component ASC
                     """
-                    cursor.execute(query, (latest_date_daily, *component_names))
+                    # Add % wildcard for LIKE matching
+                    like_params = [f"{base}%" for base in base_names]
+                    cursor.execute(query, (latest_date_daily, *like_params))
                 else:
                     cursor.execute("""
                         SELECT component, data
@@ -620,14 +626,20 @@ class DefectDatabase:
                 remaining_components = [c for c in component_names if c not in components_already_fetched]
                 
                 if remaining_components:
-                    placeholders = ','.join('?' * len(remaining_components))
+                    # Extract base component names (before parentheses) for flexible matching
+                    base_names = [name.split('(')[0].strip() for name in remaining_components]
+                    
+                    # Build LIKE conditions for each component
+                    like_conditions = ' OR '.join(['component LIKE ?' for _ in base_names])
                     query = f"""
                         SELECT component, data
                         FROM all_components_snapshots
-                        WHERE date = ? AND untriaged > 0 AND component IN ({placeholders})
+                        WHERE date = ? AND untriaged > 0 AND ({like_conditions})
                         ORDER BY untriaged DESC, component ASC
                     """
-                    cursor.execute(query, (latest_date_all, *remaining_components))
+                    # Add % wildcard for LIKE matching
+                    like_params = [f"{base}%" for base in base_names]
+                    cursor.execute(query, (latest_date_all, *like_params))
                     
                     rows = cursor.fetchall()
                     additional_filtered = 0
@@ -691,14 +703,20 @@ class DefectDatabase:
             
             # Query all_components_snapshots for latest data
             if component_names:
-                placeholders = ','.join('?' * len(component_names))
+                # Extract base component names (before parentheses) for flexible matching
+                base_names = [name.split('(')[0].strip() for name in component_names]
+                
+                # Build LIKE conditions for each component
+                like_conditions = ' OR '.join(['component LIKE ?' for _ in base_names])
                 query = f"""
                     SELECT component, data
                     FROM all_components_snapshots
-                    WHERE date = ? AND component IN ({placeholders})
+                    WHERE date = ? AND ({like_conditions})
                     ORDER BY component ASC
                 """
-                cursor.execute(query, [latest_date] + component_names)
+                # Add % wildcard for LIKE matching
+                like_params = [f"{base}%" for base in base_names]
+                cursor.execute(query, [latest_date] + like_params)
             else:
                 cursor.execute("""
                     SELECT component, data

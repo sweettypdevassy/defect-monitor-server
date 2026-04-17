@@ -586,19 +586,23 @@ async function renderRecentDefects(data) {
         // Filter defects by monitored components only (for "My Monitored Components" tab)
         const soeTriageDefects = allDefects.filter(defect => {
             const match = monitoredComponentNames.some(compName => {
-                const compLower = compName.toLowerCase().trim();
+                // Extract base component name (before parentheses)
+                const baseCompName = compName.split('(')[0].trim().toLowerCase();
                 const functionalAreaLower = (defect.functionalArea || '').toLowerCase().trim();
                 const filedAgainstLower = (defect.filedAgainst || '').toLowerCase().trim();
                 
-                console.log(`Checking "${compName}" against defect ${defect.id}:`, {
+                console.log(`Checking "${compName}" (base: "${baseCompName}") against defect ${defect.id}:`, {
                     functionalArea: defect.functionalArea,
                     filedAgainst: defect.filedAgainst,
-                    matchFA: functionalAreaLower === compLower,
-                    matchFiled: filedAgainstLower === compLower
+                    matchFA: functionalAreaLower.startsWith(baseCompName) || functionalAreaLower === compName.toLowerCase().trim(),
+                    matchFiled: filedAgainstLower.startsWith(baseCompName) || filedAgainstLower === compName.toLowerCase().trim()
                 });
                 
-                // Use exact match instead of partial match
-                return functionalAreaLower === compLower || filedAgainstLower === compLower;
+                // Match if functionalArea/filedAgainst starts with base component name OR exact match
+                return functionalAreaLower.startsWith(baseCompName) ||
+                       filedAgainstLower.startsWith(baseCompName) ||
+                       functionalAreaLower === compName.toLowerCase().trim() ||
+                       filedAgainstLower === compName.toLowerCase().trim();
             });
             return match;
         });
