@@ -844,15 +844,37 @@ class DefectChecker:
                     
                     # OPTIMIZED: Don't fetch state from Jazz/RTC - we already know they're cancelled
                     # (not in Build Break API = cancelled/closed)
+                    # UPDATE: Also update their state in the cache so insights analyzer can filter them
+                    defects_to_mark_cancelled = []
                     for defect in all_cached_for_component:
                         defect_id = str(defect.get('id'))
                         if defect_id in triaged_to_keep:
                             # Mark as cancelled without fetching (saves time)
                             defect['is_cancelled'] = True
+                            # Set state to a cancelled workflow URL so insights analyzer can filter it
+                            defect['state'] = 'https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workflows/_CuZu4UEqEeKR8dRjEY0HCg/states/com.ibm.team.apt.storyWorkflow.state.s3.canceled'
                             
                             # Add to duplicate detection pool (even if cancelled)
                             all_defects_for_dup_check.append(defect)
                             logger.info(f"   💾 Added cancelled defect {defect_id} for duplicate detection (tags: {defect.get('triageTags', [])})")
+                            
+                            # Prepare to update cache with cancelled state
+                            defects_to_mark_cancelled.append({
+                                'id': defect_id,
+                                'description': defect.get('description', ''),
+                                'summary': defect.get('summary', ''),
+                                'component': component,
+                                'functionalArea': defect.get('functionalArea', ''),
+                                'state': defect['state'],  # Cancelled state URL
+                                'triageTags': defect.get('triageTags', []),
+                                'creation_date': defect.get('creation_date', ''),
+                                'number_builds': defect.get('number_builds', 0)
+                            })
+                    
+                    # Update cache with cancelled state so insights analyzer can filter them
+                    if defects_to_mark_cancelled:
+                        self.database.cache_defect_descriptions(defects_to_mark_cancelled)
+                        logger.info(f"   🔄 Updated {len(defects_to_mark_cancelled)} cached defects with cancelled state")
             
             # NOTE: Duplicate detection pool is now loaded ONCE per background fetch
             # See fetch_all_components_background() for the global duplicate detection pool
