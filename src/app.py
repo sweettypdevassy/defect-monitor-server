@@ -657,7 +657,9 @@ def api_component_insights(component_name):
         defects = []
         
         # Try to get cached descriptions for this component
-        cached_defects = database.get_all_cached_descriptions_for_component(component_name)
+        # Pass include_cancelled=True so insights_analyzer can filter them out itself
+        # This ensures the analyzer's filtering logic (lines 55-78 in insights_analyzer.py) works correctly
+        cached_defects = database.get_all_cached_descriptions_for_component(component_name, include_cancelled=True)
         
         if cached_defects:
             # Merge current number_builds from snapshot with cached defect data
