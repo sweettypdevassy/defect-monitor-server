@@ -957,8 +957,20 @@ class DefectChecker:
             if defects_to_update_state:
                 self.database.cache_defect_descriptions(defects_to_update_state)
                 logger.info(f"   🔄 Updated {len(defects_to_update_state)} cached defects with fresh state/tags")
+                
+                # CRITICAL: Also update the in-memory defects with the fresh tags we just saved
+                # This ensures duplicate detection uses the updated tags
+                for updated_defect in defects_to_update_state:
+                    defect_id = updated_defect['id']
+                    fresh_tags = updated_defect['triageTags']
+                    # Find and update the defect in all_defects_for_dup_check
+                    for defect in all_defects_for_dup_check:
+                        if str(defect.get('id')) == defect_id:
+                            defect['triageTags'] = fresh_tags
+                            defect['tags'] = fresh_tags  # Also set 'tags' for consistency
+                            break
             
-            # IMPORTANT: Update tags in all_defects_for_dup_check with freshly fetched tags
+            # IMPORTANT: Update tags in all_defects_for_dup_check with freshly fetched tags from Jazz/RTC
             # This ensures duplicate detection uses the most up-to-date tag information
             updated_in_pool = 0
             for defect in all_defects_for_dup_check:
