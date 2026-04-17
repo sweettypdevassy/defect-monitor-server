@@ -1076,26 +1076,12 @@ class DefectChecker:
                     # Get duplicate's tags
                     duplicate_tags = duplicate_info.get('duplicate_tags', [])
                     
-                    # Check if duplicate is truly triaged (has real tags from IBM RTC)
-                    # If duplicate is untriaged (no tags or still in 'new'/'open' state), use ML prediction
-                    if not is_duplicate_triaged or not duplicate_tags:
-                        logger.info(f"   ℹ️  Duplicate #{duplicate_id} is UNTRIAGED (state: {duplicate_state}), using ML prediction")
-                        if self.suggester_trained:
-                            suggested_tag, confidence, reasoning = self.tag_suggester.suggest_tag(defect)
-                            defect["suggested_tag"] = suggested_tag
-                            defect["suggestion_confidence"] = confidence
-                            defect["suggestion_reasoning"] = f"ML: {reasoning} (duplicate #{duplicate_id} is untriaged)"
-                            logger.info(f"   🤖 Using ML prediction: {suggested_tag} ({confidence:.0%}) - duplicate is untriaged")
-                        else:
-                            defect["suggested_tag"] = 'unknown'
-                            defect["suggestion_confidence"] = duplicate_info['similarity']
-                            defect["suggestion_reasoning"] = f"Duplicate #{duplicate_id} is untriaged, ML model not trained"
-                            logger.info(f"   ⚠️  ML not trained, marking as unknown")
-                    else:
-                        # Duplicate is triaged - use its tags
-                        # Determine primary tag from duplicate
+                    # Check if duplicate has valid ML-related tags
+                    # Priority: if duplicate has valid tags (infrastructure/test/product), use them
+                    if duplicate_tags and is_duplicate_triaged:
+                        # Duplicate has tags - check if they're valid ML tags
                         tags_lower = [str(tag).lower().strip() for tag in duplicate_tags]
-                        logger.info(f"   🔍 Duplicate #{duplicate_id} is TRIAGED with tags: {duplicate_tags}")
+                        logger.info(f"   🔍 Duplicate #{duplicate_id} has tags: {duplicate_tags} (state: {duplicate_state})")
                         
                         has_valid_ml_tag = False
                         suggested_tag = None
@@ -1104,37 +1090,50 @@ class DefectChecker:
                         if any('infra' in tag or 'infrastructure' in tag for tag in tags_lower):
                             suggested_tag = 'infrastructure_bug'
                             has_valid_ml_tag = True
-                            logger.info(f"   ✅ Found infrastructure tag in: {tags_lower}")
+                            logger.info(f"   ✅ Found infrastructure tag in duplicate")
                         elif any('test' in tag for tag in tags_lower):
                             suggested_tag = 'test_bug'
                             has_valid_ml_tag = True
-                            logger.info(f"   ✅ Found test tag in: {tags_lower}")
+                            logger.info(f"   ✅ Found test tag in duplicate")
                         elif any('product' in tag for tag in tags_lower):
                             suggested_tag = 'product_bug'
                             has_valid_ml_tag = True
-                            logger.info(f"   ✅ Found product tag in: {tags_lower}")
-                        else:
-                            logger.warning(f"   ⚠️  No ML tags found in: {tags_lower}")
+                            logger.info(f"   ✅ Found product tag in duplicate")
                         
                         if has_valid_ml_tag:
                             # Duplicate has valid ML tag - use it
                             defect["suggested_tag"] = suggested_tag
                             defect["suggestion_confidence"] = duplicate_info['similarity']
                             defect["suggestion_reasoning"] = f"Based on duplicate defect #{duplicate_id} with tags: {duplicate_tags}"
-                            logger.info(f"   ✓ Using duplicate's triaged tag: {suggested_tag}")
+                            logger.info(f"   ✓ Using duplicate's tag: {suggested_tag}")
                         else:
                             # Duplicate has non-ML tags (e.g., 'triaging', 'no_logs_available') - use ML prediction
+                            logger.info(f"   ⚠️  Duplicate has non-ML tags: {duplicate_tags}, using ML prediction")
                             if self.suggester_trained:
                                 suggested_tag, confidence, reasoning = self.tag_suggester.suggest_tag(defect)
                                 defect["suggested_tag"] = suggested_tag
                                 defect["suggestion_confidence"] = confidence
                                 defect["suggestion_reasoning"] = f"ML: {reasoning} (duplicate #{duplicate_id} has non-ML tags: {duplicate_tags})"
-                                logger.info(f"   🤖 Using ML prediction: {suggested_tag} ({confidence:.0%}) - duplicate has non-ML tags")
+                                logger.info(f"   🤖 Using ML prediction: {suggested_tag} ({confidence:.0%})")
                             else:
                                 defect["suggested_tag"] = 'unknown'
                                 defect["suggestion_confidence"] = duplicate_info['similarity']
                                 defect["suggestion_reasoning"] = f"Duplicate #{duplicate_id} has non-ML tags: {duplicate_tags}, ML model not trained"
                                 logger.info(f"   ⚠️  ML not trained, marking as unknown")
+                    else:
+                        # Duplicate has no tags or is untriaged - use ML prediction
+                        logger.info(f"   ℹ️  Duplicate #{duplicate_id} is UNTRIAGED (state: {duplicate_state}, tags: {duplicate_tags}), using ML prediction")
+                        if self.suggester_trained:
+                            suggested_tag, confidence, reasoning = self.tag_suggester.suggest_tag(defect)
+                            defect["suggested_tag"] = suggested_tag
+                            defect["suggestion_confidence"] = confidence
+                            defect["suggestion_reasoning"] = f"ML: {reasoning} (duplicate #{duplicate_id} is untriaged)"
+                            logger.info(f"   🤖 Using ML prediction: {suggested_tag} ({confidence:.0%})")
+                        else:
+                            defect["suggested_tag"] = 'unknown'
+                            defect["suggestion_confidence"] = duplicate_info['similarity']
+                            defect["suggestion_reasoning"] = f"Duplicate #{duplicate_id} is untriaged, ML model not trained"
+                            logger.info(f"   ⚠️  ML not trained, marking as unknown")
                 else:
                     # No duplicate found, use ML prediction
                     if self.suggester_trained:

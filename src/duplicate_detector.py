@@ -198,14 +198,25 @@ class DuplicateDetector:
             duplicate_tags = best_match.get('triageTags', [])
             duplicate_state = best_match.get('state', '')
             
-            # Check if duplicate is truly triaged (not just has ML suggestions)
-            is_duplicate_triaged = bool(duplicate_tags) and duplicate_state.lower() not in ['new', 'open', 'in progress']
+            # Check if duplicate has valid ML-related tags (infrastructure, test, product)
+            # These are the tags we care about for classification
+            tags_lower = [str(tag).lower().strip() for tag in duplicate_tags]
+            has_valid_ml_tags = any(
+                'infra' in tag or 'infrastructure' in tag or
+                'test' in tag or
+                'product' in tag
+                for tag in tags_lower
+            )
+            
+            # Duplicate is considered triaged if it has valid ML tags
+            # Use tags regardless of state (Open, Cancelled, etc.) - if it has valid tags, use them!
+            is_duplicate_triaged = has_valid_ml_tags
             
             return {
                 'is_duplicate': True,
                 'duplicate_id': best_match.get('id'),
                 'duplicate_summary': best_match.get('summary'),
-                'duplicate_tags': duplicate_tags if is_duplicate_triaged else [],
+                'duplicate_tags': duplicate_tags,  # Always include tags if they exist
                 'duplicate_state': duplicate_state,
                 'is_duplicate_triaged': is_duplicate_triaged,
                 'similarity': similarity,
