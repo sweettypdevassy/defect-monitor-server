@@ -938,15 +938,17 @@ class DefectChecker:
                     cached_desc = cached_descriptions[defect_id]
                     # Build Break API returns tags in 'tags' field, not 'triageTags'
                     api_tags = defect.get('tags', defect.get('triageTags', []))
+                    # Build Break API may return functional_area or functionalArea
+                    functional_area = defect.get('functional_area', defect.get('functionalArea', ''))
                     
-                    # ALWAYS use tags from API - they are authoritative from Build Break Report
-                    # If API returns empty tags, the tag was removed
+                    # ALWAYS use tags and functional_area from API - they are authoritative from Build Break Report
+                    # If API returns empty values, they were removed
                     defect_to_update = {
                         'id': defect_id,
                         'description': cached_desc.get('description', ''),
                         'summary': defect.get('summary', ''),
                         'component': component,
-                        'functionalArea': defect.get('functionalArea', ''),
+                        'functionalArea': functional_area,
                         'state': defect.get('state', ''),  # Fresh state from API
                         'triageTags': api_tags,  # ALWAYS use fresh tags from API
                         'creation_date': cached_desc.get('creation_date', ''),
