@@ -929,17 +929,18 @@ class DefectChecker:
             
             # Update cached defects with fresh state AND tags from IBM API
             # This ensures both state changes and tag changes are reflected
-            # Tags come from IBM RTC API (fetched above), so they are authoritative
+            # Tags come from Build Break API (fetched above), so they are authoritative
             defects_to_update_state = []
             for defect in all_defects_for_dup_check:
                 defect_id = str(defect.get('id'))
                 if defect_id in cached_descriptions:
                     # Defect is in cache, update its state AND tags with fresh data from API
                     cached_desc = cached_descriptions[defect_id]
-                    api_tags = defect.get('triageTags', [])
+                    # Build Break API returns tags in 'tags' field, not 'triageTags'
+                    api_tags = defect.get('tags', defect.get('triageTags', []))
                     
-                    # ALWAYS use tags from API - they are authoritative from IBM RTC
-                    # If API returns empty tags, the tag was removed in IBM RTC
+                    # ALWAYS use tags from API - they are authoritative from Build Break Report
+                    # If API returns empty tags, the tag was removed
                     defect_to_update = {
                         'id': defect_id,
                         'description': cached_desc.get('description', ''),
