@@ -58,6 +58,15 @@
             color: #8899a6;
         }
 
+        /* Toggle Switch */
+        .toggle-switch input:checked + span {
+            background-color: #1d9bf0 !important;
+        }
+
+        .toggle-switch input:checked + span + span {
+            transform: translateX(20px);
+        }
+
         /* KPI Cards - Row 1 */
         .kpi-row {
             display: grid;
@@ -331,6 +340,11 @@
 
         @keyframes spin {
             to { transform: rotate(360deg); }
+        }
+
+        /* Loading tip fade animation */
+        #loading-tip {
+            transition: opacity 0.3s ease-in-out;
         }
 
         /* Scrollbar */
@@ -622,9 +636,20 @@
         <!-- Header -->
         <div class="dashboard-header">
             <div class="header-left">
-                <h1>📊 Weekly Defect Dashboard</h1>
+                <h1>📊 Component Explorer Dashboard</h1>
                 <div class="header-subtitle">
-                    <span id="weekRange">Week View</span>
+                    <span id="selectedComponentsDisplay">Select components to view their defect data</span>
+                </div>
+            </div>
+            <div class="header-right" style="display: flex; align-items: center; gap: 15px;">
+                <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: rgba(255, 255, 255, 0.05); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1);">
+                    <span style="font-size: 12px; color: #8899a6;">🔄 Auto-Refresh:</span>
+                    <label class="toggle-switch" style="position: relative; display: inline-block; width: 44px; height: 24px;">
+                        <input type="checkbox" id="autoRefreshToggle" style="opacity: 0; width: 0; height: 0;" onchange="toggleAutoRefresh(this)">
+                        <span style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(255, 255, 255, 0.1); transition: 0.3s; border-radius: 24px; border: 1px solid rgba(255, 255, 255, 0.2);"></span>
+                        <span style="position: absolute; content: ''; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: 0.3s; border-radius: 50%;"></span>
+                    </label>
+                    <span id="autoRefreshStatus" style="font-size: 11px; color: #00d4aa; font-weight: 600;">ON</span>
                 </div>
             </div>
         </div>
@@ -647,18 +672,15 @@
             <!-- Explorer Dashboard Content (hidden initially) -->
             <div id="explorerDashboard" style="display: none;">
                 <!-- Back Button and Refresh Button -->
-                <div style="margin-bottom: 12px; display: flex; gap: 10px; align-items: center;">
+                <div style="margin-bottom: 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between;">
                     <button class="explorer-button" id="backToSelectionBtn" style="background: linear-gradient(135deg, #8899a6 0%, #657786 100%);">
                         ← Back to Component Selection
                     </button>
-                    <button class="explorer-button" id="refresh-selected-btn" onclick="refreshSelectedComponents()" style="background: linear-gradient(135deg, #00d4aa 0%, #00b894 100%);">
-                        🔄 Refresh Selected Components
-                    </button>
-                    <label style="display: flex; align-items: center; gap: 6px; color: #8899a6; font-size: 13px; cursor: pointer; user-select: none;">
-                        <input type="checkbox" id="include-soe-checkbox" style="cursor: pointer; width: 16px; height: 16px;">
-                        <span>Also refresh SOE Triage (+15-20s)</span>
-                    </label>
-                    <span id="refresh-status" style="color: #8899a6; font-size: 12px; margin-left: 10px;"></span>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span id="last-updated-time" style="color: #8899a6; font-size: 13px; padding: 8px 12px; background: rgba(255, 255, 255, 0.05); border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.1);">
+                            🕐 Last Updated: <span id="last-updated-timestamp" style="color: #00d4aa; font-weight: 600;">Just now</span>
+                        </span>
+                    </div>
                 </div>
                 
                 <!-- KPI Cards -->
@@ -821,6 +843,6 @@
         <!-- End Explorer Tab -->
     </div>
 
-    <script src="/static/dashboard.js?v=1774272700"></script>
+    <script src="/static/dashboard.js?v=1776530900"></script>
 </body>
 </html>
