@@ -49,7 +49,7 @@ function animateCounter(element, target, duration = 1000) {
 }
 
 // Load dashboard data from Flask API
-async function loadDashboardData() {
+async function loadDashboardData(skipAutoRefresh = false) {
     try {
         const response = await fetch('/api/dashboard/data');
         const data = await response.json();
@@ -60,9 +60,224 @@ async function loadDashboardData() {
         }
 
         renderDashboard(data);
+        
     } catch (error) {
         console.error('Error loading dashboard data:', error);
         document.body.innerHTML = '<div class="loading"><div class="loading-spinner"></div><div><h2>Error Loading Data</h2><p style="margin-top:10px;color:#8899a6;">Please try refreshing the page.</p></div></div>';
+    }
+}
+
+// Auto-refresh all components on page load
+async function autoRefreshAllComponents() {
+    try {
+        // Show loading overlay
+        showAutoRefreshOverlay();
+        
+        console.log('🔄 Starting auto-refresh for all components...');
+        
+        // Get all components from config
+        const componentsResponse = await fetch('/api/all-components');
+        const componentsData = await componentsResponse.json();
+        const allComponents = componentsData.all_components || ALL_COMPONENTS;
+        
+        console.log(`📋 Refreshing ${allComponents.length} components...`);
+        
+        // Start the refresh
+        const response = await fetch('/api/refresh-components', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                components: allComponents,
+                include_soe: false  // Don't include SOE on auto-refresh to keep it fast
+            })
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        const refreshId = data.refresh_id;
+        console.log('✅ Auto-refresh started with ID:', refreshId);
+        
+        // Poll for completion with progress updates
+        let completed = false;
+        let attempts = 0;
+        const maxAttempts = 120; // 2 minutes max wait for all components
+        
+        while (!completed && attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+            attempts++;
+            
+            try {
+                const statusResponse = await fetch(`/api/refresh-status/${refreshId}`);
+                if (statusResponse.ok) {
+                    const status = await statusResponse.json();
+                    
+                    // Update progress in overlay
+                    const progress = status.progress || 0;
+                    const total = status.total || allComponents.length;
+                    updateAutoRefreshProgress(progress, total);
+                    
+                    if (status.status === 'completed') {
+                        completed = true;
+                        console.log('✅ Auto-refresh completed!');
+                        
+                        const successCount = status.results ? status.results.length : 0;
+                        const errorCount = status.errors ? status.errors.length : 0;
+                        
+                        console.log(`✅ Successfully refreshed ${successCount} components`);
+                        if (errorCount > 0) {
+                            console.warn(`⚠️ ${errorCount} component(s) failed`);
+                        }
+                        break;
+                    } else if (status.status === 'error') {
+                        throw new Error('Auto-refresh failed: ' + (status.error || 'Unknown error'));
+                    }
+                }
+            } catch (pollError) {
+                console.warn('Status poll error:', pollError);
+            }
+        }
+        
+        if (!completed) {
+            console.warn('⚠️ Auto-refresh timed out - using cached data');
+        }
+        
+        // Hide loading overlay
+        hideAutoRefreshOverlay();
+        
+    } catch (error) {
+        console.error('❌ Auto-refresh error:', error);
+        hideAutoRefreshOverlay();
+        // Continue loading with cached data
+    }
+}
+
+// Show auto-refresh loading overlay
+function showAutoRefreshOverlay() {
+    const overlay = document.createElement('div');
+    overlay.id = 'auto-refresh-overlay';
+    overlay.innerHTML = `
+        <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(10, 14, 39, 0.95); z-index: 9999; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(10px);">
+            <div style="text-align: center; padding: 40px; background: rgba(255, 255, 255, 0.05); border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.1); max-width: 500px;">
+                <div class="loading-spinner" style="width: 60px; height: 60px; border: 4px solid rgba(255,255,255,0.1); border-top-color: #1d9bf0; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px;"></div>
+                <h2 style="color: #fff; font-size: 24px; margin-bottom: 10px;">🔄 Fetching Fresh Data</h2>
+                <p style="color: #8899a6; font-size: 14px; margin-bottom: 20px;">Loading latest defect information for all components...</p>
+                <div id="auto-refresh-progress" style="color: #1d9bf0; font-size: 16px; font-weight: 600;">Initializing...</div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+// Update auto-refresh progress
+function updateAutoRefreshProgress(current, total) {
+    const progressEl = document.getElementById('auto-refresh-progress');
+    if (progressEl) {
+        const percentage = Math.round((current / total) * 100);
+        progressEl.textContent = `Processing ${current} of ${total} components (${percentage}%)`;
+    }
+}
+
+// Hide auto-refresh overlay
+function hideAutoRefreshOverlay() {
+    const overlay = document.getElementById('auto-refresh-overlay');
+    if (overlay) {
+        overlay.remove();
+    }
+}
+
+// Disable auto-refresh (user preference)
+function disableAutoRefresh() {
+    localStorage.setItem('autoRefreshEnabled', 'false');
+    hideAutoRefreshOverlay();
+    console.log('⚙️ Auto-refresh disabled - loading cached data');
+    loadDashboardData(true); // Load with cached data
+}
+
+// Enable auto-refresh (user preference)
+function enableAutoRefresh() {
+    localStorage.setItem('autoRefreshEnabled', 'true');
+    console.log('⚙️ Auto-refresh enabled');
+    alert('✅ Auto-refresh enabled! The dashboard will fetch fresh data on next page load.');
+}
+
+// Component-specific insights will be generated dynamically
+let componentInsights = [];
+
+// Show component refresh loading overlay
+function showComponentRefreshOverlay(componentCount) {
+    const overlay = document.createElement('div');
+    overlay.id = 'component-refresh-overlay';
+    
+    overlay.innerHTML = `
+        <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(10, 14, 39, 0.95); z-index: 9999; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(10px);">
+            <div style="text-align: center; padding: 50px; background: linear-gradient(135deg, rgba(29, 155, 240, 0.1) 0%, rgba(91, 112, 131, 0.1) 100%); border-radius: 24px; border: 2px solid rgba(29, 155, 240, 0.3); max-width: 700px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);">
+                <div style="position: relative; width: 80px; height: 80px; margin: 0 auto 30px;">
+                    <div class="loading-spinner" style="width: 80px; height: 80px; border: 5px solid rgba(255,255,255,0.1); border-top-color: #1d9bf0; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 32px;">🔄</div>
+                </div>
+                <h2 style="color: #fff; font-size: 28px; margin-bottom: 12px; font-weight: 700; text-shadow: 0 2px 10px rgba(0,0,0,0.3);">Fetching Fresh Data</h2>
+                <p style="color: #8899a6; font-size: 16px; margin-bottom: 25px; font-weight: 500;">
+                    Loading latest defect information for <span style="color: #1d9bf0; font-weight: 700;">${componentCount}</span> component${componentCount !== 1 ? 's' : ''}
+                </p>
+                <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 3px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.1);">
+                    <div id="component-refresh-progress-bar" style="height: 8px; background: linear-gradient(90deg, #1d9bf0 0%, #1a8cd8 100%); border-radius: 10px; width: 0%; transition: width 0.3s ease;"></div>
+                </div>
+                <div id="component-refresh-progress" style="color: #1d9bf0; font-size: 18px; font-weight: 700; min-height: 24px;">Initializing...</div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+
+// Update component refresh progress
+function updateComponentRefreshProgress(current, total) {
+    const progressEl = document.getElementById('component-refresh-progress');
+    const progressBar = document.getElementById('component-refresh-progress-bar');
+    
+    if (progressEl) {
+        const percentage = Math.round((current / total) * 100);
+        progressEl.textContent = `Processing ${current} of ${total} (${percentage}%)`;
+    }
+    
+    if (progressBar) {
+        const percentage = (current / total) * 100;
+        progressBar.style.width = percentage + '%';
+    }
+}
+
+// Hide component refresh overlay
+function hideComponentRefreshOverlay() {
+    const overlay = document.getElementById('component-refresh-overlay');
+    if (overlay) {
+        overlay.remove();
+    }
+}
+
+// Update last updated timestamp
+function updateLastUpdatedTime() {
+    const timestampEl = document.getElementById('last-updated-timestamp');
+    if (timestampEl) {
+        const now = new Date();
+        const dateString = now.toLocaleDateString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            timeZone: 'Asia/Kolkata'
+        });
+        const timeString = now.toLocaleTimeString('en-IN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: true,
+            timeZone: 'Asia/Kolkata'
+        });
+        timestampEl.textContent = `${dateString}, ${timeString} IST`;
     }
 }
 
@@ -1088,10 +1303,78 @@ function updateSelectedComponents() {
 async function generateExplorerDashboard() {
     if (selectedComponents.length === 0) return;
     
-    console.log('Generating dashboard for:', selectedComponents);
+    console.log('🔄 Generating dashboard for:', selectedComponents);
     
     try {
-        // Call Flask API with selected components
+        // Check if auto-refresh is enabled (default: OFF for now until we fix the issue)
+        const autoRefreshEnabled = localStorage.getItem('autoRefreshEnabled') === 'true';
+        
+        if (autoRefreshEnabled) {
+            console.log('✅ Auto-refresh is ON - fetching fresh data for selected components...');
+            
+            // Show loading overlay
+            showComponentRefreshOverlay(selectedComponents.length);
+            
+            // Refresh selected components first (fetch fresh data from IBM)
+            const refreshResponse = await fetch('/api/refresh-components', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    components: selectedComponents,
+                    include_soe: true
+                })
+            });
+            
+            if (refreshResponse.ok) {
+                const refreshData = await refreshResponse.json();
+                const refreshId = refreshData.refresh_id;
+                console.log('✅ Refresh started with ID:', refreshId);
+                
+                // Poll for completion
+                let completed = false;
+                let attempts = 0;
+                const maxAttempts = 60; // 60 seconds max
+                
+                while (!completed && attempts < maxAttempts) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    attempts++;
+                    
+                    try {
+                        const statusResponse = await fetch(`/api/refresh-status/${refreshId}`);
+                        if (statusResponse.ok) {
+                            const status = await statusResponse.json();
+                            
+                            // Update progress
+                            updateComponentRefreshProgress(status.progress || 0, status.total || selectedComponents.length);
+                            
+                            if (status.status === 'completed') {
+                                completed = true;
+                                console.log('✅ Fresh data fetched successfully!');
+                                break;
+                            } else if (status.status === 'error') {
+                                console.warn('⚠️ Refresh failed, using cached data');
+                                break;
+                            }
+                        }
+                    } catch (pollError) {
+                        console.warn('Status poll error:', pollError);
+                    }
+                }
+                
+                // Hide loading overlay and update timestamp
+                hideComponentRefreshOverlay();
+                updateLastUpdatedTime();
+            } else {
+                console.warn('⚠️ Refresh request failed, using cached data');
+                hideComponentRefreshOverlay();
+            }
+        } else {
+            console.log('⚙️ Auto-refresh is OFF - using cached data');
+        }
+        
+        // Now fetch and display the dashboard with fresh/cached data
         const response = await fetch('/api/explorer/data', {
             method: 'POST',
             headers: {
@@ -1109,6 +1392,29 @@ async function generateExplorerDashboard() {
         const data = await response.json();
         console.log('Received data:', data);
         
+        // Update timestamp with last fetch time from database
+        if (data.lastFetchTime) {
+            const timestampEl = document.getElementById('last-updated-timestamp');
+            if (timestampEl) {
+                // Parse the date and format it with date and time in IST
+                const fetchDate = new Date(data.lastFetchTime);
+                const dateString = fetchDate.toLocaleDateString('en-IN', {
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric',
+                    timeZone: 'Asia/Kolkata'
+                });
+                const timeString = fetchDate.toLocaleTimeString('en-IN', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: true,
+                    timeZone: 'Asia/Kolkata'
+                });
+                timestampEl.textContent = `${dateString}, ${timeString} IST`;
+            }
+        }
+        
         // Check if data has any content
         const hasData = data && data.summary && Object.keys(data.summary).length > 0;
         
@@ -1116,6 +1422,18 @@ async function generateExplorerDashboard() {
             console.error('No data in response:', data);
             alert('No data available for selected components.\n\nPlease click "🔄 Fetch Latest Data" button first to collect defect data for all components.');
             return;
+        }
+        
+        // Update header subtitle with selected components
+        const subtitleEl = document.getElementById('selectedComponentsDisplay');
+        if (subtitleEl) {
+            if (selectedComponents.length === 1) {
+                subtitleEl.textContent = selectedComponents[0];
+            } else if (selectedComponents.length <= 3) {
+                subtitleEl.textContent = selectedComponents.join(', ');
+            } else {
+                subtitleEl.textContent = `${selectedComponents.length} components selected`;
+            }
         }
         
         // Hide component selector, show dashboard
@@ -1191,8 +1509,14 @@ async function generateExplorerDashboard() {
         }
         
     } catch (error) {
-        console.error('Error generating explorer dashboard:', error);
-        alert('Error loading dashboard data. Please try again.');
+        console.error('❌ Error generating explorer dashboard:', error);
+        console.error('Error details:', error.message);
+        console.error('Error stack:', error.stack);
+        
+        // Hide any loading overlays
+        hideComponentRefreshOverlay();
+        
+        alert(`Error loading dashboard data: ${error.message}\n\nPlease check the console for details.`);
     }
 }
 
@@ -2031,8 +2355,48 @@ async function refreshSelectedComponents() {
     }
 }
 
+// Toggle auto-refresh setting
+function toggleAutoRefresh(checkbox) {
+    const enabled = checkbox.checked;
+    localStorage.setItem('autoRefreshEnabled', enabled ? 'true' : 'false');
+    
+    const statusEl = document.getElementById('autoRefreshStatus');
+    if (statusEl) {
+        statusEl.textContent = enabled ? 'ON' : 'OFF';
+        statusEl.style.color = enabled ? '#00d4aa' : '#8899a6';
+    }
+    
+    console.log(`⚙️ Auto-refresh ${enabled ? 'enabled' : 'disabled'}`);
+    
+    if (enabled) {
+        alert('✅ Auto-refresh enabled!\n\nThe dashboard will automatically fetch fresh data when you reload the page.');
+    } else {
+        alert('⚙️ Auto-refresh disabled.\n\nThe dashboard will load faster using cached data. You can still manually refresh components using the refresh button.');
+    }
+}
+
+// Initialize auto-refresh toggle on page load
+function initializeAutoRefreshToggle() {
+    const toggle = document.getElementById('autoRefreshToggle');
+    const statusEl = document.getElementById('autoRefreshStatus');
+    
+    if (toggle && statusEl) {
+        // Check current setting (default: enabled)
+        const isEnabled = localStorage.getItem('autoRefreshEnabled') !== 'false';
+        toggle.checked = isEnabled;
+        statusEl.textContent = isEnabled ? 'ON' : 'OFF';
+        statusEl.style.color = isEnabled ? '#00d4aa' : '#8899a6';
+        
+        console.log(`⚙️ Auto-refresh initialized: ${isEnabled ? 'ON' : 'OFF'}`);
+    }
+}
+
 // Initialize component explorer on page load (no tabs, direct access)
 document.addEventListener('DOMContentLoaded', () => {
+    // Initialize auto-refresh toggle
+    initializeAutoRefreshToggle();
+    
+    // Initialize component explorer
     const grid = document.getElementById('componentGrid');
     if (grid && (!grid.children || grid.children.length === 0)) {
         initializeComponentExplorer();

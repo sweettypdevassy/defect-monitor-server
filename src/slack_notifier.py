@@ -47,6 +47,10 @@ class SlackNotifier:
         """
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
         
+        # Get data source and fetch timestamp from results
+        data_source = results.get("data_source", "unknown")
+        fetch_timestamp = results.get("fetch_timestamp", timestamp)
+        
         # Get components with untriaged defects
         components_data = results.get("components", {})
         total_untriaged = results.get("total_untriaged", 0)
@@ -178,7 +182,9 @@ class SlackNotifier:
         if self.dashboard_url:
             message += f"\n\n📊 View Dashboard: {self.dashboard_url}"
         
-        message += f"\n\nLast checked: {timestamp}"
+        # Add data source indicator at the end
+        data_indicator = "🔄 Fresh Data" if data_source == "fresh" else "📦 Cached Data"
+        message += f"\n\n{data_indicator} | Last Updated: {fetch_timestamp}"
         
         # Send to Slack using simple format (Workflow Builder compatible)
         payload = {"message": message}
@@ -191,13 +197,20 @@ class SlackNotifier:
         """Send notification when no untriaged defects found (Chrome extension format)"""
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
         
+        # Get data source and fetch timestamp from results
+        data_source = results.get("data_source", "unknown")
+        fetch_timestamp = results.get("fetch_timestamp", timestamp)
+        
         # Get list of components checked
         components = list(results.get("components", {}).keys())
         component_list = ", ".join(components) if components else "all components"
         
+        # Add data source indicator
+        data_indicator = "🔄 Fresh Data" if data_source == "fresh" else "📦 Cached Data"
+        
         message = f"✅ No Untriaged Defects\n\n"
         message += f"Great job! There are currently no untriaged defects for {component_list}.\n\n"
-        message += f"Last checked: {timestamp}"
+        message += f"{data_indicator} | Last Updated: {fetch_timestamp}"
         
         payload = {"message": message}
         

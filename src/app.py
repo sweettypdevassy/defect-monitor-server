@@ -960,6 +960,10 @@ def api_explorer_data():
         if not components_data or not components_data.get("components"):
             return jsonify({"error": "No data available for selected components"}), 404
         
+        # Get the last fetch timestamp from the database
+        latest_snapshot = database.get_latest_all_components_snapshot(selected_components)
+        last_fetch_time = latest_snapshot.get("created_at") if latest_snapshot else None
+        
         # Get latest data for each component to calculate summary
         latest_data = {}
         for comp_name, comp_history in components_data["components"].items():
@@ -1058,7 +1062,8 @@ def api_explorer_data():
                     "untriaged": 0
                 }
             },
-            "soeTriageDefects": filtered_soe
+            "soeTriageDefects": filtered_soe,
+            "lastFetchTime": last_fetch_time
         }
         
         return jsonify(dashboard_data)

@@ -947,31 +947,24 @@ class DefectDatabase:
                 0  # Not necessarily monitored
             ))
             
-            # Also update daily_snapshots if it exists (for monitored components)
+            # Always update daily_snapshots for monitored components (for fallback cache)
+            # This ensures fresh data is available when authentication fails
             cursor.execute("""
-                SELECT COUNT(*) FROM daily_snapshots WHERE date = ? AND component = ?
-            """, (date, component))
-            
-            if cursor.fetchone()[0] > 0:
-                # Component exists in daily_snapshots, update it
-                cursor.execute("""
-                    INSERT OR REPLACE INTO daily_snapshots
-                    (date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    date,
-                    component,
-                    data.get("total", 0),
-                    data.get("untriaged", 0),
-                    data.get("test_bugs", 0),
-                    data.get("product_bugs", 0),
-                    data.get("infra_bugs", 0),
-                    json.dumps(data),
-                    created_at
-                ))
-                logger.info(f"✅ Updated both all_components_snapshots and daily_snapshots for {component}")
-            else:
-                logger.info(f"✅ Updated all_components_snapshots for {component}")
+                INSERT OR REPLACE INTO daily_snapshots
+                (date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, data, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                date,
+                component,
+                data.get("total", 0),
+                data.get("untriaged", 0),
+                data.get("test_bugs", 0),
+                data.get("product_bugs", 0),
+                data.get("infra_bugs", 0),
+                json.dumps(data),
+                created_at
+            ))
+            logger.info(f"✅ Updated both all_components_snapshots and daily_snapshots for {component}")
             
             conn.commit()
             conn.close()
@@ -1079,18 +1072,23 @@ class DefectDatabase:
             
             if component_names:
                 placeholders = ','.join('?' * len(component_names))
+                # Get the most recent created_at timestamp for the selected components
                 query = f"""
-                    SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs
+                    SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, created_at
                     FROM all_components_snapshots
-                    WHERE date = (SELECT MAX(date) FROM all_components_snapshots)
-                    AND component IN ({placeholders})
+                    WHERE component IN ({placeholders})
+                    AND created_at = (
+                        SELECT MAX(created_at)
+                        FROM all_components_snapshots
+                        WHERE component IN ({placeholders})
+                    )
                 """
-                cursor.execute(query, component_names)
+                cursor.execute(query, component_names + component_names)
             else:
                 cursor.execute("""
-                    SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs
+                    SELECT date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, created_at
                     FROM all_components_snapshots
-                    WHERE date = (SELECT MAX(date) FROM all_components_snapshots)
+                    WHERE created_at = (SELECT MAX(created_at) FROM all_components_snapshots)
                 """)
             
             rows = cursor.fetchall()
@@ -1099,13 +1097,17 @@ class DefectDatabase:
             if not rows:
                 return None
             
+            # Get the most recent created_at from the selected components
+            most_recent_created_at = max(row[7] for row in rows)
+            
             snapshot = {
                 "date": rows[0][0],
+                "created_at": most_recent_created_at,  # Use most recent created_at from selected components
                 "components": {}
             }
             
             for row in rows:
-                date, component, total, untriaged, test_bugs, product_bugs, infra_bugs = row
+                date, component, total, untriaged, test_bugs, product_bugs, infra_bugs, created_at = row
                 snapshot["components"][component] = {
                     "total": total,
                     "untriaged": untriaged,

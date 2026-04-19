@@ -9,6 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 import pytz
 from cache_cleaner import clean_chrome_cache
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -356,15 +357,16 @@ class DefectScheduler:
             logger.info(f"   Data ready for team notifications")
             logger.info("=" * 60)
             
-            # Send fetch completion notification
-            try:
-                self.slack_notifier.send_fetch_completion_notification(
-                    num_components=summary['successful'],
-                    total_defects=total_defects,
-                    total_untriaged=total_untriaged
-                )
-            except Exception as notify_error:
-                logger.error(f"Error sending fetch completion notification: {notify_error}")
+            # Fetch completion notification disabled - teams get their own notifications
+            # This was causing confusion with duplicate notifications
+            # try:
+            #     self.slack_notifier.send_fetch_completion_notification(
+            #         num_components=summary['successful'],
+            #         total_defects=total_defects,
+            #         total_untriaged=total_untriaged
+            #     )
+            # except Exception as notify_error:
+            #     logger.error(f"Error sending fetch completion notification: {notify_error}")
             
         except Exception as e:
             logger.error(f"❌ Error in background fetch: {e}")
@@ -796,16 +798,124 @@ class DefectScheduler:
                 logger.warning(f"No valid component names for team {team_name}")
                 return
             
-            # Try to get cached data from daily background fetch (13:24)
-            logger.info(f"📦 Retrieving cached data for {len(component_names)} components...")
-            results = self.database.get_team_snapshot_from_cache(component_names)
+            # Try to fetch fresh data from IBM first with 5-minute timeout
+            logger.info(f"🔄 Fetching fresh data from IBM for {len(component_names)} components (5-minute timeout)...")
+            data_source = "fresh"
+            fetch_timestamp = None
             
-            if not results:
-                # Fallback: If no cached data, fetch fresh data
-                logger.warning(f"⚠️  No cached data found for {team_name}, fetching fresh data...")
-                results = self.defect_checker.check_monitored_components(team_components, self.database, team_name=team_name)
-            else:
-                logger.info(f"✅ Using cached data from daily background fetch (13:24)")
+            def fetch_fresh_data():
+                """Inner function to fetch fresh data (for timeout wrapper)"""
+                # Authenticate first
+                if not self.defect_checker.authenticator.authenticate_jazz_rtc():
+                    raise Exception("Authentication failed")
+                
+                # Fetch fresh data from IBM for each component
+                results = {
+                    "timestamp": datetime.now().isoformat(),
+                    "components": {},
+                    "soe_triage": None,
+                    "total_defects": 0,
+                    "total_untriaged": 0,
+                    "monitored_components": []
+                }
+                
+                for comp_config in team_components:
+                    component_name = comp_config.get("name")
+                    if not component_name:
+                        continue
+                    
+                    logger.info(f"🔄 Fetching {component_name} from IBM...")
+                    defects = self.defect_checker.fetch_defects_for_component(component_name)
+                    parsed_data = self.defect_checker.parse_defects(defects, component_name, collect_triaged=False)
+                    
+                    # Store in database
+                    self.database.store_component_snapshot_single(component_name, parsed_data)
+                    
+                    # Add to results
+                    results["components"][component_name] = parsed_data
+                    results["total_defects"] += parsed_data.get("total", 0)
+                    results["total_untriaged"] += parsed_data.get("untriaged", 0)
+                    results["monitored_components"].append(component_name)
+                
+                # Fetch SOE Triage defects and filter by monitored components
+                logger.info("🔄 Fetching SOE Triage defects from IBM...")
+                try:
+                    # Re-authenticate before SOE fetch (different endpoint may need fresh auth)
+                    if not self.defect_checker.authenticator.authenticate_jazz_rtc():
+                        logger.warning("⚠️ Re-authentication failed for SOE fetch")
+                        raise Exception("SOE authentication failed")
+                    
+                    all_soe_defects = self.defect_checker.fetch_soe_triage_defects()
+                    
+                    # Filter SOE defects by monitored components
+                    filtered_soe = []
+                    for defect in all_soe_defects:
+                        functional_area = defect.get("functionalArea", "") or defect.get("functional_area", "")
+                        filed_against = defect.get("filedAgainst", "") or defect.get("filed_against", "")
+                        
+                        # Check if defect matches any monitored component
+                        for comp_name in component_names:
+                            if (comp_name.lower() in functional_area.lower() or
+                                comp_name.lower() in filed_against.lower()):
+                                filtered_soe.append(defect)
+                                break
+                    
+                    results["soe_triage"] = {"defects": filtered_soe}
+                    logger.info(f"✅ SOE Triage: {len(filtered_soe)} defects (filtered from {len(all_soe_defects)} total)")
+                except Exception as soe_error:
+                    logger.warning(f"⚠️ SOE Triage fetch failed: {soe_error}, continuing without SOE data")
+                    results["soe_triage"] = {"defects": []}
+                
+                return results
+            
+            try:
+                # Execute with 5-minute (300 seconds) timeout
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(fetch_fresh_data)
+                    try:
+                        results = future.result(timeout=300)  # 5 minutes
+                        fetch_timestamp = datetime.now().strftime("%d %b %Y, %I:%M:%S %p IST")
+                        logger.info(f"✅ Fresh data fetched successfully from IBM at {fetch_timestamp}")
+                    except FuturesTimeoutError:
+                        logger.warning("⏱️ Fresh data fetch timed out after 5 minutes")
+                        raise Exception("Fetch timeout after 5 minutes")
+                
+            except Exception as e:
+                # Fallback: If fresh fetch fails, use cached data
+                logger.warning(f"⚠️  Fresh data fetch from IBM failed: {e}")
+                logger.info(f"📦 Falling back to cached data...")
+                
+                try:
+                    results = self.defect_checker.check_monitored_components(team_components, self.database, team_name=team_name)
+                    data_source = "cached"
+                    
+                    # Get timestamp from cached data
+                    latest_snapshot = self.database.get_latest_all_components_snapshot(component_names)
+                    if latest_snapshot and latest_snapshot.get("created_at"):
+                        created_at_str = latest_snapshot["created_at"]
+                        # Handle both ISO format and standard format
+                        try:
+                            if 'T' in created_at_str:
+                                # ISO format: 2026-04-18T22:43:13.528616
+                                created_at = datetime.fromisoformat(created_at_str.split('.')[0])
+                            else:
+                                # Standard format: 2026-04-18 22:43:13
+                                created_at = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+                            fetch_timestamp = created_at.strftime("%d %b %Y, %I:%M:%S %p IST")
+                        except Exception as parse_error:
+                            logger.warning(f"Could not parse timestamp: {parse_error}")
+                            fetch_timestamp = created_at_str
+                    else:
+                        fetch_timestamp = "Unknown"
+                    
+                    logger.info(f"✅ Using cached data from {fetch_timestamp}")
+                except Exception as cache_error:
+                    logger.error(f"❌ Failed to get cached data: {cache_error}")
+                    raise Exception(f"Unable to fetch fresh data and no cached data available")
+            
+            # Add data source and timestamp to results
+            results['data_source'] = data_source
+            results['fetch_timestamp'] = fetch_timestamp
             
             # Store check history
             self.database.store_check_history(results, True)
