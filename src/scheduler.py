@@ -357,16 +357,15 @@ class DefectScheduler:
             logger.info(f"   Data ready for team notifications")
             logger.info("=" * 60)
             
-            # Fetch completion notification disabled - teams get their own notifications
-            # This was causing confusion with duplicate notifications
-            # try:
-            #     self.slack_notifier.send_fetch_completion_notification(
-            #         num_components=summary['successful'],
-            #         total_defects=total_defects,
-            #         total_untriaged=total_untriaged
-            #     )
-            # except Exception as notify_error:
-            #     logger.error(f"Error sending fetch completion notification: {notify_error}")
+            # Send fetch completion notification
+            try:
+                self.slack_notifier.send_fetch_completion_notification(
+                    num_components=summary['successful'],
+                    total_defects=total_defects,
+                    total_untriaged=total_untriaged
+                )
+            except Exception as notify_error:
+                logger.error(f"Error sending fetch completion notification: {notify_error}")
             
         except Exception as e:
             logger.error(f"❌ Error in background fetch: {e}")
