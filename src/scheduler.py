@@ -868,16 +868,16 @@ class DefectScheduler:
                 return results
             
             try:
-                # Execute with 5-minute (300 seconds) timeout
+                # Execute with 10-minute (600 seconds) timeout
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(fetch_fresh_data)
                     try:
-                        results = future.result(timeout=300)  # 5 minutes
+                        results = future.result(timeout=600)  # 10 minutes
                         fetch_timestamp = datetime.now().strftime("%d %b %Y, %I:%M:%S %p IST")
                         logger.info(f"✅ Fresh data fetched successfully from IBM at {fetch_timestamp}")
                     except FuturesTimeoutError:
-                        logger.warning("⏱️ Fresh data fetch timed out after 5 minutes")
-                        raise Exception("Fetch timeout after 5 minutes")
+                        logger.warning("⏱️ Fresh data fetch timed out after 10 minutes")
+                        raise Exception("Fetch timeout after 10 minutes")
                 
             except Exception as e:
                 # Fallback: If fresh fetch fails, use cached data
