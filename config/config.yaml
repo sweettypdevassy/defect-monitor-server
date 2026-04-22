@@ -24,7 +24,7 @@ ibm:
 
 # Slack Configuration
 slack:
-  webhook_url: "https://hooks.slack.com/triggers/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"  # Your Slack webhook URL
+  webhook_url: "https://hooks.slack.com/triggers/E27SFGS2W/105167857/a76a4f2c6667"  # Your Slack webhook URL
   channel: "#defect-notifications"  # Default channel
   username: "Defect Monitor Bot"
   icon_emoji: ":bug:"
