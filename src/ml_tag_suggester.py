@@ -1068,10 +1068,12 @@ class MLTagSuggester:
             # Convert sparse to dense for SVM compatibility
             text_tfidf_dense = text_tfidf.toarray()
             
-            # PURE ML: No rules, let the model decide based on training data
-            predicted_label = self.model.named_steps['classifier'].predict(text_tfidf_dense)[0]
-            predicted_tag = self.reverse_tag_mapping[predicted_label]
+            # Get probabilities for all classes
             probabilities = self.model.named_steps['classifier'].predict_proba(text_tfidf_dense)[0]
+            
+            # Select the tag with the HIGHEST probability (most intuitive behavior)
+            predicted_label = int(np.argmax(probabilities))
+            predicted_tag = self.reverse_tag_mapping[predicted_label]
             confidence = float(probabilities[predicted_label])
             
             # Generate reasoning based on ML prediction
