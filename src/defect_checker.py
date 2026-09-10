@@ -1402,6 +1402,8 @@ class DefectChecker:
                                         # Update defect with fetched details
                                         defect['description'] = details['description']
                                         defect['created'] = details.get('created', '')
+                                        defect['state'] = details.get('state', '')  # Update state for cancelled detection
+                                        defect['last_modified'] = details.get('modified', '')  # Update last modified for aged defect detection
                                         fetched_count += 1
                                     else:
                                         failed_count += 1
