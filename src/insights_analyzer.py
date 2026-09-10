@@ -137,84 +137,79 @@ class InsightsAnalyzer:
         return duplicates
     
     def _find_rare_defects(self, component_name: str, defects: List[Dict]) -> List[Dict]:
-        """Find defects that occurred only once (or never) and are older than 30 days"""
+        """Find defects whose last occurrence is older than 30 days (regardless of total occurrence count)"""
         rare_defects = []
         
-        logger.debug(f"🔍 Checking {len(defects)} defects for rare defects (number_builds<=1, age>=30 days)")
+        logger.debug(f"🔍 Checking {len(defects)} defects for aged defects (last_occurrence >= 30 days)")
         
         try:
-            # Find defects with 0 or 1 build AND older than 30 days
-            # This identifies defects that appeared once (or never) and never recurred
+            # Find defects where last occurrence is older than 30 days
+            # This identifies defects that haven't recurred in 30+ days, regardless of how many times they occurred before
             for defect in defects:
                 defect_id = defect['id']
-                # Use the number_builds field (calculated from buildsReported array)
                 build_count = defect.get('number_builds', 0)
-                creation_date = defect.get('creation_date')
                 
-                logger.debug(f"  Checking defect {defect_id}: number_builds={build_count}, creation_date={creation_date}")
+                # Get last modified date (last occurrence) - prefer this over creation_date
+                last_occurrence_date = defect.get('last_modified_date') or defect.get('last_modified') or defect.get('creation_date')
                 
-                # MUST have 0 or 1 build (not 2+)
-                if build_count <= 1:
-                    logger.debug(f"    → Defect {defect_id} has {build_count} build(s), checking age...")
-                    # Skip if no creation date (can't determine age)
-                    if not creation_date:
-                        logger.warning(f"    → Defect {defect_id} has no creation_date, skipping")
-                        continue
+                logger.debug(f"  Checking defect {defect_id}: number_builds={build_count}, last_modified_date={last_occurrence_date}")
+                
+                # Skip if no date available
+                if not last_occurrence_date:
+                    logger.warning(f"    → Defect {defect_id} has no last occurrence date, skipping")
+                    continue
+                
+                age_info = "old defect"
+                days_old = None
+                
+                # Parse last occurrence date
+                try:
+                    # Try different date formats
+                    for fmt in ['%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d']:
+                        try:
+                            # Clean up the date string
+                            clean_date = str(last_occurrence_date).split('+')[0].split('.')[0]
+                            if 'T' not in clean_date:
+                                clean_date = last_occurrence_date  # It's just a date
+                            
+                            last_occurrence_dt = datetime.strptime(clean_date, fmt.replace('.%fZ', '').replace('Z', ''))
+                            days_old = (datetime.now() - last_occurrence_dt).days
+                            
+                            # Calculate age info
+                            if days_old < 7:
+                                age_info = f"{days_old} days ago"
+                            elif days_old < 30:
+                                weeks_old = days_old // 7
+                                age_info = f"{weeks_old} week{'s' if weeks_old > 1 else ''} ago"
+                            else:
+                                months_old = days_old // 30
+                                age_info = f"{months_old} month{'s' if months_old > 1 else ''} ago"
+                            break
+                        except ValueError:
+                            continue
+                except Exception as e:
+                    logger.debug(f"Could not parse last occurrence date for {defect_id}: {e}")
+                    continue
+                
+                # Include if last occurrence is older than 30 days (regardless of build count)
+                if days_old is not None and days_old >= 30:
+                    logger.info(f"✅ Found aged defect: {defect_id} (last occurrence {days_old} days ago, {build_count} total builds)")
+                    rare_defects.append({
+                        'id': defect_id,
+                        'summary': defect['summary'],
+                        'tag': defect.get('tags', ['unknown'])[0] if defect.get('tags') else 'unknown',
+                        'build_count': build_count,
+                        'age_info': age_info,
+                        'days_old': days_old,
+                        'last_occurrence': last_occurrence_date
+                    })
                     
-                    age_info = "old defect"
-                    days_old = None
-                    
-                    # Parse creation date
-                    try:
-                        # Try different date formats
-                        for fmt in ['%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d']:
-                            try:
-                                # Clean up the date string
-                                clean_date = creation_date.split('+')[0].split('.')[0]
-                                if 'T' not in clean_date:
-                                    clean_date = creation_date  # It's just a date
-                                
-                                created_dt = datetime.strptime(clean_date, fmt.replace('.%fZ', '').replace('Z', ''))
-                                days_old = (datetime.now() - created_dt).days
-                                
-                                # Calculate age info
-                                if days_old < 7:
-                                    age_info = f"{days_old} days old"
-                                elif days_old < 30:
-                                    weeks_old = days_old // 7
-                                    age_info = f"{weeks_old} week{'s' if weeks_old > 1 else ''} old"
-                                else:
-                                    months_old = days_old // 30
-                                    age_info = f"{months_old} month{'s' if months_old > 1 else ''} old"
-                                break
-                            except ValueError:
-                                continue
-                    except Exception as e:
-                        logger.debug(f"Could not parse creation date for {defect_id}: {e}")
-                        continue
-                    
-                    # Only include if defect is older than 14 days (2 weeks)
-                    if days_old is not None and days_old >= 30:
-                        logger.info(f"✅ Found rare defect: {defect_id} ({days_old} days old, {build_count} build)")
-                        rare_defects.append({
-                            'id': defect_id,
-                            'summary': defect['summary'],
-                            'tag': defect.get('tags', ['unknown'])[0] if defect.get('tags') else 'unknown',
-                            'build_count': build_count,
-                            'age_info': age_info,
-                            'days_old': days_old,
-                            'creation_date': creation_date
-                        })
-                        
-                        logger.info(f"    → Added to rare defects: {defect_id}, created: {creation_date}, age: {days_old} days")
-                    else:
-                        logger.info(f"    → Skipping {defect_id}: only {days_old} days old (needs >= 30)")
+                    logger.info(f"    → Added to aged defects: {defect_id}, last occurrence: {last_occurrence_date}, age: {days_old} days")
                 else:
-                    if build_count > 1:
-                        logger.debug(f"  Skipping {defect_id}: {build_count} builds (needs exactly 1)")
+                    logger.debug(f"  Skipping {defect_id}: last occurrence only {days_old} days ago (needs >= 30)")
         
         except Exception as e:
-            logger.error(f"Error finding rare defects: {e}")
+            logger.error(f"Error finding aged defects: {e}")
         
         return rare_defects
     

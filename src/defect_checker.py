@@ -597,6 +597,10 @@ class DefectChecker:
                     except:
                         formatted_date = creation_date
                 
+                # Last Modified Date (for tracking last occurrence)
+                # This represents when the defect was last updated/occurred
+                last_modified = item.get('dc:modified', item.get('dcterms:modified', item.get('modified', item.get('lastModified'))))
+                
                 # Owner - can be object or string
                 owner_raw = (item.get('rtc_cm:ownedBy') or
                            item.get('ownedBy') or
@@ -641,6 +645,8 @@ class DefectChecker:
                     "functionalArea": functional_area,
                     "filedAgainst": filed_against,
                     "creationDate": formatted_date,
+                    "creation_date": creation_date,  # Raw ISO format for database
+                    "last_modified": last_modified,  # Last modified date for tracking last occurrence
                     "ownedBy": owned_by,
                     "description": description,
                     "tags": tags,  # Add tags for triage detection

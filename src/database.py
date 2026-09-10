@@ -123,6 +123,13 @@ class DefectDatabase:
             except Exception:
                 pass  # Column already exists
             
+            # Add last_modified_date column if it doesn't exist (for tracking last occurrence)
+            try:
+                cursor.execute("ALTER TABLE defect_descriptions ADD COLUMN last_modified_date TEXT")
+                logger.info("Added last_modified_date column to defect_descriptions table")
+            except Exception:
+                pass  # Column already exists
+            
             # Create index for faster lookups
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_defect_component
@@ -217,13 +224,16 @@ class DefectDatabase:
                 # Get creation date if available
                 creation_date = defect.get('created') or defect.get('creationDate') or defect.get('creation_date')
                 
+                # Get last modified date if available (for tracking last occurrence)
+                last_modified_date = defect.get('last_modified') or defect.get('lastModified') or defect.get('modified')
+                
                 # Get number_builds if available
                 number_builds = defect.get('number_builds', defect.get('numberBuilds', 0))
                 
                 cursor.execute("""
                     INSERT OR REPLACE INTO defect_descriptions
-                    (defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, fetched_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date, fetched_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     defect_id,
                     defect.get('description', ''),
@@ -234,6 +244,7 @@ class DefectDatabase:
                     tags_str,
                     creation_date,
                     number_builds,
+                    last_modified_date,
                     timestamp,
                     timestamp
                 ))
@@ -259,14 +270,14 @@ class DefectDatabase:
             placeholders = ','.join('?' * len(defect_ids))
             
             cursor.execute(f"""
-                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date
+                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, last_modified_date
                 FROM defect_descriptions
                 WHERE defect_id IN ({placeholders})
             """, defect_ids)
             
             results = {}
             for row in cursor.fetchall():
-                defect_id, description, summary, component, functional_area, state, tags_str, creation_date = row
+                defect_id, description, summary, component, functional_area, state, tags_str, creation_date, last_modified_date = row
                 results[defect_id] = {
                     'id': defect_id,
                     'description': description or '',
@@ -275,7 +286,8 @@ class DefectDatabase:
                     'functionalArea': functional_area or '',
                     'state': state or '',
                     'triageTags': json.loads(tags_str) if tags_str else [],
-                    'creation_date': creation_date or ''
+                    'creation_date': creation_date or '',
+                    'last_modified_date': last_modified_date or creation_date or ''
                 }
             
             conn.close()
