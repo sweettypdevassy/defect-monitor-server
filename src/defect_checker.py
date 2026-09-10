@@ -651,6 +651,7 @@ class DefectChecker:
                     "description": description,
                     "tags": tags,  # Add tags for triage detection
                     "triageTags": tags,  # Also add as triageTags for compatibility
+                    "state": item.get('rtc_cm:state', {}).get('rdf:resource', '') if isinstance(item.get('rtc_cm:state'), dict) else '',  # State for filtering cancelled defects
                     "source": "SOE_TRIAGE"
                 })
                 

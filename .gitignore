@@ -32,6 +32,12 @@ wheels/
 *.sqlite3
 data/*.db
 
+# ML Model files (keep backups but ignore main model and cache)
+data/tag_model.pkl
+data/training_data_cache.pkl
+# Keep model backups for version control
+!data/model_backups/
+
 # Logs
 logs/*.log
 *.log
@@ -54,3 +60,12 @@ Thumbs.db
 *.tmp
 *.bak
 *.cache
+
+# IMPORTANT: Sensitive configuration files
+# DO NOT commit these files with real credentials
+config/config.yaml
+config/*.backup.*
+extracted_cookies.txt
+
+# Keep example config
+!config/config.yaml.example

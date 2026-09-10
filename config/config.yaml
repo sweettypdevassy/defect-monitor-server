@@ -1,36 +1,65 @@
-# Defect Monitor Server Configuration
-
-# IBM Configuration
 ibm:
-  # Authentication Method: "password" or "cookies"
-  # Use "cookies" for MFA-enabled accounts (recommended for VM deployment)
-  auth_method: "cookies"  # Change to "cookies" when using cookie-based auth
-  
-  # For cookie-based authentication (MFA-compatible)
-  # Extract cookies from your browser after logging in
-  # Browser DevTools (F12) → Application → Cookies → libh-proxy1.fyre.ibm.com
-  cookies:
-    LtpaToken2: ""
-    mod_auth_openidc_session: ""
-    # mod_auth_openidc_state_k0ewdm7l4qb6GXBXHNNx8Uu-vOo: "eyJhbGciOiAiZGlyIiwgImVuYyI6ICJBMjU2R0NNIn0..qfUDlh73JEgTL97R.FrkBGFDAcC7pGzAfzFHYlioJ3V8D1ZJM3HDYim6r-4MkFPxrWPjYkmGek0dHshKtBYvVhgVEWNpnQnrr5W2tYHgOfNtpLU38iujOEvuNxMH7BEUdGtIf2h04B61z-5hI6KfZvH6GEpymKW75h6LK4j7riqRcBj8JeLBGxmYQmTBPVgmVt2UbD7MFEq8bZ7ukLXm4zV_la7Lok2rGoKqQW_s2kt8Urb-GOFULtUN-GzDYVGJW3t7jVXZ8NCQComXyGt6SYv9fm-Klrda1BrCITdQmlqf1Mw.Og2UFWKm4wy8HszT2cWFHg"
-  
-  # For password-based authentication (only works without MFA)
-  username: "" # Your IBM w3id email
-  password: ""  # Your IBM w3id password
-  
+  auth_method: password  # Using username/password authentication
+  username: "username"
+  password: "password"
   build_break_url: "https://libh-proxy1.fyre.ibm.com/buildBreakReport"
   soe_triage_url: "https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.runSavedQuery&id=_fJ834OXIEemRB5enIPF1MQ"
-  session_timeout: 28800  # 8 hours in seconds (for cookie-based auth)
 
-# Slack Configuration
 slack:
   webhook_url: "https://hooks.slack.com/triggers/E27SFGS2W/105167857/a76a4f2c6667"  # Your Slack webhook URL
   channel: "#defect-notifications"  # Default channel
   username: "Defect Monitor Bot"
   icon_emoji: ":bug:"
 
-# All Available Components (51 Liberty components)
-# These will be fetched and tracked in the background
+# ML Training Configuration
+ml_training:
+  # Components to use for training the ML model
+  # If empty or not specified, will use all_components
+  # For testing: Use 3 components with good data
+  training_components: 
+  - name: "JAX-RS"
+  - name: "JPA"
+  - name: "Batch"
+  - name: "JCA"
+  - name: "Bean Validation"
+  - name: "Classloading"
+  - name: "MicroProfile REST Client"
+  - name: "AdminCenter"
+
+
+  # Weekly retraining schedule
+  retrain_day: "monday"  # Day of week for retraining
+  retrain_time: "14:57"
+# Team-based monitoring (NEW!)
+# Each team has its own components, schedule, and Slack webhook
+teams:
+  - name: "Team 1"
+    components:
+      - name: "JCA"
+        notify: true
+    check_time: "10:00"  # Different time for this team
+    skip_weekends: false
+    webhook_url: "https://hooks.slack.com/triggers/E27SFGS2W/10746/83682f8"
+    slack_channel: "#messaging-defects"
+    weekly_dashboard_day: "monday"   # Send weekly dashboard every Friday
+    weekly_dashboard_time: "10:15"   # At 5:00 PM IST
+
+  - name: "Team 2"
+    components:
+      - name: "JPA"
+        notify: true
+      - name: "JCA"
+        notify: true
+      - name: "Bean Validation"
+        notify: true
+    check_time: "10:30"  # Different time for this team
+    skip_weekends: false
+    webhook_url: "https://hooks.slack.com/triggers/E27SFGS2W/1067857/a76ab2c6e903667"
+    slack_channel: "#messaging-defects"
+    weekly_dashboard_day: "monday"   # Send weekly dashboard every Friday
+    weekly_dashboard_time: "10:35"   # At 6:57 PM IST
+
+ 
 all_components:
   - AdminCenter
   - App Client
@@ -84,81 +113,53 @@ all_components:
   - WebSphere Automation
   - z/OS
 
-# Monitored Components (Only these will send Slack notifications)
-monitored_components:
-  - name: "JCA"
-    notify: true
-    slack_channel: "#jca-defects"
-  - name: "JPA"
-    notify: true
-    slack_channel: "#jpa-defects"
-  - name: "Spring Boot"
-    notify: true
-    slack_channel: "#springboot-defects"
-
-
-# Schedule Configuration
 schedule:
-  daily_check_time: "10:00"  # 24-hour format (IST)
-  weekly_dashboard_day: "monday"  # Day of week
-  weekly_dashboard_time: "11:00"  # 24-hour format (IST)
-  all_components_fetch_time: "09:00"  # Fetch all 51 components daily
+  # Legacy daily check (used if teams not configured)
+ # daily_check_time: "10:00"  # HH:MM format (IST)
+ # skip_weekends: true  # NEW: Skip Saturday and Sunday
+  
+  # Dashboard and background tasks
+  #weekly_dashboard_day: "thursday"
+  #weekly_dashboard_time: "17:25"
+  all_components_fetch_time: "14:59"  # Background fetch for dashboard (optimized - no ML/duplicate detection)
+  
+  # Proactive 2FA authentication schedule
+  # Authenticate at these times to keep session fresh and avoid mid-task logoffs
+  proactive_auth_times:
+    - "07:30"  # Morning authentication (before 8 AM fetch)
+    - "19:28"  # Evening authentication (keeps session fresh for night)
+  
+  # For testing: specify components to fetch (if empty, fetches all_components)
+  test_components:
+  - name: "JPA"
+  - name: "Batch"
+  - name: "JCA"
+  - name: "Bean Validation"
+  - name: "Classloading"
+  - name: "MicroProfile REST Client"
+  - name: "JAX-RS"
+  
   timezone: "Asia/Kolkata"
 
-# Dashboard Configuration
 dashboard:
   port: 5000
   host: "0.0.0.0"
-  secret_key: "change-this-to-random-secret-key"  # Change in production
-  retention_days: 90  # Keep data for 90 days
-  enable_component_explorer: true  # Enable component explorer feature
+  public_url: "https://defectmonitoring.dev.fyre.ibm.com/dashboard"
+  secret_key: "change-this-to-random-secret-key"
+  retention_days: 90
+  enable_component_explorer: true
 
-# Database Configuration
 database:
-  type: "sqlite"  # sqlite or postgresql
-  path: "data/defects.db"  # For SQLite
-  # For PostgreSQL, uncomment and configure:
-  # host: "localhost"
-  # port: 5432
-  # name: "defect_monitor"
-  # user: "defect_user"
-  # password: "secure_password"
+  type: "sqlite"
+  path: "data/defects.db"
 
-# Logging Configuration
-logging:
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-  file: "logs/defect_monitor.log"
-  max_bytes: 10485760  # 10MB
-  backup_count: 5
-
-# Notification Rules
-notifications:
-  send_on_no_defects: false  # Send notification even if no defects found
-  group_by_component: true
-  include_soe_defects: true
-  max_defects_per_notification: 50
-  only_notify_monitored: true  # Only send notifications for monitored_components
-
-# SOE Triage Configuration
-soe_triage:
-  enabled: true
-  project_area: "WS-CD"  # WebSphere Liberty project area
-  query_overdue_days: 7  # Defects overdue by more than 7 days
-  max_results: 100
-
-# Health Check
-health_check:
-  enabled: true
-  interval: 300  # 5 minutes
-  alert_on_failure: true
-
-# Feature Flags
+# Feature flags
 features:
-  all_components_tracking: true  # Track all 51 components in background
-  component_explorer: true  # Enable component explorer in dashboard
-  soe_triage_tracking: true  # Track SOE Triage overdue defects
-  weekly_dashboard: true  # Generate weekly dashboard
-  selective_notifications: true  # Only notify for monitored components
+  all_components_tracking: true  # Enable background fetch for all components (for dashboard)
 
-# Made with Bob
+# Notification settings
+notifications:
+  only_notify_monitored: true  # Only send notifications for monitored components
 
+logging:
+  level: "INFO"
