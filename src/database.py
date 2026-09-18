@@ -312,7 +312,7 @@ class DefectDatabase:
             cursor = conn.cursor()
             
             cursor.execute("""
-                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds
+                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date
                 FROM defect_descriptions
                 WHERE component = ?
             """, (component,))
@@ -320,7 +320,7 @@ class DefectDatabase:
             results = []
             filtered_count = 0
             for row in cursor.fetchall():
-                defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds = row
+                defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds, last_modified_date = row
                 
                 # Filter out cancelled/closed/resolved defects (unless include_cancelled=True)
                 if not include_cancelled and state and isinstance(state, str):
@@ -340,7 +340,8 @@ class DefectDatabase:
                     'state': state or '',
                     'triageTags': json.loads(tags_str) if tags_str else [],
                     'creation_date': creation_date or '',
-                    'number_builds': number_builds or 0
+                    'number_builds': number_builds or 0,
+                    'last_modified_date': last_modified_date or ''
                 })
             
             conn.close()

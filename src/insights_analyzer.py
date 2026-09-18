@@ -149,14 +149,16 @@ class InsightsAnalyzer:
                 defect_id = defect['id']
                 build_count = defect.get('number_builds', 0)
                 
-                # Get last modified date (last occurrence) - prefer this over creation_date
-                last_occurrence_date = defect.get('last_modified_date') or defect.get('last_modified') or defect.get('creation_date')
+                # Get last modified date (last occurrence) - ONLY use last_modified_date/last_modified.
+                # Do NOT fall back to creation_date: a defect created years ago but occurring recently
+                # would be wrongly flagged as aged if we used its creation date.
+                last_occurrence_date = defect.get('last_modified_date') or defect.get('last_modified')
                 
                 logger.debug(f"  Checking defect {defect_id}: number_builds={build_count}, last_modified_date={last_occurrence_date}")
                 
-                # Skip if no date available
+                # Skip if no last-occurrence date available (don't use creation_date as proxy)
                 if not last_occurrence_date:
-                    logger.warning(f"    → Defect {defect_id} has no last occurrence date, skipping")
+                    logger.debug(f"    → Defect {defect_id} has no last_modified_date, skipping (cannot determine last occurrence)")
                     continue
                 
                 age_info = "old defect"
