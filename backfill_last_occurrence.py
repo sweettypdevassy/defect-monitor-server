@@ -29,15 +29,19 @@ def extract_last_occurrence(reported_builds: str) -> str:
     return ''
 
 conn = sqlite3.connect(DB_PATH)
-cursor = conn.cursor()
 
-# Get all snapshot rows
-cursor.execute("SELECT component, data FROM all_components_snapshots")
-rows = cursor.fetchall()
+# Get only the latest snapshot per component (avoid scanning old rows)
+cursor = conn.execute("""
+    SELECT component, data FROM all_components_snapshots
+    WHERE created_at = (SELECT MAX(created_at) FROM all_components_snapshots WHERE component = all_components_snapshots.component)
+""")
 
 updates = {}  # defect_id -> last_occurrence_date
+row_count = 0
 
-for component, data_json in rows:
+for component, data_json in cursor:
+    row_count += 1
+    print(f"\r  Scanning component {row_count}: {component}...", end='', flush=True)
     try:
         data = json.loads(data_json)
     except Exception:
@@ -51,19 +55,20 @@ for component, data_json in rows:
         if reported_builds:
             last_occ = extract_last_occurrence(reported_builds)
             if last_occ:
-                # Keep the most recent across all snapshot rows
                 if defect_id not in updates or last_occ > updates[defect_id]:
                     updates[defect_id] = last_occ
 
-print(f"Found {len(updates)} defects with last_occurrence_date to backfill")
+print(f"\nScanned {row_count} components, found {len(updates)} defects with last_occurrence_date")
 
+# Write updates
 updated = 0
+write_cur = conn.cursor()
 for defect_id, last_occ in updates.items():
-    cursor.execute(
+    write_cur.execute(
         "UPDATE defect_descriptions SET last_occurrence_date = ? WHERE defect_id = ? AND (last_occurrence_date IS NULL OR last_occurrence_date = '')",
         (last_occ, defect_id)
     )
-    if cursor.rowcount > 0:
+    if write_cur.rowcount > 0:
         updated += 1
 
 conn.commit()
@@ -75,4 +80,6 @@ conn2 = sqlite3.connect(DB_PATH)
 row = conn2.execute("SELECT defect_id, creation_date, last_occurrence_date FROM defect_descriptions WHERE defect_id='300248'").fetchone()
 if row:
     print(f"Defect 300248: creation={row[1]}, last_occurrence={row[2]}")
+else:
+    print("Defect 300248 not found in defect_descriptions")
 conn2.close()
