@@ -60,14 +60,19 @@ class InsightsAnalyzer:
             state = defect.get('state', '')
             is_cancelled = False
             
-            if state and isinstance(state, str) and 'jazz/oslc/workflows' in state:
+            if state and isinstance(state, str):
                 state_lower = state.lower()
-                # Only filter if state URL explicitly contains .canceled or .closed or .resolved
-                if '.canceled' in state_lower or '.cancelled' in state_lower or '.closed' in state_lower or '.resolved' in state_lower:
+                if 'jazz/oslc/workflows' in state_lower:
+                    # RTC state URL — check path segment
+                    if '.canceled' in state_lower or '.cancelled' in state_lower or '.closed' in state_lower or '.resolved' in state_lower:
+                        is_cancelled = True
+                elif state_lower == 'canceled':
+                    # Plain text state stored in cache
                     is_cancelled = True
+                if is_cancelled:
                     cancelled_count += 1
-                    logger.debug(f"Filtering out cancelled defect {defect.get('id')} (state: {state[:100]}...)")
-            
+                    logger.debug(f"Filtering out cancelled defect {defect.get('id')} (state: {state[:100]})")
+
             if not is_cancelled:
                 active_defects.append(defect)
         
