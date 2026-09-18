@@ -30,20 +30,28 @@ def extract_last_occurrence(reported_builds: str) -> str:
 
 conn = sqlite3.connect(DB_PATH)
 
-# Get only the latest snapshot per component (avoid scanning old rows)
-cursor = conn.execute("""
-    SELECT component, data FROM all_components_snapshots
-    WHERE created_at = (SELECT MAX(created_at) FROM all_components_snapshots WHERE component = all_components_snapshots.component)
-""")
+# Step 1: get the list of distinct components and their latest created_at
+print("Fetching component list...", flush=True)
+comp_rows = conn.execute("""
+    SELECT component, MAX(created_at) as latest
+    FROM all_components_snapshots
+    GROUP BY component
+""").fetchall()
+print(f"Found {len(comp_rows)} components to scan", flush=True)
 
 updates = {}  # defect_id -> last_occurrence_date
-row_count = 0
 
-for component, data_json in cursor:
-    row_count += 1
-    print(f"\r  Scanning component {row_count}: {component}...", end='', flush=True)
+# Step 2: fetch each component's latest snapshot individually
+for i, (component, latest_at) in enumerate(comp_rows, 1):
+    print(f"  [{i}/{len(comp_rows)}] {component}...", flush=True)
+    row = conn.execute(
+        "SELECT data FROM all_components_snapshots WHERE component = ? AND created_at = ?",
+        (component, latest_at)
+    ).fetchone()
+    if not row:
+        continue
     try:
-        data = json.loads(data_json)
+        data = json.loads(row[0])
     except Exception:
         continue
     defects = data.get('all_defects', data.get('defects', []))
@@ -58,9 +66,9 @@ for component, data_json in cursor:
                 if defect_id not in updates or last_occ > updates[defect_id]:
                     updates[defect_id] = last_occ
 
-print(f"\nScanned {row_count} components, found {len(updates)} defects with last_occurrence_date")
+print(f"\nFound {len(updates)} defects with last_occurrence_date to backfill", flush=True)
 
-# Write updates
+# Step 3: write updates
 updated = 0
 write_cur = conn.cursor()
 for defect_id, last_occ in updates.items():
@@ -75,11 +83,16 @@ conn.commit()
 conn.close()
 print(f"Backfilled {updated} rows in defect_descriptions")
 
-# Verify the specific defect
+# Verify
 conn2 = sqlite3.connect(DB_PATH)
 row = conn2.execute("SELECT defect_id, creation_date, last_occurrence_date FROM defect_descriptions WHERE defect_id='300248'").fetchone()
 if row:
     print(f"Defect 300248: creation={row[1]}, last_occurrence={row[2]}")
 else:
     print("Defect 300248 not found in defect_descriptions")
+
+# Show summary
+total = conn2.execute("SELECT COUNT(*) FROM defect_descriptions").fetchone()[0]
+with_occ = conn2.execute("SELECT COUNT(*) FROM defect_descriptions WHERE last_occurrence_date != '' AND last_occurrence_date IS NOT NULL").fetchone()[0]
+print(f"Total defect_descriptions: {total}, with last_occurrence_date: {with_occ}")
 conn2.close()
