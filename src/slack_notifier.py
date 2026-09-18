@@ -319,11 +319,13 @@ class SlackNotifier:
                         age_info = defect.get("age_info", "old defect")
                         creation_date = defect.get("creation_date", "")
                         build_count = defect.get("build_count", 1)
-                        
+                        defect_id = defect['id']
+                        defect_url = f"https://libh-proxy1.fyre.ibm.com/cognitive/defectAnalysis.html?defect={defect_id}"
+
                         creation_info = f" - Created: {creation_date}" if creation_date else ""
                         build_info = f" - {build_count} build{'s' if build_count > 1 else ''}"
-                        
-                        component_message += f"  • Defect #{defect['id']} ({age_info}{creation_info}{build_info})\n"
+
+                        component_message += f"  • <{defect_url}|Defect #{defect_id}> ({age_info}{creation_info}{build_info})\n"
                 
                 # Only add component section if it has insights
                 if has_insights:
@@ -347,11 +349,13 @@ class SlackNotifier:
                     age_info = defect.get("age_info", "old defect")
                     creation_date = defect.get("creation_date", "")
                     build_count = defect.get("build_count", 1)
-                    
+                    defect_id = defect['id']
+                    defect_url = f"https://libh-proxy1.fyre.ibm.com/cognitive/defectAnalysis.html?defect={defect_id}"
+
                     creation_info = f" - Created: {creation_date}" if creation_date else ""
                     build_info = f" - {build_count} build{'s' if build_count > 1 else ''}"
-                    
-                    message += f"• Defect #{defect['id']} ({age_info}{creation_info}{build_info})\n"
+
+                    message += f"• <{defect_url}|Defect #{defect_id}> ({age_info}{creation_info}{build_info})\n"
         
         # If no insights at all
         if not by_component and not insights.get("duplicates") and not insights.get("rare_defects"):
