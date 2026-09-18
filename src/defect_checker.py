@@ -118,22 +118,29 @@ class DefectChecker:
                     logger.error(f"Unexpected response format for {component}")
                     return None
                 
-                # Extract creation_date and number_builds from API response
+                # Extract creation_date, last_occurrence_date and number_builds from API response
                 # Note: creation_date will be updated with accurate Jazz/RTC data during tag fetching
                 for defect in defects:
+                    reported_builds = defect.get('reported_builds', '')
+
                     # Only extract from reported_builds as fallback if not already set
                     # Jazz/RTC API provides more accurate dc:created field
                     if 'creation_date' not in defect or not defect.get('creation_date'):
-                        reported_builds = defect.get('reported_builds', '')
                         if reported_builds:
                             creation_date = self.extract_creation_date_from_builds(reported_builds)
                             defect['creation_date'] = creation_date
                         else:
                             defect['creation_date'] = ''
-                    
+
+                    # Extract the LAST (most recent) build date as last_occurrence_date
+                    # This is the true "last seen" date, distinct from RTC last-modified
+                    if reported_builds and not reported_builds.startswith('[No longer available'):
+                        defect['last_occurrence_date'] = self.extract_last_occurrence_from_builds(reported_builds)
+                    else:
+                        defect['last_occurrence_date'] = ''
+
                     # Use number_builds from API if available, otherwise calculate from reported_builds
                     if 'number_builds' not in defect:
-                        reported_builds = defect.get('reported_builds', '')
                         if reported_builds and not reported_builds.startswith('[No longer available'):
                             # Count comma-separated build entries
                             build_count = len([b.strip() for b in reported_builds.split(',') if b.strip() and 'Build' in b])
@@ -167,39 +174,69 @@ class DefectChecker:
     
     def extract_creation_date_from_builds(self, reported_builds: str) -> str:
         """
-        Extract creation date from the first build in reported_builds string.
+        Extract creation date from the FIRST build in reported_builds string.
         Example: "[Liberty z/OS Platform Build 20231208-1940, ...]" -> "2023-12-08"
         Example: "[No longer available was:2026-02-12 22:09 ...]" -> "2026-02-12"
         """
         import re
         from datetime import datetime
-        
+
         if not reported_builds:
             return ''
-        
+
         # First try to match YYYY-MM-DD format (with hyphens)
         match = re.search(r'(\d{4}-\d{2}-\d{2})', reported_builds)
         if match:
             date_str = match.group(1)
             try:
-                # Validate it's a real date
                 dt = datetime.strptime(date_str, '%Y-%m-%d')
                 return dt.strftime('%Y-%m-%d')
             except ValueError:
                 pass
-        
+
         # Fall back to YYYYMMDD format (8 consecutive digits)
         match = re.search(r'(\d{8})', reported_builds)
         if match:
             date_str = match.group(1)
             try:
-                # Parse YYYYMMDD format
                 dt = datetime.strptime(date_str, '%Y%m%d')
-                # Return in ISO format
                 return dt.strftime('%Y-%m-%d')
             except ValueError:
                 pass
-        
+
+        return ''
+
+    def extract_last_occurrence_from_builds(self, reported_builds: str) -> str:
+        """
+        Extract the LAST (most recent) occurrence date from reported_builds string.
+        Build entries are comma-separated; finds the maximum date across all entries.
+        Example: "Build 20230101-1234, Build 20260914-5678" -> "2026-09-14"
+        """
+        import re
+        from datetime import datetime
+
+        if not reported_builds:
+            return ''
+
+        candidates = []
+
+        # Collect all YYYYMMDD occurrences
+        for m in re.findall(r'\b(\d{8})\b', reported_builds):
+            try:
+                candidates.append(datetime.strptime(m, '%Y%m%d'))
+            except ValueError:
+                pass
+
+        # Collect all YYYY-MM-DD occurrences
+        for m in re.findall(r'(\d{4}-\d{2}-\d{2})', reported_builds):
+            try:
+                candidates.append(datetime.strptime(m, '%Y-%m-%d'))
+            except ValueError:
+                pass
+
+        if candidates:
+            return max(candidates).strftime('%Y-%m-%d')
+
         return ''
     
     def is_defect_cancelled(self, state_url: str) -> bool:

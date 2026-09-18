@@ -129,6 +129,13 @@ class DefectDatabase:
                 logger.info("Added last_modified_date column to defect_descriptions table")
             except Exception:
                 pass  # Column already exists
+
+            # Add last_occurrence_date column if it doesn't exist (last build run date from reported_builds)
+            try:
+                cursor.execute("ALTER TABLE defect_descriptions ADD COLUMN last_occurrence_date TEXT")
+                logger.info("Added last_occurrence_date column to defect_descriptions table")
+            except Exception:
+                pass  # Column already exists
             
             # Create index for faster lookups
             cursor.execute("""
@@ -224,16 +231,19 @@ class DefectDatabase:
                 # Get creation date if available
                 creation_date = defect.get('created') or defect.get('creationDate') or defect.get('creation_date')
                 
-                # Get last modified date if available (for tracking last occurrence)
+                # Get last modified date if available (RTC work item last edited)
                 last_modified_date = defect.get('last_modified') or defect.get('lastModified') or defect.get('modified')
-                
+
+                # Get last occurrence date - the most recent build run date (from reported_builds parsing)
+                last_occurrence_date = defect.get('last_occurrence_date') or ''
+
                 # Get number_builds if available
                 number_builds = defect.get('number_builds', defect.get('numberBuilds', 0))
                 
                 cursor.execute("""
                     INSERT OR REPLACE INTO defect_descriptions
-                    (defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date, fetched_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date, last_occurrence_date, fetched_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     defect_id,
                     defect.get('description', ''),
@@ -245,6 +255,7 @@ class DefectDatabase:
                     creation_date,
                     number_builds,
                     last_modified_date,
+                    last_occurrence_date,
                     timestamp,
                     timestamp
                 ))
@@ -312,7 +323,7 @@ class DefectDatabase:
             cursor = conn.cursor()
             
             cursor.execute("""
-                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date
+                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date, last_occurrence_date
                 FROM defect_descriptions
                 WHERE component = ?
             """, (component,))
@@ -320,7 +331,7 @@ class DefectDatabase:
             results = []
             filtered_count = 0
             for row in cursor.fetchall():
-                defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds, last_modified_date = row
+                defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds, last_modified_date, last_occurrence_date = row
                 
                 # Filter out cancelled/closed/resolved defects (unless include_cancelled=True)
                 if not include_cancelled and state and isinstance(state, str):
@@ -341,7 +352,8 @@ class DefectDatabase:
                     'triageTags': json.loads(tags_str) if tags_str else [],
                     'creation_date': creation_date or '',
                     'number_builds': number_builds or 0,
-                    'last_modified_date': last_modified_date or ''
+                    'last_modified_date': last_modified_date or '',
+                    'last_occurrence_date': last_occurrence_date or ''
                 })
             
             conn.close()

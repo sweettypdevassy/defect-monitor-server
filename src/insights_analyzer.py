@@ -149,16 +149,22 @@ class InsightsAnalyzer:
                 defect_id = defect['id']
                 build_count = defect.get('number_builds', 0)
                 
-                # Get last modified date (last occurrence) - ONLY use last_modified_date/last_modified.
-                # Do NOT fall back to creation_date: a defect created years ago but occurring recently
-                # would be wrongly flagged as aged if we used its creation date.
-                last_occurrence_date = defect.get('last_modified_date') or defect.get('last_modified')
-                
-                logger.debug(f"  Checking defect {defect_id}: number_builds={build_count}, last_modified_date={last_occurrence_date}")
-                
-                # Skip if no last-occurrence date available (don't use creation_date as proxy)
+                # Determine the true last occurrence date using a reliable priority chain:
+                # 1. last_occurrence_date — extracted from the last entry in reported_builds (most accurate)
+                # 2. last_modified_date   — RTC work item last-edited (fallback if builds not parsed)
+                # 3. creation_date        — last resort; only valid if defect truly occurred once at creation
+                last_occurrence_date = (
+                    defect.get('last_occurrence_date') or
+                    defect.get('last_modified_date') or
+                    defect.get('last_modified') or
+                    defect.get('creation_date')
+                )
+
+                logger.debug(f"  Checking defect {defect_id}: number_builds={build_count}, last_occurrence_date={last_occurrence_date}")
+
+                # Skip if no date at all
                 if not last_occurrence_date:
-                    logger.debug(f"    → Defect {defect_id} has no last_modified_date, skipping (cannot determine last occurrence)")
+                    logger.debug(f"    → Defect {defect_id} has no date available, skipping")
                     continue
                 
                 age_info = "old defect"
