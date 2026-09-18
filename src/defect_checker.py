@@ -132,9 +132,10 @@ class DefectChecker:
                         else:
                             defect['creation_date'] = ''
 
-                    # Extract the LAST (most recent) build date as last_occurrence_date
-                    # This is the true "last seen" date, distinct from RTC last-modified
-                    if reported_builds and not reported_builds.startswith('[No longer available'):
+                    # Extract the LAST (most recent) build date as last_occurrence_date.
+                    # Always extract regardless of "[No longer available" prefix —
+                    # those entries still contain YYYYMMDD dates (e.g. "was:20260912-1234")
+                    if reported_builds:
                         defect['last_occurrence_date'] = self.extract_last_occurrence_from_builds(reported_builds)
                     else:
                         defect['last_occurrence_date'] = ''
