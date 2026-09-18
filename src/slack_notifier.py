@@ -317,16 +317,11 @@ class SlackNotifier:
                     has_insights = True
                     for defect in comp_insights["rare_defects"][:15]:  # Show up to 15 rare defects per component
                         age_info = defect.get("age_info", "old defect")
-                        creation_date = defect.get("creation_date", "")
                         build_count = defect.get("build_count", 1)
                         defect_id = defect['id']
-                        defect_url = f"https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id={defect_id}"
-
-                        creation_info = f" - Created: {creation_date}" if creation_date else ""
                         build_info = f" - {build_count} build{'s' if build_count > 1 else ''}"
+                        component_message += f"  • Defect #{defect_id} ({age_info}{build_info})\n"
 
-                        component_message += f"  • Defect #{defect_id} ({age_info}{creation_info}{build_info}) {defect_url}\n"
-                
                 # Only add component section if it has insights
                 if has_insights:
                     message += f"\n📦 {component}:\n"
@@ -347,21 +342,17 @@ class SlackNotifier:
             if insights.get("rare_defects") and len(insights["rare_defects"]) > 0:
                 for defect in insights["rare_defects"][:15]:  # Show up to 15 rare defects
                     age_info = defect.get("age_info", "old defect")
-                    creation_date = defect.get("creation_date", "")
                     build_count = defect.get("build_count", 1)
                     defect_id = defect['id']
-                    defect_url = f"https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id={defect_id}"
-
-                    creation_info = f" - Created: {creation_date}" if creation_date else ""
                     build_info = f" - {build_count} build{'s' if build_count > 1 else ''}"
+                    message += f"• Defect #{defect_id} ({age_info}{build_info})\n"
 
-                    message += f"• Defect #{defect_id} ({age_info}{creation_info}{build_info}) {defect_url}\n"
-        
         # If no insights at all
         if not by_component and not insights.get("duplicates") and not insights.get("rare_defects"):
             message += "• No specific insights available\n"
-        
-        message += "\n"
+
+        # Single RTC link at the bottom for easy access to all defects
+        message += "\n🔗 View defects in RTC: https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD\n"
         return message
     
     def send_error_notification(self, error_message: str):
