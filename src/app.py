@@ -670,14 +670,21 @@ def api_component_insights(component_name):
             
             logger.info(f"📊 Found {len(all_defects_list)} defects in snapshot for number_builds update")
             for defect in all_defects_list:
-                current_defects_map[str(defect['id'])] = defect.get('number_builds', 0)
+                current_defects_map[str(defect['id'])] = {
+                    'number_builds': defect.get('number_builds', 0),
+                    'last_occurrence_date': defect.get('last_occurrence_date', ''),
+                }
             
-            # Update number_builds in cached defects with current values
+            # Update number_builds and last_occurrence_date in cached defects with current snapshot values
             updated_count = 0
             for defect in cached_defects:
                 defect_id = str(defect['id'])
                 if defect_id in current_defects_map:
-                    defect['number_builds'] = current_defects_map[defect_id]
+                    snap = current_defects_map[defect_id]
+                    defect['number_builds'] = snap['number_builds']
+                    # Only overwrite last_occurrence_date from snapshot if DB value is empty
+                    if not defect.get('last_occurrence_date') and snap['last_occurrence_date']:
+                        defect['last_occurrence_date'] = snap['last_occurrence_date']
                     updated_count += 1
                     logger.debug(f"Updated number_builds for {defect_id}: {defect['number_builds']}")
             
