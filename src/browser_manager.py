@@ -739,14 +739,24 @@ class BrowserManager:
 
     async def fetch_component_data_json(self, component: str, timeout: int = 45000) -> Optional[dict]:
         """
-        Fetch the Build Break Report data for a component from the cognitive portal.
+        Fetch the Build Break Report data for a component.
 
-        Uses a dedicated long-lived fetch page (_fetch_page) that stays on the
-        cognitive portal between fetches. Navigating this page to each component
-        URL is a React SPA route-change (fast, reuses Redux state) — not a cold start.
+        From the browser Network tab screenshot, the actual API calls are:
+          - whoami/          → 200 (identity)
+          - navigation.json  → 200
+          - version/         → 200
+          - proxy_links.json → 200
+          - ab1252d0         → 204  ← short hash URLs, service worker cache hits
+          - ab1252d0         → 204  ← these serve the actual defect data from SW cache
 
-        URL: https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html
-               ?functionalArea=<component>&tab=Build%2BBreak+Report
+        The page renders fine in Chrome because Chrome has a service worker
+        registered with cached data. Our headless browser has a fresh profile,
+        so service worker calls return 204 (empty) and React renders nothing.
+
+        FIX: Unregister the service worker on page load so the app falls back
+        to direct fetch calls, which will hit the real backend. Then intercept
+        ALL fetch responses (including the short hash-named ones) and capture
+        whichever one contains defect data.
         """
         if not self.context:
             logger.error("Browser not started — cannot fetch component data")
@@ -761,60 +771,105 @@ class BrowserManager:
             f"?functionalArea={encoded}&tab=Build%2BBreak+Report"
         )
 
-        # Get (or recover) the dedicated fetch page
         page = await self._ensure_fetch_page()
         if page is None:
             logger.error("Cannot get fetch page — aborting")
             return None
 
-        captured_json = [None]
+        captured_data = [None]   # will hold (url, body_text) of the first interesting response
 
         async def handle_response(response):
-            """Capture any JSON data API response (future-proof fast path)."""
             try:
                 url = response.url
                 status = response.status
                 ct = response.headers.get("content-type", "")
+
+                # Log every non-static response
                 if not any(url.endswith(ext) for ext in (".js", ".css", ".png", ".ico", ".woff", ".ttf", ".map")):
-                    logger.info(f"   📡 [{status}] {url}  ({ct[:50]})")
-                if captured_json[0] is None and status == 200 and "json" in ct.lower():
-                    if any(kw in url.lower() for kw in ["buildbreak", "defect", "untriaged"]):
-                        try:
-                            captured_json[0] = await response.json()
-                            logger.info(f"✅ Intercepted JSON for {component}: {url}")
-                        except Exception:
-                            pass
+                    logger.info(f"   📡 [{status}] {url}  ct={ct[:40]}")
+
+                # Capture any 200 response that returns JSON and might have defect data
+                if captured_data[0] is None and status == 200:
+                    try:
+                        if "json" in ct.lower():
+                            body = await response.json()
+                            # Check if it contains defect-like data
+                            body_str = str(body)
+                            if any(kw in body_str for kw in ["defect", "Defect", "RTC", "untriaged", "summary", "functionalArea"]):
+                                captured_data[0] = body
+                                logger.info(f"✅ Captured data from: {url}")
+                        elif "text" in ct.lower() or ct == "":
+                            # Some APIs return text/plain
+                            text = await response.text()
+                            if text and any(kw in text for kw in ["RTC:", "defect", "untriaged"]):
+                                import json as _json
+                                try:
+                                    captured_data[0] = _json.loads(text)
+                                    logger.info(f"✅ Captured text/json from: {url}")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
         page.on("response", handle_response)
 
         try:
+            # Unregister service workers BEFORE navigating so the app fetches
+            # directly from the backend instead of from SW cache.
+            logger.info(f"🔧 Unregistering service workers...")
+            try:
+                await page.evaluate("""
+                    async () => {
+                        if ('serviceWorker' in navigator) {
+                            const regs = await navigator.serviceWorker.getRegistrations();
+                            for (const reg of regs) { await reg.unregister(); }
+                            return regs.length;
+                        }
+                        return 0;
+                    }
+                """)
+            except Exception:
+                pass
+
             logger.info(f"🌐 Navigating to {page_url}")
             try:
                 await page.goto(page_url, wait_until="domcontentloaded", timeout=timeout)
             except Exception as nav_err:
                 logger.warning(f"Navigation warning for {component}: {nav_err}")
-                # If page crashed, clear it so _ensure_fetch_page recreates on next call
                 if "crash" in str(nav_err).lower():
                     self._fetch_page = None
                     return None
 
-            # ── Poll for React content (up to 30s) ───────────────────────────
+            # Unregister again after load (in case SW re-registered during load)
+            try:
+                await page.evaluate("""
+                    async () => {
+                        if ('serviceWorker' in navigator) {
+                            const regs = await navigator.serviceWorker.getRegistrations();
+                            for (const reg of regs) { await reg.unregister(); }
+                        }
+                    }
+                """)
+            except Exception:
+                pass
+
+            # Wait for React to render (up to 35s)
             content_appeared = False
             logger.info(f"   ⏳ Waiting for React to render...")
-            for _ in range(30):
+            for _ in range(35):
                 await _asyncio.sleep(1)
-                if captured_json[0] is not None:
+                if captured_data[0] is not None:
                     content_appeared = True
                     break
                 for sel in ("table tr td", "h2", "h3", "h4",
                             "[class*='defect']", "[class*='Defect']",
                             "[class*='report']", "[class*='Report']",
-                            "main", "#root > *"):
+                            "[class*='analysis']"):
                     try:
                         if await page.locator(sel).count() > 0:
-                            logger.info(f"   ✅ Content appeared: {sel!r}")
+                            logger.info(f"   ✅ Content: {sel!r}")
                             content_appeared = True
                             break
                     except Exception:
@@ -823,21 +878,20 @@ class BrowserManager:
                     break
 
             if not content_appeared:
-                logger.warning(f"   ⚠️  No content after 30s for {component}")
+                logger.warning(f"   ⚠️  No content after 35s for {component}")
 
             await _asyncio.sleep(2)
 
-            if captured_json[0] is not None:
-                return captured_json[0]
+            if captured_data[0] is not None:
+                return captured_data[0]
 
-            # ── Scrape the rendered DOM ───────────────────────────────────────
+            # Scrape DOM
             logger.info(f"🔍 Scraping DOM for {component}...")
             try:
                 dom_data = await page.evaluate("""
                     () => {
                         const sections = [];
                         const allTableRows = [];
-
                         document.querySelectorAll('h1,h2,h3,h4,h5').forEach(h => {
                             const sec = { heading: h.textContent.trim(), rows: [] };
                             let el = h.nextElementSibling;
@@ -851,61 +905,55 @@ class BrowserManager:
                             }
                             if (sec.rows.length > 0) sections.push(sec);
                         });
-
                         document.querySelectorAll('table tr').forEach(row => {
                             const cells = Array.from(row.querySelectorAll('td,th'))
                                                .map(c => c.textContent.trim());
                             if (cells.length > 1) allTableRows.push(cells);
                         });
-
-                        const root = document.getElementById('root') || document.body;
+                        const appEl = document.getElementById('cognitive-app') || document.body;
                         return {
                             pageTitle: document.title,
+                            currentURL: window.location.href,
                             sections,
                             allTableRows,
                             rawText: document.body ? document.body.innerText.substring(0, 4000) : '',
-                            rootHTML: root ? root.innerHTML.substring(0, 3000) : '',
-                            bodyChildCount: document.body ? document.body.children.length : 0
+                            appHTML: appEl ? appEl.innerHTML.substring(0, 2000) : '',
                         };
                     }
                 """)
             except Exception as eval_err:
-                logger.error(f"DOM evaluate error for {component}: {eval_err}")
+                logger.error(f"DOM error for {component}: {eval_err}")
                 if "crash" in str(eval_err).lower() or "Target closed" in str(eval_err):
                     self._fetch_page = None
                 return None
 
             logger.info(
-                f"   📄 DOM: title='{dom_data.get('pageTitle')}', "
-                f"bodyChildren={dom_data.get('bodyChildCount')}, "
-                f"sections={len(dom_data.get('sections', []))}, "
-                f"tableRows={len(dom_data.get('allTableRows', []))}"
+                f"   📄 DOM: url={dom_data.get('currentURL','?')}, "
+                f"sections={len(dom_data.get('sections',[]))}, "
+                f"tableRows={len(dom_data.get('allTableRows',[]))}"
             )
-
             raw_text = dom_data.get('rawText', '').strip()
             if raw_text:
-                logger.info(f"   📝 Page text:\n{raw_text[:1200]}")
+                logger.info(f"   📝 Page text:\n{raw_text[:1500]}")
             else:
-                logger.warning(f"   ⚠️  Page body is EMPTY")
-                logger.info(f"   🔍 Root HTML: {dom_data.get('rootHTML', '')[:600]}")
+                logger.warning(f"   ⚠️  Page still empty after SW unregister")
+                logger.info(f"   🔍 App HTML: {dom_data.get('appHTML','')[:800]}")
 
             all_rows = dom_data.get('allTableRows', [])
             sections = dom_data.get('sections', [])
-
             if all_rows or sections:
                 return {
-                    "_dom_scraped": True,
-                    "sections": sections,
+                    "_dom_scraped": True, "sections": sections,
                     "allTableRows": all_rows,
                     "pageTitle": dom_data.get('pageTitle', ''),
                     "component": component
                 }
 
-            logger.warning(f"   ⚠️  No defect table data in DOM for {component}")
+            logger.warning(f"   ⚠️  No table data for {component}")
             return None
 
         except Exception as e:
-            logger.error(f"Error in fetch_component_data_json for {component}: {e}")
+            logger.error(f"Error fetching {component}: {e}")
             if "crash" in str(e).lower() or "Target closed" in str(e):
                 self._fetch_page = None
             return None
