@@ -35,6 +35,7 @@ class BrowserManager:
         self.password = None
         self.event_loop = None      # Persistent event loop — runs in _loop_thread
         self._loop_thread = None    # Dedicated background thread for the event loop
+        self._fetch_page = None     # Dedicated page kept alive on the portal for component fetches
         logger.info("🌐 Browser Manager initialized")
         self._start_background_loop()
 
@@ -557,6 +558,11 @@ class BrowserManager:
                         logger.info(f"💾 Saving all {len(all_cookies)} cookies for future use...")
                         save_cookies(all_cookies)
 
+                        # Create the dedicated fetch page NOW — while we're already on the
+                        # cognitive portal. This page stays alive and is reused for all
+                        # component fetches, so React never cold-starts.
+                        await self._ensure_fetch_page()
+
                         return True
                     except:
                         logger.warning("⏰ Timeout waiting for 2FA approval")
@@ -656,16 +662,53 @@ class BrowserManager:
             logger.error(traceback.format_exc())
             return False
     
+    async def _ensure_fetch_page(self) -> Optional["Page"]:
+        """
+        Return the dedicated fetch page, creating/recovering it if needed.
+        This page stays alive on the cognitive portal between component fetches
+        so React never cold-starts and always has its full session state.
+        """
+        # Check if existing fetch page is still alive and on the portal
+        if self._fetch_page is not None:
+            try:
+                url = self._fetch_page.url
+                if "libh-proxy1" in url and not self._fetch_page.is_closed():
+                    return self._fetch_page
+            except Exception:
+                pass
+            # Page crashed or closed — reset it
+            logger.info("🔄 Fetch page needs recovery — creating new one")
+            self._fetch_page = None
+
+        if not self.context:
+            return None
+
+        try:
+            # Create a new page and navigate to the portal list page
+            # (not a component page, so it loads fast and React mounts cleanly)
+            logger.info("📄 Creating dedicated fetch page on cognitive portal...")
+            self._fetch_page = await self.context.new_page()
+            await self._fetch_page.goto(
+                "https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaList.html",
+                wait_until="domcontentloaded",
+                timeout=20000
+            )
+            # Wait briefly for React to mount on the list page
+            await self._fetch_page.wait_for_timeout(3000)
+            logger.info(f"✅ Fetch page ready at: {self._fetch_page.url}")
+            return self._fetch_page
+        except Exception as e:
+            logger.error(f"Failed to create fetch page: {e}")
+            self._fetch_page = None
+            return None
+
     async def fetch_component_data_json(self, component: str, timeout: int = 45000) -> Optional[dict]:
         """
         Fetch the Build Break Report data for a component from the cognitive portal.
 
-        Uses the EXISTING authenticated page (pages[0]) — the same page that completed
-        2FA login and has the full cookie/session state loaded.  We navigate it to the
-        component URL, wait for React to render, scrape the DOM, then navigate back.
-
-        Using new_page() causes React to render nothing because the new tab does not
-        inherit the full SPA state (Redux store, in-memory auth tokens) of the main page.
+        Uses a dedicated long-lived fetch page (_fetch_page) that stays on the
+        cognitive portal between fetches. Navigating this page to each component
+        URL is a React SPA route-change (fast, reuses Redux state) — not a cold start.
 
         URL: https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html
                ?functionalArea=<component>&tab=Build%2BBreak+Report
@@ -683,12 +726,11 @@ class BrowserManager:
             f"?functionalArea={encoded}&tab=Build%2BBreak+Report"
         )
 
-        # Use the existing authenticated main page
-        pages = self.context.pages
-        if not pages:
-            logger.error("No pages in context — browser may not be started")
+        # Get (or recover) the dedicated fetch page
+        page = await self._ensure_fetch_page()
+        if page is None:
+            logger.error("Cannot get fetch page — aborting")
             return None
-        page = pages[0]
 
         captured_json = [None]
 
@@ -718,10 +760,12 @@ class BrowserManager:
                 await page.goto(page_url, wait_until="domcontentloaded", timeout=timeout)
             except Exception as nav_err:
                 logger.warning(f"Navigation warning for {component}: {nav_err}")
+                # If page crashed, clear it so _ensure_fetch_page recreates on next call
+                if "crash" in str(nav_err).lower():
+                    self._fetch_page = None
+                    return None
 
             # ── Poll for React content (up to 30s) ───────────────────────────
-            # React renders asynchronously after the network requests complete.
-            # We poll for visible DOM content rather than relying on networkidle.
             content_appeared = False
             logger.info(f"   ⏳ Waiting for React to render...")
             for _ in range(30):
@@ -746,49 +790,55 @@ class BrowserManager:
             if not content_appeared:
                 logger.warning(f"   ⚠️  No content after 30s for {component}")
 
-            await _asyncio.sleep(2)   # final settle
+            await _asyncio.sleep(2)
 
             if captured_json[0] is not None:
                 return captured_json[0]
 
             # ── Scrape the rendered DOM ───────────────────────────────────────
             logger.info(f"🔍 Scraping DOM for {component}...")
-            dom_data = await page.evaluate("""
-                () => {
-                    const sections = [];
-                    const allTableRows = [];
+            try:
+                dom_data = await page.evaluate("""
+                    () => {
+                        const sections = [];
+                        const allTableRows = [];
 
-                    document.querySelectorAll('h1,h2,h3,h4,h5').forEach(h => {
-                        const sec = { heading: h.textContent.trim(), rows: [] };
-                        let el = h.nextElementSibling;
-                        while (el && !['H1','H2','H3','H4','H5'].includes(el.tagName)) {
-                            el.querySelectorAll('tr').forEach(row => {
-                                const cells = Array.from(row.querySelectorAll('td,th'))
-                                                   .map(c => c.textContent.trim());
-                                if (cells.length > 0) sec.rows.push(cells);
-                            });
-                            el = el.nextElementSibling;
-                        }
-                        if (sec.rows.length > 0) sections.push(sec);
-                    });
+                        document.querySelectorAll('h1,h2,h3,h4,h5').forEach(h => {
+                            const sec = { heading: h.textContent.trim(), rows: [] };
+                            let el = h.nextElementSibling;
+                            while (el && !['H1','H2','H3','H4','H5'].includes(el.tagName)) {
+                                el.querySelectorAll('tr').forEach(row => {
+                                    const cells = Array.from(row.querySelectorAll('td,th'))
+                                                       .map(c => c.textContent.trim());
+                                    if (cells.length > 0) sec.rows.push(cells);
+                                });
+                                el = el.nextElementSibling;
+                            }
+                            if (sec.rows.length > 0) sections.push(sec);
+                        });
 
-                    document.querySelectorAll('table tr').forEach(row => {
-                        const cells = Array.from(row.querySelectorAll('td,th'))
-                                           .map(c => c.textContent.trim());
-                        if (cells.length > 1) allTableRows.push(cells);
-                    });
+                        document.querySelectorAll('table tr').forEach(row => {
+                            const cells = Array.from(row.querySelectorAll('td,th'))
+                                               .map(c => c.textContent.trim());
+                            if (cells.length > 1) allTableRows.push(cells);
+                        });
 
-                    const root = document.getElementById('root') || document.body;
-                    return {
-                        pageTitle: document.title,
-                        sections,
-                        allTableRows,
-                        rawText: document.body ? document.body.innerText.substring(0, 4000) : '',
-                        rootHTML: root ? root.innerHTML.substring(0, 3000) : '',
-                        bodyChildCount: document.body ? document.body.children.length : 0
-                    };
-                }
-            """)
+                        const root = document.getElementById('root') || document.body;
+                        return {
+                            pageTitle: document.title,
+                            sections,
+                            allTableRows,
+                            rawText: document.body ? document.body.innerText.substring(0, 4000) : '',
+                            rootHTML: root ? root.innerHTML.substring(0, 3000) : '',
+                            bodyChildCount: document.body ? document.body.children.length : 0
+                        };
+                    }
+                """)
+            except Exception as eval_err:
+                logger.error(f"DOM evaluate error for {component}: {eval_err}")
+                if "crash" in str(eval_err).lower() or "Target closed" in str(eval_err):
+                    self._fetch_page = None
+                return None
 
             logger.info(
                 f"   📄 DOM: title='{dom_data.get('pageTitle')}', "
@@ -821,9 +871,10 @@ class BrowserManager:
 
         except Exception as e:
             logger.error(f"Error in fetch_component_data_json for {component}: {e}")
+            if "crash" in str(e).lower() or "Target closed" in str(e):
+                self._fetch_page = None
             return None
         finally:
-            # Remove our response listener so it doesn't accumulate across components
             try:
                 page.remove_listener("response", handle_response)
             except Exception:
