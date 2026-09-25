@@ -151,14 +151,13 @@ class BrowserCookieAuthenticator:
                     logger.info(f"Retrying verification (attempt {attempt + 1}/{max_retries}) in {wait_time}s...")
                     time.sleep(wait_time)
                 
-                # Test with actual API call
-                test_url = f"https://{self.domain}/buildBreakReport/rest2/defects/buildbreak/fas"
+                # Test with page load from new cognitive portal
+                test_url = f"https://{self.domain}/cognitive/functionalAreaAnalysis.html?functionalArea=Messaging&tab=Build%2BBreak+Report"
                 response = session.get(
                     test_url,
-                    params={"fas": "Messaging"},  # Use a real component for testing
                     timeout=60,
                     verify=False,
-                    headers={'Accept': 'application/json'}
+                    headers={'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
                 )
                 
                 # Check if redirected to login
@@ -175,17 +174,20 @@ class BrowserCookieAuthenticator:
                         continue
                     return False
                 
-                # Check if we got valid response
+                # Check if we got valid HTML response
                 if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        if isinstance(data, (list, dict)):
-                            logger.info("✅ Session verified successfully")
-                            return True
-                    except ValueError:
-                        logger.warning("Response is not valid JSON")
+                    content = response.text
+                    if "functionalArea" in content or "Build Break" in content or "Liberty" in content:
+                        logger.info("✅ Session verified successfully")
+                        return True
+                    elif "login" in content.lower() or "sign in" in content.lower():
+                        logger.warning("Response contains login page content")
                         if attempt < max_retries - 1:
                             continue
+                    else:
+                        # 200 response that isn't login — treat as valid
+                        logger.info("✅ Session verified successfully (got 200 response)")
+                        return True
                 
                 logger.warning(f"Unexpected response: status={response.status_code}, url={response.url}")
                 if attempt < max_retries - 1:

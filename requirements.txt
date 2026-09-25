@@ -14,6 +14,9 @@ PyJWT==2.8.0
 browser-cookie3>=0.19.1
 playwright==1.40.0
 
+# HTML Parsing (for cognitive portal scraping)
+beautifulsoup4==4.12.3
+
 # Utilities
 pytz==2023.3
 python-dateutil==2.8.2

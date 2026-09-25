@@ -85,18 +85,18 @@ class BrowserManager:
                 except Exception as e:
                     logger.warning(f"Failed to load cookies into context: {e}")
             
-            # Navigate to buildBreakReport to activate the cookies
+            # Navigate to cognitive functional area list to activate the cookies
             # Persistent context creates a page automatically, use it
             pages = self.context.pages
             if pages:
                 page = pages[0]
-                logger.info("📄 Using existing page, navigating to buildBreakReport...")
+                logger.info("📄 Using existing page, navigating to functionalAreaList...")
             else:
-                logger.info("📄 Creating new page and navigating to buildBreakReport...")
+                logger.info("📄 Creating new page and navigating to functionalAreaList...")
                 page = await self.context.new_page()
             
             try:
-                await page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/",
+                await page.goto("https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaList.html",
                                wait_until="domcontentloaded",
                                timeout=30000)
                 logger.info("✅ Initial navigation complete")
@@ -123,19 +123,19 @@ class BrowserManager:
             return None
     
     async def _verify_page_responding(self, page: Page) -> bool:
-        """Verify that buildBreakReport page is responding by running a test query"""
+        """Verify that the cognitive functional area page is responding"""
         try:
-            logger.info("🔍 Verifying page is responding by running test query...")
+            logger.info("🔍 Verifying page is responding...")
             
             # Wait for the page to be fully loaded
             await page.wait_for_load_state("networkidle", timeout=10000)
             
-            # Check if we can find key elements on the page
-            # Look for the query input field or table
+            # Check if we can find key elements on the new cognitive page
             selectors_to_check = [
-                'input[type="text"]',  # Query input
+                'a[href*="functionalAreaAnalysis"]',  # Component links
                 'table',  # Results table
-                'form',  # Query form
+                '.functional-area',  # FA items
+                'h1',  # Page heading
             ]
             
             for selector in selectors_to_check:
@@ -187,9 +187,9 @@ class BrowserManager:
                     logger.warning("🔐 Detected login page - session expired, performing login...")
                     return await self._perform_login(page)
                 
-                # If already on buildBreakReport, verify it's responding
-                if "buildBreakReport" in current_url:
-                    logger.info("✅ Already on buildBreakReport! Verifying page is responding...")
+                # If already on the cognitive portal, verify it's responding
+                if "cognitive" in current_url and "libh-proxy" in current_url:
+                    logger.info("✅ Already on cognitive portal! Verifying page is responding...")
                     
                     # If force_refresh is True, always refresh the page to get fresh cookies
                     if force_refresh:
@@ -225,7 +225,7 @@ class BrowserManager:
                 # If on about:blank or other page, navigate to check session
                 logger.info(f"📍 Current page: {current_url}, checking if session is still valid...")
                 try:
-                    await page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/",
+                    await page.goto("https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaList.html",
                                    wait_until="domcontentloaded",
                                    timeout=30000)
                     await page.wait_for_timeout(2000)
@@ -237,8 +237,8 @@ class BrowserManager:
                         logger.warning("🔐 Redirected to login page - session expired, performing login...")
                         return await self._perform_login(page)
                     
-                    if "buildBreakReport" in current_url:
-                        logger.info("✅ Landed on buildBreakReport! Verifying page is responding...")
+                    if "cognitive" in current_url and "libh-proxy" in current_url:
+                        logger.info("✅ Landed on cognitive portal! Verifying page is responding...")
                         if await self._verify_page_responding(page):
                             logger.info("✅ Session is still valid and page is responding!")
                             # Save cookies for future use
@@ -260,8 +260,8 @@ class BrowserManager:
                         logger.warning("🔐 Refresh redirected to login - session expired, performing login...")
                         return await self._perform_login(page)
                     
-                    if "buildBreakReport" in current_url:
-                        logger.info("✅ Landed on buildBreakReport after refresh! Verifying...")
+                    if "cognitive" in current_url and "libh-proxy" in current_url:
+                        logger.info("✅ Landed on cognitive portal after refresh! Verifying...")
                         if await self._verify_page_responding(page):
                             logger.info("✅ Session refreshed successfully and page is responding!")
                             # Save the new cookies
@@ -283,14 +283,14 @@ class BrowserManager:
                 page = await self.context.new_page()
                 
                 try:
-                    await page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/",
+                    await page.goto("https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaList.html",
                                    wait_until="domcontentloaded",
                                    timeout=30000)
                     await page.wait_for_timeout(2000)
                     
                     current_url = page.url
-                    if "buildBreakReport" in current_url and "login" not in current_url.lower():
-                        logger.info("✅ Landed on buildBreakReport! Verifying page is responding...")
+                    if "cognitive" in current_url and "libh-proxy" in current_url and "login" not in current_url.lower():
+                        logger.info("✅ Landed on cognitive portal! Verifying page is responding...")
                         if await self._verify_page_responding(page):
                             logger.info("✅ Session is still valid and page is responding!")
                             # Save cookies
@@ -322,9 +322,9 @@ class BrowserManager:
             try:
                 logger.info(f"🔐 Login attempt {attempt}/{max_attempts}")
                 
-                # Navigate to Build Break Report page (will redirect to login)
-                logger.info("🌐 Navigating to buildBreakReport...")
-                await page.goto("https://libh-proxy1.fyre.ibm.com/buildBreakReport/", wait_until="networkidle", timeout=30000)
+                # Navigate to cognitive functional area list page (will redirect to login)
+                logger.info("🌐 Navigating to cognitive functional area list...")
+                await page.goto("https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaList.html", wait_until="networkidle", timeout=30000)
                 logger.info("✅ Loaded page")
                 
                 # Wait a bit for page to stabilize
@@ -433,8 +433,8 @@ class BrowserManager:
                 current_url = page.url
                 logger.info(f"📍 After sign in: {current_url}")
                 
-                # Check if login was successful (reached buildBreakReport or similar)
-                if "buildBreakReport" in current_url or "libh-proxy" in current_url:
+                # Check if login was successful (reached cognitive portal or similar)
+                if ("cognitive" in current_url and "libh-proxy" in current_url) or ("libh-proxy" in current_url and "login" not in current_url.lower()):
                     logger.info("✅ Login successful - no 2FA required!")
                     return True
                 
@@ -475,7 +475,7 @@ class BrowserManager:
                     # Wait for phone approval (2 minutes)
                     logger.info("📱 Waiting for phone approval (120 seconds)...")
                     try:
-                        await page.wait_for_url("**/buildBreakReport**", timeout=120000)
+                        await page.wait_for_url("**/cognitive/**", timeout=120000)
                         logger.info("✅ Successfully authenticated with 2FA!")
                         
                         # Wait a bit for cookies to be set

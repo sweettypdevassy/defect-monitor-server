@@ -68,33 +68,50 @@ def get_defects_missing_creation_date(db_path: str):
     return defects
 
 def fetch_defect_from_api(defect_id: str, component: str, session: requests.Session) -> dict:
-    """Fetch single defect from IBM Build Break Report API"""
+    """Fetch single defect from IBM cognitive portal (Build Break Report HTML page)"""
     try:
-        api_url = f"https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas?fas={component}"
-        
+        import urllib.parse
+        encoded_component = urllib.parse.quote(component)
+        page_url = (
+            f"https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html"
+            f"?functionalArea={encoded_component}"
+            f"&tab=Build%2BBreak+Report"
+        )
+
         response = session.get(
-            api_url,
+            page_url,
             timeout=30,
             headers={
-                'Accept': 'application/json',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Cache-Control': 'no-cache'
             },
             verify=False
         )
-        
+
         if response.status_code != 200:
             print(f"  ❌ HTTP {response.status_code} for {component}")
             return None
-        
-        defects = response.json()
-        
-        # Find the specific defect
-        for defect in defects:
-            if str(defect.get('id')) == str(defect_id):
-                return defect
-        
+
+        # Parse HTML to find the specific defect
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            print("  ❌ beautifulsoup4 not installed. Run: pip install beautifulsoup4")
+            return None
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        for link in soup.find_all('a'):
+            text = link.get_text(strip=True)
+            raw_id = text.replace('RTC:', '').replace('RTC: ', '').strip()
+            if raw_id == str(defect_id):
+                row = link.find_parent('tr')
+                if row:
+                    cells = row.find_all('td')
+                    summary = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+                    return {'id': defect_id, 'summary': summary, 'component': component}
+
         return None
-        
+
     except Exception as e:
         print(f"  ❌ Error fetching defect {defect_id}: {e}")
         return None
@@ -190,43 +207,28 @@ def backfill_creation_dates():
     for component, defect_ids in by_component.items():
         print(f"\n📦 Processing {component} ({len(defect_ids)} defects)...")
         
-        # Fetch all defects for this component once
+        # Fetch HTML page for this component and find defects
+        # NOTE: The new cognitive portal does not expose reported_builds in its HTML.
+        # Creation dates must be enriched from Jazz/RTC (dc:created field).
+        # This backfill script now marks these as skipped since no build date is available
+        # from the cognitive portal HTML — use the Jazz/RTC enrichment path instead.
         try:
-            api_url = f"https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas?fas={component}"
-            response = session.get(api_url, timeout=30, verify=False)
-            
-            if response.status_code != 200:
-                print(f"  ❌ Failed to fetch {component}: HTTP {response.status_code}")
-                failed += len(defect_ids)
-                continue
-            
-            all_defects = response.json()
-            
-            # Create lookup dict
-            defect_lookup = {str(d.get('id')): d for d in all_defects}
-            
-            # Update each defect
+            import urllib.parse
+            try:
+                from bs4 import BeautifulSoup
+                bs4_ok = True
+            except ImportError:
+                print("  ❌ beautifulsoup4 not installed. Run: pip install beautifulsoup4")
+                bs4_ok = False
+
             for defect_id in defect_ids:
-                defect_data = defect_lookup.get(str(defect_id))
-                
-                if not defect_data:
-                    print(f"  ⚠️  Defect {defect_id} not found in API response")
+                if not bs4_ok:
                     skipped += 1
                     continue
-                
-                reported_builds = defect_data.get('reported_builds', '')
-                if reported_builds:
-                    creation_date = extract_creation_date_from_builds(reported_builds)
-                    if creation_date:
-                        update_creation_date(db_path, defect_id, creation_date)
-                        print(f"  ✅ Updated {defect_id}: {creation_date}")
-                        updated += 1
-                    else:
-                        print(f"  ⚠️  Could not extract date from: {reported_builds[:50]}...")
-                        skipped += 1
-                else:
-                    print(f"  ⚠️  No reported_builds for {defect_id}")
-                    skipped += 1
+                # Creation date is no longer available from the HTML page directly.
+                # It will be fetched from Jazz/RTC API during normal defect processing.
+                print(f"  ℹ️  Defect {defect_id}: creation date must be fetched from Jazz/RTC (not in HTML page)")
+                skipped += 1
             
             # Rate limiting
             time.sleep(0.5)

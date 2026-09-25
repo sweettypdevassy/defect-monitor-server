@@ -1,10 +1,11 @@
 """
 Defect Checker Module
-Fetches and processes defects from IBM Build Break Report and SOE Triage
+Fetches and processes defects from IBM Cognitive Functional Area Analysis and SOE Triage
 """
 
 import requests
 import logging
+import urllib.parse
 from typing import List, Dict, Optional
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,6 +14,11 @@ from ml_tag_suggester import MLTagSuggester
 from cookie_monitor import get_cookie_monitor
 from duplicate_detector import DuplicateDetector
 from fetch_checkpoint import FetchCheckpoint
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BS4_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +29,7 @@ class DefectChecker:
     def __init__(self, authenticator, database=None):
         self.authenticator = authenticator
         self.database = database
-        self.build_break_base_url = "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas"
+        self.build_break_base_url = "https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html"
         self.soe_triage_url = "https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workitems.json"
         self.tag_suggester = MLTagSuggester()
         
@@ -44,55 +50,61 @@ class DefectChecker:
     
     def fetch_defects_for_component(self, component: str, max_retries: int = 3) -> Optional[List[Dict]]:
         """
-        Fetch defects for a specific component from Build Break Report
-        Implements retry logic with exponential backoff for network resilience
-        Returns list of defects or None on error
+        Fetch defects for a specific component from the Cognitive Functional Area Analysis page.
+        Scrapes the Build Break Report HTML tab for defect data.
+        Implements retry logic with exponential backoff for network resilience.
+        Returns list of defects or None on error.
         """
         import time
-        
+
+        if not BS4_AVAILABLE:
+            logger.error("❌ beautifulsoup4 is not installed. Run: pip install beautifulsoup4")
+            return None
+
         # Track if we just re-authenticated to avoid immediate re-check
         just_authenticated = False
-        
+
         for attempt in range(max_retries):
             try:
                 session = self.authenticator.get_session()
                 if not session:
                     logger.error(f"No valid session for fetching {component} defects")
                     return None
-                
+
                 if attempt > 0:
                     logger.info(f"🔄 Retry {attempt}/{max_retries-1} for {component}")
-                
-                # Build URL with component as query parameter
-                api_url = f"{self.build_break_base_url}?fas={component}"
-                
+
+                # Build URL — new cognitive portal URL
+                encoded_component = urllib.parse.quote(component)
+                page_url = (
+                    f"{self.build_break_base_url}"
+                    f"?functionalArea={encoded_component}"
+                    f"&tab=Build%2BBreak+Report"
+                )
+
                 # Increase timeout for retries
                 timeout = 30 + (attempt * 15)  # 30s, 45s, 60s
-                
+
                 response = session.get(
-                    api_url,
+                    page_url,
                     timeout=timeout,
                     headers={
-                        'Accept': 'application/json',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                         'Cache-Control': 'no-cache'
                     },
                     verify=False  # Disable SSL verification for IBM self-signed certs
                 )
-                
+
                 # Check for authentication failure and re-authenticate
-                # Skip check if we just authenticated (avoid immediate re-auth loop)
                 cookie_monitor = get_cookie_monitor()
                 if not just_authenticated and cookie_monitor.detect_cookie_expiration(response):
                     logger.warning(f"🔴 Authentication failure for {component}, re-authenticating...")
-                    
-                    # Force re-authentication
                     if self.authenticator.authenticate():
-                        time.sleep(3)  # Wait for cookies to propagate
-                        # Get new session
+                        time.sleep(3)
                         session = self.authenticator.get_session()
                         if session:
-                            just_authenticated = True  # Mark that we just authenticated
-                            continue  # Retry with new session
+                            just_authenticated = True
+                            continue
                     else:
                         logger.error("❌ Re-authentication failed")
                         if attempt < max_retries - 1:
@@ -100,68 +112,37 @@ class DefectChecker:
                             continue
                         return None
                 elif just_authenticated and cookie_monitor.detect_cookie_expiration(response):
-                    # If we just authenticated and still getting 401, it's likely a slow API response
-                    # Log but don't re-authenticate immediately
-                    logger.warning(f"⚠️  Got 401 right after re-auth for {component} - likely slow API, continuing...")
-                    just_authenticated = False  # Reset flag
-                
+                    logger.warning(f"⚠️  Got 401 right after re-auth for {component} - likely slow server, continuing...")
+                    just_authenticated = False
+
                 if response.status_code != 200:
                     logger.error(f"Failed to fetch defects for {component}: HTTP {response.status_code}")
                     if attempt < max_retries - 1:
                         time.sleep(2 ** attempt)
                         continue
                     return None
-                
-                defects = response.json()
-                
-                if not isinstance(defects, list):
-                    logger.error(f"Unexpected response format for {component}")
+
+                # Check if we were redirected to login page
+                if "login" in response.url.lower():
+                    logger.warning(f"🔴 Redirected to login for {component}, re-authenticating...")
+                    if self.authenticator.authenticate():
+                        time.sleep(3)
+                        session = self.authenticator.get_session()
+                        if session:
+                            just_authenticated = True
+                            continue
                     return None
-                
-                # Extract creation_date, last_occurrence_date and number_builds from API response
-                # Note: creation_date will be updated with accurate Jazz/RTC data during tag fetching
-                for defect in defects:
-                    reported_builds = defect.get('reported_builds', '')
 
-                    # Only extract from reported_builds as fallback if not already set
-                    # Jazz/RTC API provides more accurate dc:created field
-                    if 'creation_date' not in defect or not defect.get('creation_date'):
-                        if reported_builds:
-                            creation_date = self.extract_creation_date_from_builds(reported_builds)
-                            defect['creation_date'] = creation_date
-                        else:
-                            defect['creation_date'] = ''
-
-                    # Extract the LAST (most recent) build date as last_occurrence_date.
-                    # Always extract regardless of "[No longer available" prefix —
-                    # those entries still contain YYYYMMDD dates (e.g. "was:20260912-1234")
-                    if reported_builds:
-                        defect['last_occurrence_date'] = self.extract_last_occurrence_from_builds(reported_builds)
-                    else:
-                        defect['last_occurrence_date'] = ''
-
-                    # Use number_builds from API if available, otherwise calculate from reported_builds
-                    if 'number_builds' not in defect:
-                        if reported_builds and not reported_builds.startswith('[No longer available'):
-                            # Count comma-separated build entries
-                            build_count = len([b.strip() for b in reported_builds.split(',') if b.strip() and 'Build' in b])
-                            defect['number_builds'] = max(1, build_count)  # At least 1 if we have reported_builds
-                        elif reported_builds and reported_builds.startswith('[No longer available'):
-                            # Build info no longer available, but defect exists, so assume 1 build
-                            defect['number_builds'] = 1
-                        else:
-                            defect['number_builds'] = 0
-                
-                # Debug: Log first defect structure to understand the data
+                # Parse the HTML response
+                defects = self._parse_build_break_html(response.text, component)
+                logger.info(f"✅ Fetched {len(defects)} defects for {component} from cognitive portal")
                 return defects
-                
+
             except requests.exceptions.Timeout as e:
                 if attempt < max_retries - 1:
-                    # Log as debug for first attempts (normal network variance)
                     logger.debug(f"⏱️ Timeout fetching {component} (attempt {attempt+1}/{max_retries}), retrying...")
                     time.sleep(2 ** attempt)
                 else:
-                    # Only log as warning if all retries exhausted
                     logger.warning(f"⚠️ Timeout after {max_retries} attempts for {component}, skipping...")
                     return None
             except Exception as e:
@@ -170,8 +151,174 @@ class DefectChecker:
                     time.sleep(2 ** attempt)
                     continue
                 return None
-        
+
         return None
+
+    def _parse_build_break_html(self, html: str, component: str) -> List[Dict]:
+        """
+        Parse the Build Break Report HTML page from the cognitive portal.
+        Extracts defects from all sections: Untriaged, High Impact, Product Defects, etc.
+
+        The page structure has sections with <h2> or <h3> headings followed by tables.
+        Each table row contains: Defect link, Summary, Impact icon, Count, Tags, State, Owner.
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+        defects = []
+
+        # Find all defect table rows. Each section (Untriaged, High Impact, etc.)
+        # contains a table with rows of defect data.
+        # The defect ID links look like: <a href="...">RTC: 312186</a>
+        # We collect ALL defects across all sections.
+
+        # Find all tables that contain defect data
+        # Section headings identify the type (untriaged, high_impact, product_bug, test_bug, etc.)
+        current_section = "unknown"
+
+        for element in soup.find_all(['h2', 'h3', 'h4', 'table', 'section', 'div']):
+            tag_name = element.name
+
+            # Detect section heading to label defect type
+            if tag_name in ('h2', 'h3', 'h4'):
+                heading_text = element.get_text(strip=True).lower()
+                if 'untriaged' in heading_text:
+                    current_section = 'untriaged'
+                elif 'high impact' in heading_text:
+                    current_section = 'high_impact'
+                elif 'product' in heading_text:
+                    current_section = 'product_bug'
+                elif 'test' in heading_text:
+                    current_section = 'test_bug'
+                elif 'infra' in heading_text or 'infrastructure' in heading_text:
+                    current_section = 'infrastructure_bug'
+                else:
+                    current_section = heading_text.replace(' ', '_')[:30]
+                continue
+
+            if tag_name == 'table':
+                rows = element.find_all('tr')
+                for row in rows:
+                    cells = row.find_all(['td', 'th'])
+                    if not cells:
+                        continue
+
+                    # Skip header rows
+                    if row.find('th'):
+                        continue
+
+                    # Extract defect ID from first cell link (e.g. "RTC: 312186")
+                    first_cell = cells[0]
+                    defect_link = first_cell.find('a')
+                    if not defect_link:
+                        continue
+
+                    raw_id_text = defect_link.get_text(strip=True)
+                    # Handle formats: "RTC: 312186" or "RTC:312186" or just "312186"
+                    defect_id = raw_id_text.replace('RTC:', '').replace('RTC: ', '').strip()
+                    if not defect_id.isdigit():
+                        continue
+
+                    # Extract summary (2nd cell)
+                    summary = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+
+                    # Extract count / impact (3rd or 4th cell — page shows Impact icon + Count)
+                    number_builds = 0
+                    if len(cells) > 3:
+                        count_text = cells[3].get_text(strip=True)
+                        try:
+                            number_builds = int(count_text)
+                        except (ValueError, TypeError):
+                            number_builds = 0
+                    elif len(cells) > 2:
+                        count_text = cells[2].get_text(strip=True)
+                        try:
+                            number_builds = int(count_text)
+                        except (ValueError, TypeError):
+                            number_builds = 0
+
+                    # Extract tags (5th cell — shown as badge spans)
+                    tags = []
+                    if len(cells) > 4:
+                        tag_cell = cells[4]
+                        tag_spans = tag_cell.find_all(['span', 'a', 'badge'])
+                        if tag_spans:
+                            for span in tag_spans:
+                                tag_text = span.get_text(strip=True)
+                                if tag_text and tag_text not in ('...', ''):
+                                    tags.append(tag_text)
+                        else:
+                            raw_tags = tag_cell.get_text(separator=',', strip=True)
+                            tags = [t.strip() for t in raw_tags.split(',') if t.strip() and t.strip() != '...']
+
+                    # Extract state (6th cell)
+                    state = ''
+                    if len(cells) > 5:
+                        state = cells[5].get_text(strip=True)
+
+                    # Extract owner (7th cell)
+                    owner = 'Unassigned'
+                    if len(cells) > 6:
+                        owner_text = cells[6].get_text(strip=True)
+                        if owner_text:
+                            owner = owner_text
+
+                    # Determine triage tags from section + existing tags
+                    triage_tags = list(tags)
+                    if current_section == 'product_bug' and not any('product' in t.lower() for t in triage_tags):
+                        triage_tags.append('product_bug')
+                    elif current_section == 'test_bug' and not any('test' in t.lower() for t in triage_tags):
+                        triage_tags.append('test_bug')
+                    elif current_section == 'infrastructure_bug' and not any('infra' in t.lower() for t in triage_tags):
+                        triage_tags.append('infrastructure_bug')
+
+                    defects.append({
+                        'id': defect_id,
+                        'summary': summary,
+                        'functionalArea': component,
+                        'owner': owner,
+                        'state': state,
+                        'triageTags': triage_tags,
+                        'tags': triage_tags,
+                        'number_builds': number_builds,
+                        'creation_date': '',       # Will be enriched from Jazz/RTC
+                        'last_occurrence_date': '',
+                        'reported_builds': '',
+                        'buildsReported': [],
+                        'section': current_section,  # Track which section this came from
+                        'source': 'COGNITIVE_BUILD_BREAK'
+                    })
+
+        if not defects:
+            # Fallback: try finding any RTC links on the page directly
+            logger.debug(f"No defects found via table parsing for {component}, trying link scan...")
+            for link in soup.find_all('a', href=True):
+                text = link.get_text(strip=True)
+                if text.startswith('RTC:') or text.startswith('RTC: '):
+                    defect_id = text.replace('RTC:', '').replace('RTC: ', '').strip()
+                    if defect_id.isdigit():
+                        # Get surrounding text for summary
+                        parent = link.find_parent('tr')
+                        summary = ''
+                        if parent:
+                            cells = parent.find_all('td')
+                            summary = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+                        defects.append({
+                            'id': defect_id,
+                            'summary': summary,
+                            'functionalArea': component,
+                            'owner': 'Unassigned',
+                            'state': '',
+                            'triageTags': [],
+                            'tags': [],
+                            'number_builds': 0,
+                            'creation_date': '',
+                            'last_occurrence_date': '',
+                            'reported_builds': '',
+                            'buildsReported': [],
+                            'section': 'unknown',
+                            'source': 'COGNITIVE_BUILD_BREAK'
+                        })
+
+        return defects
     
     def extract_creation_date_from_builds(self, reported_builds: str) -> str:
         """

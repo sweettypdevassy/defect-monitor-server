@@ -76,8 +76,8 @@ class IBMAuthenticator:
         
         # For older sessions, test with a simple request (don't rely on timeout)
         try:
-            test_url = "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas"
-            response = self.session.get(test_url, params={"component": "test"}, timeout=60, verify=False)
+            test_url = "https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaList.html"
+            response = self.session.get(test_url, timeout=60, verify=False)
             
             # Check if we got redirected to login page
             if "login" in response.url.lower() or response.status_code == 401:
@@ -185,7 +185,7 @@ class IBMAuthenticator:
         Returns True if successful, False otherwise
         """
         try:
-            logger.info(f"Authenticating with IBM Build Break Report using Playwright for user: {self.username}")
+            logger.info(f"Authenticating with IBM cognitive portal using Playwright for user: {self.username}")
             
             # Use Playwright to login and get cookies (with optional force refresh)
             cookies = self._playwright_login(force_refresh=force_refresh)
@@ -233,7 +233,7 @@ class IBMAuthenticator:
             # Verify authentication
             if self._verify_authentication():
                 self.last_login = datetime.now()
-                logger.info("✅ IBM Build Break Report authentication successful")
+                logger.info("✅ IBM cognitive portal authentication successful")
                 return True
             else:
                 logger.error("❌ Authentication verification failed")
@@ -316,12 +316,12 @@ class IBMAuthenticator:
                     logger.info(f"Retrying authentication verification (attempt {attempt + 1}/{max_retries}) in {wait_time}s...")
                     time.sleep(wait_time)
                 
-                # Test with actual API call using correct URL format
-                test_url = "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas?fas=Messaging"
+                # Test with page load using correct URL format
+                test_url = "https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html?functionalArea=Messaging&tab=Build%2BBreak+Report"
                 response = self.session.get(
                     test_url,
                     timeout=60,  # Increased to 60 seconds for slow server
-                    headers={'Accept': 'application/json'},
+                    headers={'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'},
                     verify=False  # Disable SSL verification for IBM self-signed certs
                 )
                 
@@ -330,19 +330,22 @@ class IBMAuthenticator:
                     logger.error("Authentication verification failed: redirected to login")
                     return False
                 
-                # Check if we got valid JSON response (not login redirect)
+                # Check if we got valid HTML response (not login redirect)
                 if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        # Verify it's actual defect data, not error page
-                        if isinstance(data, list) or isinstance(data, dict):
-                            logger.info("✅ Cookie-based authentication successful")
-                            return True
-                    except ValueError:
-                        logger.error("Response is not valid JSON")
+                    # Verify it's actual page content, not a login redirect
+                    content = response.text
+                    if "functionalArea" in content or "Build Break" in content or "Liberty" in content:
+                        logger.info("✅ Cookie-based authentication successful")
+                        return True
+                    elif "login" in content.lower() or "sign in" in content.lower():
+                        logger.error("Response contains login page content")
                         if attempt < max_retries - 1:
                             continue
                         return False
+                    else:
+                        # Got a 200 response that's not login - treat as success
+                        logger.info("✅ Cookie-based authentication successful (got 200 response)")
+                        return True
                 
                 logger.error(f"Authentication verification failed: status {response.status_code}")
                 logger.debug(f"Response URL: {response.url}")
