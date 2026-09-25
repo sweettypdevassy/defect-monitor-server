@@ -646,43 +646,66 @@ class BrowserManager:
             return None
 
         import asyncio as _asyncio
-        import json as _json
         import urllib.parse as _urlparse
 
-        # The data API URL pattern the React app calls
-        DATA_API_PATTERN = "/cognitive/external-data/"
+        # ── Step 1: Try direct HTTP fetch using the saved session cookies ───────
+        # This is faster and more reliable than browser interception.
+        # The mod_auth_openidc_session + JSESSIONID cookies from login are enough
+        # to authenticate direct HTTP requests to the cognitive portal.
+        direct_result = await self._direct_http_fetch(component)
+        if direct_result is not None:
+            return direct_result
+
+        # ── Step 2: Browser-based interception fallback ───────────────────────
+        # Log ALL network requests/responses so we can discover the real API URL
+        # if the pattern we assumed is wrong.
+
+        # Patterns that indicate a data API call (broad match, log everything else)
+        DATA_API_PATTERNS = [
+            "/cognitive/external-data/",
+            "/buildBreakReport",
+            "/functionalArea",
+            "/api/",
+            ".json",
+        ]
 
         captured_json = [None]   # mutable container so the closure can write to it
         api_event = _asyncio.Event()
+        all_requests_seen = []   # diagnostic: every URL the page fetches
 
         page = None
         try:
             page = await self.context.new_page()
 
             async def handle_response(response):
-                """Intercept every network response and capture the data API call."""
+                """Log every response; capture the first JSON data API hit."""
                 try:
-                    if DATA_API_PATTERN in response.url and captured_json[0] is None:
-                        logger.info(f"🎯 Intercepted data API response: {response.url} → HTTP {response.status}")
-                        if response.status == 200:
+                    url = response.url
+                    status = response.status
+                    ct = response.headers.get("content-type", "")
+
+                    # Log every non-static resource so we know what the page calls
+                    if not any(ext in url for ext in (".js", ".css", ".png", ".ico", ".woff")):
+                        logger.info(f"   📡 [{status}] {url}  ({ct[:60]})")
+                        all_requests_seen.append((status, url))
+
+                    # Capture the first response that looks like a data API call
+                    if captured_json[0] is None:
+                        is_data_call = any(p in url for p in DATA_API_PATTERNS)
+                        is_json = "json" in ct.lower()
+                        if is_data_call and is_json and status == 200:
                             try:
                                 body = await response.json()
                                 captured_json[0] = body
                                 api_event.set()
-                                logger.info(f"✅ Captured JSON from data API for {component}")
+                                logger.info(f"✅ Captured data API JSON for {component} from: {url}")
                             except Exception as e:
-                                logger.warning(f"Could not parse API response as JSON: {e}")
-                                try:
-                                    text = await response.text()
-                                    logger.debug(f"   Raw response (first 300): {text[:300]}")
-                                except Exception:
-                                    pass
-                        else:
-                            logger.warning(f"⚠️  Data API returned HTTP {response.status} for {component}")
-                            # Signal anyway so we don't wait the full timeout
-                            api_event.set()
+                                logger.warning(f"Could not parse as JSON ({url}): {e}")
+                        elif is_data_call and status not in (200,):
+                            logger.warning(f"⚠️  Data API returned HTTP {status} for {component}: {url}")
+                            api_event.set()   # stop waiting — won't get data this way
                 except Exception as e:
-                    logger.debug(f"Error in response handler: {e}")
+                    logger.debug(f"Response handler error: {e}")
 
             page.on("response", handle_response)
 
@@ -693,29 +716,30 @@ class BrowserManager:
                 f"?functionalArea={encoded}&tab=Build%2BBreak+Report"
             )
 
-            logger.info(f"🌐 Navigating to {page_url}")
+            logger.info(f"🌐 [browser] Navigating to {page_url}")
 
-            # Navigate — use "domcontentloaded" (not networkidle) so we don't wait
-            # for *all* resources; the data API call fires early in the page lifecycle.
             try:
                 await page.goto(page_url, wait_until="domcontentloaded", timeout=timeout)
             except Exception as nav_err:
-                logger.warning(f"Navigation warning for {component} (continuing): {nav_err}")
+                logger.warning(f"Navigation warning for {component}: {nav_err}")
 
-            # Wait up to (timeout - 5s) for the intercepted data API response
-            wait_secs = max(5, (timeout / 1000) - 5)
+            # Wait up to (timeout − 5 s) for any intercepted data response
+            wait_secs = max(10, (timeout / 1000) - 5)
             try:
                 await _asyncio.wait_for(api_event.wait(), timeout=wait_secs)
             except _asyncio.TimeoutError:
-                logger.warning(f"⏰ No data API response intercepted within {wait_secs}s for {component}")
+                logger.warning(
+                    f"⏰ No data API response within {wait_secs}s for {component}. "
+                    f"Page made {len(all_requests_seen)} non-static requests total."
+                )
 
             if captured_json[0] is not None:
                 return captured_json[0]
 
-            # ── Fallback: the backend may still return 500 but the React app might
-            # have pre-rendered some data into the DOM.  Return None here; the caller
-            # (_parse_build_break_html) will handle the empty-page case.
-            logger.warning(f"⚠️  No JSON captured for {component} — data API may be returning 500")
+            logger.warning(
+                f"⚠️  No JSON captured for {component} after browser interception. "
+                f"Requests seen: {[u for _, u in all_requests_seen[:20]]}"
+            )
             return None
 
         except Exception as e:
@@ -727,6 +751,104 @@ class BrowserManager:
                     await page.close()
                 except Exception:
                     pass
+
+    async def _direct_http_fetch(self, component: str) -> Optional[dict]:
+        """
+        Attempt to fetch Build Break Report data directly via HTTP using the
+        mod_auth_openidc_session and JSESSIONID cookies from the browser session.
+
+        The cognitive portal React app calls one of these patterns:
+          /cognitive/external-data/cognitive-pages/libh-proxy1.fyre.ibm.com/data/buildBreakReport?functionalArea=<X>
+          /cognitive/api/buildBreakReport?functionalArea=<X>
+          /buildBreakReport/rest2/defects/buildbreak/fas?fas=<X>   (old URL — may still work)
+
+        We try all known patterns with the session cookies.
+        """
+        import aiohttp
+        import urllib.parse as _urlparse
+        import ssl
+
+        # Get cookies from the persistent browser context
+        if not self.context:
+            return None
+
+        try:
+            cookies_list = await self.context.cookies()
+        except Exception:
+            return None
+
+        if not cookies_list:
+            return None
+
+        # Build cookie dict for the target domain
+        cookie_dict = {}
+        for c in cookies_list:
+            domain = c.get("domain", "")
+            if "libh-proxy1" in domain or "fyre.ibm.com" in domain or not domain:
+                cookie_dict[c["name"]] = c["value"]
+
+        if not cookie_dict:
+            logger.debug("No cookies found for libh-proxy1.fyre.ibm.com — skipping direct HTTP fetch")
+            return None
+
+        logger.info(f"🔗 Trying direct HTTP fetch for {component} with {len(cookie_dict)} cookies...")
+
+        encoded = _urlparse.quote(component)
+
+        # Candidate API URLs — newest first, old REST fallback last
+        candidate_urls = [
+            f"https://libh-proxy1.fyre.ibm.com/cognitive/external-data/cognitive-pages/libh-proxy1.fyre.ibm.com/data/buildBreakReport?functionalArea={encoded}",
+            f"https://libh-proxy1.fyre.ibm.com/cognitive/api/buildBreakReport?functionalArea={encoded}",
+            f"https://libh-proxy1.fyre.ibm.com/cognitive/data/buildBreakReport?functionalArea={encoded}",
+        ]
+
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": (
+                f"https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html"
+                f"?functionalArea={encoded}&tab=Build%2BBreak+Report"
+            ),
+            "X-Requested-With": "XMLHttpRequest",
+        }
+
+        try:
+            connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+            async with aiohttp.ClientSession(
+                connector=connector,
+                cookies=cookie_dict,
+                headers=headers
+            ) as session:
+                for url in candidate_urls:
+                    try:
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                            logger.info(f"   🔗 {resp.status} {url}")
+                            if resp.status == 200:
+                                ct = resp.headers.get("content-type", "")
+                                if "json" in ct.lower():
+                                    data = await resp.json(content_type=None)
+                                    logger.info(f"✅ Direct HTTP fetch succeeded for {component}")
+                                    return data
+                                else:
+                                    text = await resp.text()
+                                    logger.warning(
+                                        f"   URL returned 200 but content-type={ct!r}. "
+                                        f"Preview: {text[:200]}"
+                                    )
+                            elif resp.status in (401, 403):
+                                logger.warning(f"   🔒 Auth required ({resp.status}) — cookies may be insufficient")
+                            # 500 / 404 — try next URL
+                    except Exception as e:
+                        logger.debug(f"   Direct fetch failed for {url}: {e}")
+        except Exception as e:
+            logger.debug(f"aiohttp session error for {component}: {e}")
+
+        logger.info(f"   ℹ️  Direct HTTP fetch found no data for {component} — will try browser interception")
+        return None
 
     async def fetch_rendered_html(self, url: str, wait_for_selector: str = None, timeout: int = 30000) -> Optional[str]:
         """
