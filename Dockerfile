@@ -28,6 +28,8 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     libpango-1.0-0 \
     libcairo2 \
+    xvfb \
+    x11-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -50,6 +52,7 @@ RUN mkdir -p data logs static
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV FLASK_APP=src/app.py
+ENV DISPLAY=:99
 
 # Expose port
 EXPOSE 5000

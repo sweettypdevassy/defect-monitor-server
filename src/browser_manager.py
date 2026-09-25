@@ -103,11 +103,22 @@ class BrowserManager:
             self.playwright = await async_playwright().start()
             
             # Launch persistent browser context
+            # Use headless=False with virtual display args so the React app's JS
+            # executes fully — some apps detect headless mode and skip rendering.
+            # --no-sandbox / --disable-gpu are standard for Docker/VM environments.
             self.context = await self.playwright.chromium.launch_persistent_context(
                 user_data_dir,
-                headless=True,
+                headless=False,
                 ignore_https_errors=True,
-                args=['--disable-blink-features=AutomationControlled']
+                args=[
+                    '--no-sandbox',
+                    '--disable-gpu',
+                    '--disable-dev-shm-usage',
+                    '--window-size=1920,1080',
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-web-security',
+                    '--allow-running-insecure-content',
+                ]
             )
             
             logger.info("✅ Persistent browser session started")
