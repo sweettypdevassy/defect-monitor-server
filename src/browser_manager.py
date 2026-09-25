@@ -475,15 +475,28 @@ class BrowserManager:
                     # Wait for phone approval (2 minutes)
                     logger.info("📱 Waiting for phone approval (120 seconds)...")
                     try:
+                        # Wait for redirect to land on libh-proxy1 (cognitive portal)
                         await page.wait_for_url("**/cognitive/**", timeout=120000)
                         logger.info("✅ Successfully authenticated with 2FA!")
-                        
-                        # Wait for the page to fully settle and backend session to establish
+
+                        # CRITICAL: Wait for full networkidle so ALL SSO redirect cookies
+                        # (.ibm.com, .w3.ibm.com, w3_uid, pageviewContext etc.) are set.
+                        # These are required for the backend data API to return 200.
+                        logger.info("⏳ Waiting for full SSO cookie chain to settle...")
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=20000)
+                        except Exception:
+                            pass
                         await page.wait_for_timeout(3000)
-                        
-                        # Navigate to a real component page so the backend creates a
-                        # fully-bound session (activates mod_auth_openidc_session for data API)
-                        logger.info("🔄 Activating backend session by loading a component page...")
+
+                        # Collect cookies BEFORE any additional navigation
+                        all_cookies = await self.context.cookies()
+                        logger.info(f"📊 Cookies after 2FA: {len(all_cookies)}")
+
+                        # Now navigate to a real component page to activate the backend session
+                        # This causes the server to bind our mod_auth_openidc_session to the
+                        # data API backend, fixing the 500 error on subsequent API calls.
+                        logger.info("🔄 Activating backend data session...")
                         try:
                             await page.goto(
                                 "https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html"
@@ -491,27 +504,23 @@ class BrowserManager:
                                 wait_until="networkidle",
                                 timeout=30000
                             )
-                            await page.wait_for_timeout(5000)
-                            logger.info(f"📍 Session activation page URL: {page.url}")
+                            await page.wait_for_timeout(8000)
+                            logger.info(f"📍 Activation page: {page.url}")
                         except Exception as e:
-                            logger.warning(f"Session activation navigation warning (continuing): {e}")
-                        
-                        # Get and save cookies — now includes properly bound session
+                            logger.warning(f"Backend activation warning (continuing): {e}")
+
+                        # Collect final cookie set — includes any new cookies from activation
                         all_cookies = await self.context.cookies()
-                        logger.info(f"📊 Total cookies after login: {len(all_cookies)}")
-                        
-                        # Check for important session cookies
-                        session_cookies = [c for c in all_cookies if c.get('name') in ['LtpaToken2', 'JSESSIONID', 'mod_auth_openidc_session']]
-                        
-                        if session_cookies:
-                            logger.info(f"✅ Found {len(session_cookies)} important session cookies:")
-                            for cookie in session_cookies:
-                                logger.info(f"   - {cookie.get('name')} (domain: {cookie.get('domain')})")
-                        
-                        # Save ALL cookies to file for persistence
+                        logger.info(f"📊 Total cookies after full login: {len(all_cookies)}")
+
+                        # Log all cookies for diagnostics
+                        for cookie in all_cookies:
+                            logger.info(f"   🍪 {cookie.get('name'):40s} domain={cookie.get('domain')}")
+
+                        # Save ALL cookies
                         logger.info(f"💾 Saving all {len(all_cookies)} cookies for future use...")
                         save_cookies(all_cookies)
-                        
+
                         return True
                     except:
                         logger.warning("⏰ Timeout waiting for 2FA approval")
