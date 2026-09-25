@@ -51,8 +51,8 @@ class DefectChecker:
     def fetch_defects_for_component(self, component: str, max_retries: int = 3) -> Optional[List[Dict]]:
         """
         Fetch defects for a specific component from the Cognitive Functional Area Analysis page.
-        Uses the persistent Playwright browser to render the React SPA (data is loaded dynamically
-        via JS — plain requests only gets the empty shell).
+        Uses the persistent Playwright browser to render the React SPA (data loaded dynamically via JS).
+        Runs inside the browser_manager's existing async event loop to avoid event loop conflicts.
         Returns list of defects or None on error.
         """
         import time
@@ -68,25 +68,42 @@ class DefectChecker:
             f"&tab=Build%2BBreak+Report"
         )
 
+        from browser_manager import get_browser_manager
+        import asyncio
+        import concurrent.futures
+        import threading
+
+        def _run_in_thread(coro):
+            """Run an async coroutine in a dedicated thread with its own event loop."""
+            result = [None]
+            exc = [None]
+            def thread_target():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result[0] = loop.run_until_complete(coro)
+                except Exception as e:
+                    exc[0] = e
+                finally:
+                    loop.close()
+            t = threading.Thread(target=thread_target, daemon=True)
+            t.start()
+            t.join(timeout=60)
+            if exc[0]:
+                raise exc[0]
+            return result[0]
+
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
                     logger.info(f"🔄 Retry {attempt}/{max_retries-1} for {component}")
-                    time.sleep(2 ** attempt)
+                    time.sleep(2 ** (attempt - 1))
 
-                # Ensure browser is started and logged in
-                if not self.authenticator.authenticate():
-                    logger.error(f"❌ Authentication failed for {component}")
-                    if attempt < max_retries - 1:
-                        continue
-                    return None
-
-                # Use the Playwright browser to get the fully-rendered HTML
-                from browser_manager import get_browser_manager
                 browser_manager = get_browser_manager()
-                loop = browser_manager._ensure_event_loop()
 
-                html = loop.run_until_complete(
+                # Always run in a dedicated thread to avoid event loop conflicts
+                # with the APScheduler async loop that calls this method
+                html = _run_in_thread(
                     browser_manager.fetch_rendered_html(page_url, timeout=45000)
                 )
 
@@ -96,10 +113,11 @@ class DefectChecker:
                         continue
                     return None
 
-                # Check if we got the login page instead of content
+                # Check if we got a login redirect instead of content
                 if "login.w3.ibm.com" in html or (len(html) < 1000 and "cognitive-app" not in html):
-                    logger.warning(f"🔴 Got login/empty page for {component}, re-authenticating...")
+                    logger.warning(f"🔴 Got login/empty page for {component}, session may have expired")
                     if attempt < max_retries - 1:
+                        time.sleep(5)
                         continue
                     return None
 
