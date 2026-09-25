@@ -658,24 +658,26 @@ class BrowserManager:
     
     async def fetch_component_data_json(self, component: str, timeout: int = 45000) -> Optional[dict]:
         """
-        Fetch the Build Break Report JSON for a component from the cognitive portal.
+        Fetch the Build Break Report data for a component from the cognitive portal.
 
-        Strategy: open the functionalAreaAnalysis page in a new Playwright tab while
-        intercepting ALL network responses.  The React SPA will fire an XHR/fetch call
-        to the internal data API:
-            /cognitive/external-data/…/buildBreakReport?functionalArea=<component>
-        We capture that response's body before the page finishes loading so we get the
-        real JSON data regardless of how long the React render takes.
+        From live diagnostics we know the page makes exactly two network calls:
+          1. GET functionalAreaAnalysis.html  → 200 HTML (the React SPA shell)
+          2. GET /whoami/                     → 200 JSON (identity check)
+          3. GET external-data/.../buildBreakReport?functionalArea=X → 500 (backend broken)
 
-        Falls back to scraping the rendered page DOM if no API response is intercepted
-        (e.g. the backend is temporarily unavailable but a cached render exists).
+        Because the data API returns 500, the React app renders an empty state.
+        Our strategy is therefore:
 
-        Args:
-            component: Component name (e.g. "Batch", "Messaging")
-            timeout:   Maximum wait time in ms for the page + API response
+          Step 1 — Direct HTTP: try the known API URLs directly with session cookies.
+                   These currently all return 500 or HTML, so this is future-proof.
 
-        Returns:
-            Parsed JSON dict/list from the data API, or None on error.
+          Step 2 — Browser DOM scrape: navigate to the page, wait for the React app
+                   to finish rendering (networkidle), then extract the defect table
+                   rows from the rendered DOM via JavaScript.  Even when the backend
+                   returns 500 the React app may still render cached/partial data.
+
+          Step 3 — Intercept any JSON API response that fires after /whoami/ —
+                   kept as a safety net in case the backend is fixed.
         """
         if not self.context:
             logger.error("Browser not started — cannot fetch component data")
@@ -684,99 +686,163 @@ class BrowserManager:
         import asyncio as _asyncio
         import urllib.parse as _urlparse
 
-        # ── Step 1: Try direct HTTP fetch using the saved session cookies ───────
-        # This is faster and more reliable than browser interception.
-        # The mod_auth_openidc_session + JSESSIONID cookies from login are enough
-        # to authenticate direct HTTP requests to the cognitive portal.
+        # ── Step 1: Direct HTTP (fast path, works when backend is fixed) ─────
         direct_result = await self._direct_http_fetch(component)
         if direct_result is not None:
             return direct_result
 
-        # ── Step 2: Browser-based interception fallback ───────────────────────
-        # Log ALL network requests/responses so we can discover the real API URL
-        # if the pattern we assumed is wrong.
+        # ── Step 2 + 3: Browser navigation with DOM scrape + response intercept
+        encoded = _urlparse.quote(component)
+        page_url = (
+            f"https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html"
+            f"?functionalArea={encoded}&tab=Build%2BBreak+Report"
+        )
 
-        # Patterns that indicate a data API call (broad match, log everything else)
-        DATA_API_PATTERNS = [
-            "/cognitive/external-data/",
-            "/buildBreakReport",
-            "/functionalArea",
-            "/api/",
-            ".json",
-        ]
-
-        captured_json = [None]   # mutable container so the closure can write to it
+        captured_json = [None]
         api_event = _asyncio.Event()
-        all_requests_seen = []   # diagnostic: every URL the page fetches
+        all_requests_seen = []
 
         page = None
         try:
             page = await self.context.new_page()
 
             async def handle_response(response):
-                """Log every response; capture the first JSON data API hit."""
+                """Log all non-static responses; capture any JSON data API hit."""
                 try:
                     url = response.url
                     status = response.status
                     ct = response.headers.get("content-type", "")
 
-                    # Log every non-static resource so we know what the page calls
-                    if not any(ext in url for ext in (".js", ".css", ".png", ".ico", ".woff")):
+                    if not any(ext in url for ext in (".js", ".css", ".png", ".ico", ".woff", ".ttf")):
                         logger.info(f"   📡 [{status}] {url}  ({ct[:60]})")
                         all_requests_seen.append((status, url))
 
-                    # Capture the first response that looks like a data API call
-                    if captured_json[0] is None:
-                        is_data_call = any(p in url for p in DATA_API_PATTERNS)
-                        is_json = "json" in ct.lower()
-                        if is_data_call and is_json and status == 200:
+                    # Capture any JSON response that looks like defect data
+                    # (safety net — fires if backend is fixed while page is open)
+                    if captured_json[0] is None and status == 200 and "json" in ct.lower():
+                        data_keywords = ["buildBreak", "defect", "functionalArea", "untriaged"]
+                        if any(kw.lower() in url.lower() for kw in data_keywords):
                             try:
                                 body = await response.json()
                                 captured_json[0] = body
                                 api_event.set()
-                                logger.info(f"✅ Captured data API JSON for {component} from: {url}")
-                            except Exception as e:
-                                logger.warning(f"Could not parse as JSON ({url}): {e}")
-                        elif is_data_call and status not in (200,):
-                            logger.warning(f"⚠️  Data API returned HTTP {status} for {component}: {url}")
-                            api_event.set()   # stop waiting — won't get data this way
+                                logger.info(f"✅ Intercepted JSON for {component}: {url}")
+                            except Exception:
+                                pass
                 except Exception as e:
                     logger.debug(f"Response handler error: {e}")
 
             page.on("response", handle_response)
 
-            # Build component page URL
-            encoded = _urlparse.quote(component)
-            page_url = (
-                f"https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html"
-                f"?functionalArea={encoded}&tab=Build%2BBreak+Report"
-            )
-
             logger.info(f"🌐 [browser] Navigating to {page_url}")
 
+            # Use networkidle so the React app fully renders before we scrape DOM
             try:
-                await page.goto(page_url, wait_until="domcontentloaded", timeout=timeout)
+                await page.goto(page_url, wait_until="networkidle", timeout=timeout)
             except Exception as nav_err:
-                logger.warning(f"Navigation warning for {component}: {nav_err}")
+                # networkidle can timeout on slow pages — still try to scrape
+                logger.warning(f"Navigation warning for {component} (will still scrape): {nav_err}")
 
-            # Wait up to (timeout − 5 s) for any intercepted data response
-            wait_secs = max(10, (timeout / 1000) - 5)
-            try:
-                await _asyncio.wait_for(api_event.wait(), timeout=wait_secs)
-            except _asyncio.TimeoutError:
-                logger.warning(
-                    f"⏰ No data API response within {wait_secs}s for {component}. "
-                    f"Page made {len(all_requests_seen)} non-static requests total."
-                )
+            # Give the React app a moment to finish rendering after networkidle
+            await _asyncio.sleep(2)
 
+            logger.info(f"   📋 Page loaded. Requests seen: {len(all_requests_seen)}")
+
+            # If we caught a JSON API response, return it directly
             if captured_json[0] is not None:
                 return captured_json[0]
 
-            logger.warning(
-                f"⚠️  No JSON captured for {component} after browser interception. "
-                f"Requests seen: {[u for _, u in all_requests_seen[:20]]}"
-            )
-            return None
+            # ── Step 2: Scrape the rendered DOM via JavaScript ────────────────
+            # The React app renders defect rows into the DOM even when it gets
+            # a 500 from the backend (it shows an error state or partial data).
+            # We extract ALL text content from table rows and known data containers.
+            logger.info(f"🔍 Scraping rendered DOM for {component}...")
+            try:
+                dom_data = await page.evaluate("""
+                    () => {
+                        const result = {
+                            pageTitle: document.title,
+                            url: window.location.href,
+                            sections: [],
+                            rawText: '',
+                            hasError: false,
+                            errorText: ''
+                        };
+
+                        // Check for error state
+                        const errorEls = document.querySelectorAll(
+                            '[class*="error"], [class*="Error"], [role="alert"]'
+                        );
+                        if (errorEls.length) {
+                            result.hasError = true;
+                            result.errorText = Array.from(errorEls)
+                                .map(e => e.textContent.trim())
+                                .join(' | ')
+                                .substring(0, 300);
+                        }
+
+                        // Find all section headings and their following tables
+                        const headings = document.querySelectorAll('h1,h2,h3,h4,h5');
+                        headings.forEach(h => {
+                            const section = { heading: h.textContent.trim(), rows: [] };
+                            let el = h.nextElementSibling;
+                            while (el && !['H1','H2','H3','H4','H5'].includes(el.tagName)) {
+                                const rows = el.querySelectorAll('tr');
+                                rows.forEach(row => {
+                                    const cells = Array.from(row.querySelectorAll('td,th'))
+                                        .map(c => c.textContent.trim());
+                                    if (cells.length > 0) section.rows.push(cells);
+                                });
+                                el = el.nextElementSibling;
+                            }
+                            if (section.rows.length > 0) result.sections.push(section);
+                        });
+
+                        // Also capture ALL table rows anywhere on the page
+                        const allRows = [];
+                        document.querySelectorAll('table tr').forEach(row => {
+                            const cells = Array.from(row.querySelectorAll('td,th'))
+                                .map(c => c.textContent.trim());
+                            if (cells.length > 1) allRows.push(cells);
+                        });
+                        result.allTableRows = allRows;
+
+                        // Capture full page text for debugging
+                        result.rawText = document.body
+                            ? document.body.innerText.substring(0, 2000)
+                            : '';
+
+                        return result;
+                    }
+                """)
+
+                logger.info(
+                    f"   📄 DOM scrape: title='{dom_data.get('pageTitle')}', "
+                    f"sections={len(dom_data.get('sections', []))}, "
+                    f"tableRows={len(dom_data.get('allTableRows', []))}, "
+                    f"hasError={dom_data.get('hasError')}"
+                )
+                if dom_data.get('hasError'):
+                    logger.warning(f"   ⚠️  Page error state: {dom_data.get('errorText', '')[:200]}")
+                if dom_data.get('rawText'):
+                    logger.info(f"   📝 Page text preview: {dom_data.get('rawText', '')[:400]}")
+
+                # If we got table rows, wrap them in a structure the JSON parser understands
+                all_rows = dom_data.get('allTableRows', [])
+                sections = dom_data.get('sections', [])
+
+                if all_rows or sections:
+                    # Return as a DOM-scraped structure that _parse_cognitive_json handles
+                    return {"_dom_scraped": True, "sections": sections, "allTableRows": all_rows,
+                            "pageTitle": dom_data.get('pageTitle', ''), "component": component}
+
+                logger.warning(f"   ⚠️  No table data found in DOM for {component}")
+                logger.info(f"   📝 Raw page text: {dom_data.get('rawText', '')[:600]}")
+                return None
+
+            except Exception as e:
+                logger.error(f"DOM scrape error for {component}: {e}")
+                return None
 
         except Exception as e:
             logger.error(f"Error in fetch_component_data_json for {component}: {e}")

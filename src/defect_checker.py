@@ -143,6 +143,13 @@ class DefectChecker:
         if not data:
             return defects
 
+        # ── DOM-scraped data (from browser JS evaluation) ────────────────────
+        # When the backend API returns 500, we scrape the rendered HTML table rows
+        # directly from the React app DOM.  The structure is:
+        #   { "_dom_scraped": True, "sections": [...], "allTableRows": [[cells...]] }
+        if isinstance(data, dict) and data.get("_dom_scraped"):
+            return self._parse_dom_scraped(data, component)
+
         # ── Normalise top-level structure ────────────────────────────────────
         # Some responses wrap everything in a top-level key like "data" or "result"
         if isinstance(data, dict):
@@ -286,6 +293,136 @@ class DefectChecker:
                 })
 
         return defects
+
+    def _parse_dom_scraped(self, data: dict, component: str) -> List[Dict]:
+        """
+        Parse DOM-scraped table rows from the React app's rendered HTML.
+
+        Called when the backend API returns 500 and we fell back to scraping
+        the rendered DOM via JavaScript (page.evaluate).
+
+        The data structure is:
+          {
+            "_dom_scraped": True,
+            "sections": [
+              { "heading": "Untriaged Defects", "rows": [["RTC: 312186", "summary", ...], ...] },
+              ...
+            ],
+            "allTableRows": [["RTC: 312186", "summary", "Impact", "3", "test_bug", "Open", "Owner"], ...]
+          }
+
+        Table column order (from the cognitive portal):
+          0: Defect ID (e.g. "RTC: 312186")
+          1: Summary
+          2: Impact (icon text or empty)
+          3: Count / number of builds
+          4: Tags (comma-separated or space-separated badges)
+          5: State
+          6: Owner
+        """
+        import re
+        defects = []
+        seen_ids = set()
+
+        # Section heading → internal label mapping
+        def _section_label(heading: str) -> str:
+            h = heading.lower()
+            if 'untriaged' in h:
+                return 'untriaged'
+            if 'high impact' in h or 'highimpact' in h:
+                return 'high_impact'
+            if 'product' in h:
+                return 'product_bug'
+            if 'test' in h:
+                return 'test_bug'
+            if 'infra' in h:
+                return 'infrastructure_bug'
+            return 'unknown'
+
+        def _parse_row(cells: list, section: str) -> Optional[Dict]:
+            if not cells:
+                return None
+
+            # Defect ID — first cell, strip "RTC: " prefix
+            raw_id = cells[0].strip()
+            defect_id = re.sub(r'^RTC\s*:\s*', '', raw_id, flags=re.IGNORECASE).strip()
+            if not defect_id.isdigit():
+                return None  # Header row or non-defect row
+
+            summary = cells[1].strip() if len(cells) > 1 else ''
+
+            # Count — 4th cell (index 3)
+            number_builds = 0
+            if len(cells) > 3:
+                try:
+                    number_builds = int(cells[3].strip())
+                except (ValueError, TypeError):
+                    pass
+            elif len(cells) > 2:
+                try:
+                    number_builds = int(cells[2].strip())
+                except (ValueError, TypeError):
+                    pass
+
+            # Tags — 5th cell (index 4)
+            tags = []
+            if len(cells) > 4:
+                raw_tags = cells[4].strip()
+                if raw_tags:
+                    # Tags may be space or comma separated badge text
+                    tags = [t.strip() for t in re.split(r'[,\n]+', raw_tags) if t.strip() and t.strip() != '...']
+
+            state = cells[5].strip() if len(cells) > 5 else ''
+            owner = cells[6].strip() if len(cells) > 6 else 'Unassigned'
+            if not owner:
+                owner = 'Unassigned'
+
+            # Augment tags from section
+            triage_tags = list(tags)
+            if section == 'product_bug' and not any('product' in t.lower() for t in triage_tags):
+                triage_tags.append('product_bug')
+            elif section == 'test_bug' and not any('test' in t.lower() for t in triage_tags):
+                triage_tags.append('test_bug')
+            elif section == 'infrastructure_bug' and not any('infra' in t.lower() for t in triage_tags):
+                triage_tags.append('infrastructure_bug')
+
+            return {
+                'id': defect_id,
+                'summary': summary,
+                'functionalArea': component,
+                'owner': owner,
+                'state': state,
+                'triageTags': triage_tags,
+                'tags': triage_tags,
+                'number_builds': number_builds,
+                'creation_date': '',
+                'last_occurrence_date': '',
+                'reported_builds': '',
+                'buildsReported': [],
+                'section': section,
+                'source': 'COGNITIVE_BUILD_BREAK',
+            }
+
+        # ── Parse section-grouped rows first (most accurate) ────────────────
+        for sec in data.get('sections', []):
+            section_label = _section_label(sec.get('heading', ''))
+            for row_cells in sec.get('rows', []):
+                defect = _parse_row(row_cells, section_label)
+                if defect and defect['id'] not in seen_ids:
+                    seen_ids.add(defect['id'])
+                    defects.append(defect)
+
+        # ── Fall back to all table rows (de-duplicated) ──────────────────────
+        if not defects:
+            for row_cells in data.get('allTableRows', []):
+                defect = _parse_row(row_cells, 'unknown')
+                if defect and defect['id'] not in seen_ids:
+                    seen_ids.add(defect['id'])
+                    defects.append(defect)
+
+        logger.info(f"   📊 DOM scrape parsed {len(defects)} defects for {component}")
+        return defects
+
 
     def _parse_build_break_html(self, html: str, component: str) -> List[Dict]:
         """
