@@ -620,32 +620,143 @@ class BrowserManager:
             logger.error(traceback.format_exc())
             return False
     
+    async def fetch_component_data_json(self, component: str, timeout: int = 45000) -> Optional[dict]:
+        """
+        Fetch the Build Break Report JSON for a component from the cognitive portal.
+
+        Strategy: open the functionalAreaAnalysis page in a new Playwright tab while
+        intercepting ALL network responses.  The React SPA will fire an XHR/fetch call
+        to the internal data API:
+            /cognitive/external-data/…/buildBreakReport?functionalArea=<component>
+        We capture that response's body before the page finishes loading so we get the
+        real JSON data regardless of how long the React render takes.
+
+        Falls back to scraping the rendered page DOM if no API response is intercepted
+        (e.g. the backend is temporarily unavailable but a cached render exists).
+
+        Args:
+            component: Component name (e.g. "Batch", "Messaging")
+            timeout:   Maximum wait time in ms for the page + API response
+
+        Returns:
+            Parsed JSON dict/list from the data API, or None on error.
+        """
+        if not self.context:
+            logger.error("Browser not started — cannot fetch component data")
+            return None
+
+        import asyncio as _asyncio
+        import json as _json
+        import urllib.parse as _urlparse
+
+        # The data API URL pattern the React app calls
+        DATA_API_PATTERN = "/cognitive/external-data/"
+
+        captured_json = [None]   # mutable container so the closure can write to it
+        api_event = _asyncio.Event()
+
+        page = None
+        try:
+            page = await self.context.new_page()
+
+            async def handle_response(response):
+                """Intercept every network response and capture the data API call."""
+                try:
+                    if DATA_API_PATTERN in response.url and captured_json[0] is None:
+                        logger.info(f"🎯 Intercepted data API response: {response.url} → HTTP {response.status}")
+                        if response.status == 200:
+                            try:
+                                body = await response.json()
+                                captured_json[0] = body
+                                api_event.set()
+                                logger.info(f"✅ Captured JSON from data API for {component}")
+                            except Exception as e:
+                                logger.warning(f"Could not parse API response as JSON: {e}")
+                                try:
+                                    text = await response.text()
+                                    logger.debug(f"   Raw response (first 300): {text[:300]}")
+                                except Exception:
+                                    pass
+                        else:
+                            logger.warning(f"⚠️  Data API returned HTTP {response.status} for {component}")
+                            # Signal anyway so we don't wait the full timeout
+                            api_event.set()
+                except Exception as e:
+                    logger.debug(f"Error in response handler: {e}")
+
+            page.on("response", handle_response)
+
+            # Build component page URL
+            encoded = _urlparse.quote(component)
+            page_url = (
+                f"https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html"
+                f"?functionalArea={encoded}&tab=Build%2BBreak+Report"
+            )
+
+            logger.info(f"🌐 Navigating to {page_url}")
+
+            # Navigate — use "domcontentloaded" (not networkidle) so we don't wait
+            # for *all* resources; the data API call fires early in the page lifecycle.
+            try:
+                await page.goto(page_url, wait_until="domcontentloaded", timeout=timeout)
+            except Exception as nav_err:
+                logger.warning(f"Navigation warning for {component} (continuing): {nav_err}")
+
+            # Wait up to (timeout - 5s) for the intercepted data API response
+            wait_secs = max(5, (timeout / 1000) - 5)
+            try:
+                await _asyncio.wait_for(api_event.wait(), timeout=wait_secs)
+            except _asyncio.TimeoutError:
+                logger.warning(f"⏰ No data API response intercepted within {wait_secs}s for {component}")
+
+            if captured_json[0] is not None:
+                return captured_json[0]
+
+            # ── Fallback: the backend may still return 500 but the React app might
+            # have pre-rendered some data into the DOM.  Return None here; the caller
+            # (_parse_build_break_html) will handle the empty-page case.
+            logger.warning(f"⚠️  No JSON captured for {component} — data API may be returning 500")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error in fetch_component_data_json for {component}: {e}")
+            return None
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
     async def fetch_rendered_html(self, url: str, wait_for_selector: str = None, timeout: int = 30000) -> Optional[str]:
         """
         Navigate to a URL using the authenticated Playwright browser and return
         the fully-rendered HTML after JavaScript execution.
         This is needed for React SPAs that load data dynamically.
-        
+
+        NOTE: This is kept as a fallback.  The primary data-fetch path now uses
+        fetch_component_data_json() which intercepts the XHR data API call directly.
+
         Args:
             url: The page URL to fetch
             wait_for_selector: CSS selector to wait for before returning HTML
             timeout: Navigation timeout in ms
-            
+
         Returns:
             Rendered HTML string, or None on error
         """
         if not self.context:
             logger.error("Browser not started — cannot fetch rendered HTML")
             return None
-        
+
         page = None
         try:
             # Use a new page to avoid disrupting the main session page
             page = await self.context.new_page()
-            
+
             # Navigate and wait for JS to execute
             await page.goto(url, wait_until="networkidle", timeout=timeout)
-            
+
             # Wait for specific selector if provided
             if wait_for_selector:
                 try:
@@ -659,10 +770,10 @@ class BrowserManager:
                 except Exception:
                     # No defects found — page may be empty, still return HTML
                     await page.wait_for_timeout(3000)
-            
+
             html = await page.content()
             return html
-            
+
         except Exception as e:
             logger.error(f"Error fetching rendered HTML for {url}: {e}")
             return None

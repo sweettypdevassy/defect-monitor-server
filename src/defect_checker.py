@@ -51,32 +51,26 @@ class DefectChecker:
     def fetch_defects_for_component(self, component: str, max_retries: int = 3) -> Optional[List[Dict]]:
         """
         Fetch defects for a specific component from the Cognitive Functional Area Analysis page.
-        Uses the persistent Playwright browser to render the React SPA (data loaded dynamically via JS).
-        Runs inside the browser_manager's existing async event loop to avoid event loop conflicts.
+
+        Uses the persistent Playwright browser to intercept the XHR data API response
+        fired by the React SPA when the page loads.  This avoids trying to scrape
+        server-rendered HTML (which is essentially empty for a React SPA).
+
+        The fetch runs in a dedicated thread with its own event loop to avoid conflicts
+        with the APScheduler background scheduler's event loop.
+
         Returns list of defects or None on error.
         """
         import time
-
-        if not BS4_AVAILABLE:
-            logger.error("❌ beautifulsoup4 is not installed. Run: pip install beautifulsoup4")
-            return None
-
-        encoded_component = urllib.parse.quote(component)
-        page_url = (
-            f"{self.build_break_base_url}"
-            f"?functionalArea={encoded_component}"
-            f"&tab=Build%2BBreak+Report"
-        )
-
-        from browser_manager import get_browser_manager
         import asyncio
-        import concurrent.futures
         import threading
+        from browser_manager import get_browser_manager
 
         def _run_in_thread(coro):
             """Run an async coroutine in a dedicated thread with its own event loop."""
             result = [None]
             exc = [None]
+
             def thread_target():
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
@@ -86,9 +80,10 @@ class DefectChecker:
                     exc[0] = e
                 finally:
                     loop.close()
+
             t = threading.Thread(target=thread_target, daemon=True)
             t.start()
-            t.join(timeout=60)
+            t.join(timeout=90)          # generous per-component timeout
             if exc[0]:
                 raise exc[0]
             return result[0]
@@ -96,34 +91,39 @@ class DefectChecker:
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
-                    logger.info(f"🔄 Retry {attempt}/{max_retries-1} for {component}")
+                    logger.info(f"🔄 Retry {attempt}/{max_retries - 1} for {component}")
                     time.sleep(2 ** (attempt - 1))
 
                 browser_manager = get_browser_manager()
 
-                # Always run in a dedicated thread to avoid event loop conflicts
-                # with the APScheduler async loop that calls this method
-                html = _run_in_thread(
-                    browser_manager.fetch_rendered_html(page_url, timeout=45000)
+                # Primary path: intercept the XHR data API call made by the React SPA
+                data = _run_in_thread(
+                    browser_manager.fetch_component_data_json(component, timeout=60000)
                 )
 
-                if html is None:
-                    logger.warning(f"⚠️ No HTML returned for {component}")
-                    if attempt < max_retries - 1:
-                        continue
-                    return None
+                if data is not None:
+                    defects = self._parse_cognitive_json(data, component)
+                    logger.info(
+                        f"✅ Fetched {len(defects)} defects for {component} via data API interception"
+                    )
+                    return defects
 
-                # Check if we got a login redirect instead of content
-                if "login.w3.ibm.com" in html or (len(html) < 1000 and "cognitive-app" not in html):
-                    logger.warning(f"🔴 Got login/empty page for {component}, session may have expired")
-                    if attempt < max_retries - 1:
-                        time.sleep(5)
-                        continue
-                    return None
+                # data is None — either the backend returned 500 or no API call fired.
+                # Log and retry.
+                logger.warning(
+                    f"⚠️  No data API response captured for {component} "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                    continue
 
-                defects = self._parse_build_break_html(html, component)
-                logger.info(f"✅ Fetched {len(defects)} defects for {component} from cognitive portal")
-                return defects
+                logger.error(
+                    f"❌ All {max_retries} attempts failed for {component} — "
+                    f"backend data API may be returning 500. "
+                    f"Check https://libh-proxy1.fyre.ibm.com/cognitive/proxy_links.json"
+                )
+                return None
 
             except Exception as e:
                 logger.error(f"Error fetching defects for {component}: {e}")
@@ -133,6 +133,181 @@ class DefectChecker:
                 return None
 
         return None
+
+    def _parse_cognitive_json(self, data, component: str) -> List[Dict]:
+        """
+        Parse the JSON payload returned by the cognitive portal's internal data API:
+            /cognitive/external-data/…/buildBreakReport?functionalArea=<component>
+
+        The API returns a structure like:
+
+            {
+              "untriagedDefects": [ { "id": "312186", "summary": "...", ... }, ... ],
+              "highImpactDefects": [ ... ],
+              "productDefects":    [ ... ],
+              "testDefects":       [ ... ],
+              "infraDefects":      [ ... ]
+            }
+
+        or simply a flat list of defect objects.  We handle both cases.
+
+        Each defect object may contain fields such as:
+            id / defectId / workItemId
+            summary / title / description
+            owner / ownedBy
+            state
+            tags / triageTags / labels
+            count / numberBuilds / occurrenceCount
+            builds / reportedBuilds
+        """
+        defects = []
+
+        if not data:
+            return defects
+
+        # ── Normalise top-level structure ────────────────────────────────────
+        # Some responses wrap everything in a top-level key like "data" or "result"
+        if isinstance(data, dict):
+            # Check for known wrapper keys first
+            for wrapper_key in ("data", "result", "response", "payload"):
+                if wrapper_key in data and isinstance(data[wrapper_key], (dict, list)):
+                    data = data[wrapper_key]
+                    break
+
+        # Map section keys to our internal section labels
+        SECTION_MAP = {
+            "untriagedDefects":  "untriaged",
+            "highImpactDefects": "high_impact",
+            "productDefects":    "product_bug",
+            "testDefects":       "test_bug",
+            "infraDefects":      "infrastructure_bug",
+            "infrastructureDefects": "infrastructure_bug",
+            # Fallback: if the whole payload is a flat list
+            "_flat":             "unknown",
+        }
+
+        if isinstance(data, list):
+            # Flat list of defects — treat them all as "unknown" section
+            sections = {"_flat": data}
+        elif isinstance(data, dict):
+            # Check if any known section key exists
+            if any(k in data for k in SECTION_MAP if k != "_flat"):
+                sections = {k: data[k] for k in SECTION_MAP if k in data and isinstance(data[k], list)}
+            else:
+                # dict that is itself a single defect record
+                sections = {"_flat": [data]}
+        else:
+            logger.warning(f"Unexpected JSON type {type(data)} for {component}")
+            return defects
+
+        # ── Parse each section ───────────────────────────────────────────────
+        for section_key, items in sections.items():
+            section_label = SECTION_MAP.get(section_key, section_key)
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+
+                # Defect ID — try multiple field names
+                defect_id = (
+                    item.get("id") or item.get("defectId") or
+                    item.get("workItemId") or item.get("identifier") or
+                    item.get("dcterms:identifier") or ""
+                )
+                defect_id = str(defect_id).strip()
+                # Strip common prefixes like "RTC: 312186" → "312186"
+                for prefix in ("RTC: ", "RTC:", "rtc:", "rtc: "):
+                    if defect_id.startswith(prefix):
+                        defect_id = defect_id[len(prefix):].strip()
+                        break
+
+                if not defect_id:
+                    continue
+
+                # Summary
+                summary = (
+                    item.get("summary") or item.get("title") or
+                    item.get("dcterms:title") or item.get("name") or ""
+                ).strip()
+
+                # Owner
+                owner_raw = (
+                    item.get("owner") or item.get("ownedBy") or
+                    item.get("assignee") or item.get("rtc_cm:ownedBy") or ""
+                )
+                owner = owner_raw if isinstance(owner_raw, str) else (
+                    owner_raw.get("title") or owner_raw.get("name") or "Unassigned"
+                    if isinstance(owner_raw, dict) else "Unassigned"
+                )
+                owner = owner.strip() or "Unassigned"
+
+                # State
+                state_raw = item.get("state") or item.get("status") or item.get("rtc_cm:state") or ""
+                if isinstance(state_raw, dict):
+                    state = state_raw.get("rdf:resource") or state_raw.get("label") or ""
+                else:
+                    state = str(state_raw).strip()
+
+                # Occurrence / build count
+                number_builds = 0
+                for count_key in ("count", "numberBuilds", "occurrenceCount", "buildCount", "numberOfBuilds"):
+                    val = item.get(count_key)
+                    if val is not None:
+                        try:
+                            number_builds = int(val)
+                        except (ValueError, TypeError):
+                            pass
+                        break
+
+                # Tags
+                tags = []
+                for tag_key in ("tags", "triageTags", "labels", "dc:subject", "dcterms:subject"):
+                    raw = item.get(tag_key)
+                    if raw:
+                        if isinstance(raw, list):
+                            tags = [str(t).strip() for t in raw if t]
+                        elif isinstance(raw, str):
+                            tags = [raw.strip()] if raw.strip() else []
+                        break
+
+                # Augment tags from section context (product_bug / test_bug / infrastructure_bug)
+                triage_tags = list(tags)
+                if section_label == "product_bug" and not any("product" in t.lower() for t in triage_tags):
+                    triage_tags.append("product_bug")
+                elif section_label == "test_bug" and not any("test" in t.lower() for t in triage_tags):
+                    triage_tags.append("test_bug")
+                elif section_label == "infrastructure_bug" and not any("infra" in t.lower() for t in triage_tags):
+                    triage_tags.append("infrastructure_bug")
+
+                # Reported builds list
+                builds_raw = item.get("builds") or item.get("reportedBuilds") or item.get("buildsReported") or []
+                if isinstance(builds_raw, list):
+                    builds_list = [str(b) for b in builds_raw]
+                elif isinstance(builds_raw, str):
+                    builds_list = [builds_raw] if builds_raw else []
+                else:
+                    builds_list = []
+
+                defects.append({
+                    "id": defect_id,
+                    "summary": summary,
+                    "functionalArea": component,
+                    "owner": owner,
+                    "state": state,
+                    "triageTags": triage_tags,
+                    "tags": triage_tags,
+                    "number_builds": number_builds,
+                    "creation_date": item.get("creationDate") or item.get("creation_date") or
+                                     item.get("dc:created") or item.get("dcterms:created") or "",
+                    "last_occurrence_date": item.get("lastOccurrenceDate") or
+                                            item.get("last_occurrence_date") or "",
+                    "reported_builds": item.get("reportedBuildsString") or "",
+                    "buildsReported": builds_list,
+                    "section": section_label,
+                    "source": "COGNITIVE_BUILD_BREAK",
+                })
+
+        return defects
 
     def _parse_build_break_html(self, html: str, component: str) -> List[Dict]:
         """
