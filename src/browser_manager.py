@@ -26,26 +26,62 @@ class BrowserManager:
     def __init__(self):
         if self._initialized:
             return
-            
+
         self._initialized = True
         self.playwright = None
         self.browser = None
         self.context = None
         self.username = None
         self.password = None
-        self.event_loop = None  # Persistent event loop for browser operations
+        self.event_loop = None      # Persistent event loop — runs in _loop_thread
+        self._loop_thread = None    # Dedicated background thread for the event loop
         logger.info("🌐 Browser Manager initialized")
-    
+        self._start_background_loop()
+
+    def _start_background_loop(self):
+        """
+        Start a dedicated background thread that runs the asyncio event loop
+        continuously.  All Playwright operations are submitted to this loop via
+        run_coroutine_threadsafe() so the Playwright context never crosses loop
+        boundaries.
+        """
+        import threading
+
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            return  # Already running
+
+        self.event_loop = asyncio.new_event_loop()
+
+        def _run_loop():
+            asyncio.set_event_loop(self.event_loop)
+            logger.info("🔄 Browser event loop thread started")
+            self.event_loop.run_forever()
+            logger.info("🔄 Browser event loop thread stopped")
+
+        self._loop_thread = threading.Thread(target=_run_loop, name="browser-loop", daemon=True)
+        self._loop_thread.start()
+        logger.info("✅ Browser background event loop running")
+
     def _ensure_event_loop(self):
-        """Ensure we have a persistent event loop for browser operations"""
-        if self.event_loop is None or self.event_loop.is_closed():
-            logger.info("🔄 Creating new event loop for browser manager")
-            self.event_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.event_loop)
-        else:
-            # Set as current event loop for this thread
-            asyncio.set_event_loop(self.event_loop)
+        """Return the persistent running event loop (start it if needed)."""
+        if self.event_loop is None or self.event_loop.is_closed() or not self._loop_thread.is_alive():
+            logger.info("🔄 Restarting browser background event loop...")
+            self._start_background_loop()
         return self.event_loop
+
+    def _run_async(self, coro, timeout: float = 120):
+        """
+        Submit a coroutine to the persistent browser event loop and block the
+        calling thread until it completes.  Safe to call from any thread.
+        """
+        import concurrent.futures
+        loop = self._ensure_event_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise TimeoutError(f"Browser operation timed out after {timeout}s")
     
     async def start(self, username: str, password: str, user_data_dir: str = "/app/data/chrome_profile"):
         """Start the persistent browser session"""

@@ -246,20 +246,16 @@ class IBMAuthenticator:
             return False
     
     def _playwright_login(self, force_refresh: bool = False):
-        """Use async browser manager to login and extract cookies
-        
-        Args:
-            force_refresh: If True, force page refresh to get fresh cookies
+        """Use async browser manager to login and extract cookies.
+        Submits the coroutine to the browser manager's persistent running event loop.
         """
         try:
-            # Get browser manager and use its persistent event loop
             browser_manager = get_browser_manager()
-            loop = browser_manager._ensure_event_loop()
-            
-            # Run async login using the browser manager's event loop
-            result = loop.run_until_complete(self._async_playwright_login(force_refresh=force_refresh))
+            result = browser_manager._run_async(
+                self._async_playwright_login(force_refresh=force_refresh),
+                timeout=180   # 3 min for 2FA approval
+            )
             return result
-            
         except Exception as e:
             logger.error(f"Error in Playwright login: {e}")
             import traceback

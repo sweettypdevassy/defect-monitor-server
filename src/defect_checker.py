@@ -53,40 +53,18 @@ class DefectChecker:
         Fetch defects for a specific component from the Cognitive Functional Area Analysis page.
 
         Uses the persistent Playwright browser to intercept the XHR data API response
-        fired by the React SPA when the page loads.  This avoids trying to scrape
-        server-rendered HTML (which is essentially empty for a React SPA).
+        fired by the React SPA when the page loads.
 
-        The fetch runs in a dedicated thread with its own event loop to avoid conflicts
-        with the APScheduler background scheduler's event loop.
+        IMPORTANT: Playwright browser context objects are bound to the event loop on which
+        they were created (the browser_manager's persistent loop).  We must schedule the
+        coroutine onto THAT loop (via run_coroutine_threadsafe) and wait for its result,
+        rather than running it in a brand-new loop — doing so would silently fail because
+        the Playwright internals cannot cross event-loop boundaries.
 
         Returns list of defects or None on error.
         """
         import time
-        import asyncio
-        import threading
         from browser_manager import get_browser_manager
-
-        def _run_in_thread(coro):
-            """Run an async coroutine in a dedicated thread with its own event loop."""
-            result = [None]
-            exc = [None]
-
-            def thread_target():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    result[0] = loop.run_until_complete(coro)
-                except Exception as e:
-                    exc[0] = e
-                finally:
-                    loop.close()
-
-            t = threading.Thread(target=thread_target, daemon=True)
-            t.start()
-            t.join(timeout=90)          # generous per-component timeout
-            if exc[0]:
-                raise exc[0]
-            return result[0]
 
         for attempt in range(max_retries):
             try:
@@ -96,20 +74,20 @@ class DefectChecker:
 
                 browser_manager = get_browser_manager()
 
-                # Primary path: intercept the XHR data API call made by the React SPA
-                data = _run_in_thread(
-                    browser_manager.fetch_component_data_json(component, timeout=60000)
+                # Submit to the browser manager's persistent running event loop.
+                # This is the ONLY correct way — Playwright context is bound to that loop.
+                data = browser_manager._run_async(
+                    browser_manager.fetch_component_data_json(component, timeout=60000),
+                    timeout=120
                 )
 
                 if data is not None:
                     defects = self._parse_cognitive_json(data, component)
                     logger.info(
-                        f"✅ Fetched {len(defects)} defects for {component} via data API interception"
+                        f"✅ Fetched {len(defects)} defects for {component} via data API"
                     )
                     return defects
 
-                # data is None — either the backend returned 500 or no API call fired.
-                # Log and retry.
                 logger.warning(
                     f"⚠️  No data API response captured for {component} "
                     f"(attempt {attempt + 1}/{max_retries})"

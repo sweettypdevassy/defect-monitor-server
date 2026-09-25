@@ -603,23 +603,24 @@ class DefectScheduler:
             # Get the browser manager
             from browser_manager import get_browser_manager
             browser_manager = get_browser_manager()
-            
-            # Ensure browser is started
-            loop = browser_manager._ensure_event_loop()
-            
+
             # Get credentials from config
             ibm_config = self.config.get("ibm", {})
             username = ibm_config.get("username", "")
             password = ibm_config.get("password", "")
-            
-            # Start browser if not already started
+
+            # Start browser if not already started (submitted to its own loop)
             if not browser_manager.context:
                 logger.info("🚀 Starting browser session for fresh login...")
-                loop.run_until_complete(browser_manager.start(username, password))
-            
+                browser_manager._run_async(
+                    browser_manager.start(username, password), timeout=60
+                )
+
             # Force a fresh login with 2FA to get brand new cookies
             logger.info("🔄 Forcing fresh login to reset session expiration...")
-            success = loop.run_until_complete(browser_manager.force_fresh_login())
+            success = browser_manager._run_async(
+                browser_manager.force_fresh_login(), timeout=180
+            )
             
             if success:
                 logger.info("=" * 60)
