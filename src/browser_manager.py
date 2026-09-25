@@ -687,7 +687,6 @@ class BrowserManager:
                     return self._fetch_page
             except Exception:
                 pass
-            # Page crashed or closed — reset it
             logger.info("🔄 Fetch page needs recovery — creating new one")
             self._fetch_page = None
 
@@ -695,17 +694,42 @@ class BrowserManager:
             return None
 
         try:
-            # Create a new page and navigate to the portal list page
-            # (not a component page, so it loads fast and React mounts cleanly)
             logger.info("📄 Creating dedicated fetch page on cognitive portal...")
             self._fetch_page = await self.context.new_page()
+
+            # Navigate to the component list page and wait for React to fully mount.
+            # We wait for networkidle here (once, at creation) so React bootstraps
+            # completely before we start navigating to component pages.
             await self._fetch_page.goto(
                 "https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaList.html",
-                wait_until="domcontentloaded",
-                timeout=20000
+                wait_until="networkidle",
+                timeout=30000
             )
-            # Wait briefly for React to mount on the list page
-            await self._fetch_page.wait_for_timeout(3000)
+
+            # Verify JS actually ran — check if React mounted something
+            js_ran = await self._fetch_page.evaluate("""
+                () => {
+                    const app = document.getElementById('cognitive-app');
+                    const root = document.getElementById('root');
+                    const body = document.body;
+                    return {
+                        cognitiveAppChildren: app ? app.children.length : -1,
+                        rootChildren: root ? root.children.length : -1,
+                        bodyText: body ? body.innerText.substring(0, 200) : '',
+                        bodyHTML: body ? body.innerHTML.substring(0, 500) : '',
+                        title: document.title,
+                        jsEnabled: typeof window !== 'undefined',
+                    };
+                }
+            """)
+            logger.info(f"📄 Fetch page state: {js_ran}")
+
+            if js_ran.get('cognitiveAppChildren', 0) == 0 and js_ran.get('rootChildren', -1) <= 0:
+                logger.warning("⚠️  React did not mount on fetch page — JS may be blocked")
+                logger.info(f"   Body HTML: {js_ran.get('bodyHTML', '')[:400]}")
+            else:
+                logger.info(f"✅ React mounted on fetch page (title='{js_ran.get('title')}')")
+
             logger.info(f"✅ Fetch page ready at: {self._fetch_page.url}")
             return self._fetch_page
         except Exception as e:
