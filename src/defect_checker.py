@@ -51,8 +51,8 @@ class DefectChecker:
     def fetch_defects_for_component(self, component: str, max_retries: int = 3) -> Optional[List[Dict]]:
         """
         Fetch defects for a specific component from the Cognitive Functional Area Analysis page.
-        Scrapes the Build Break Report HTML tab for defect data.
-        Implements retry logic with exponential backoff for network resilience.
+        Uses the persistent Playwright browser to render the React SPA (data is loaded dynamically
+        via JS — plain requests only gets the empty shell).
         Returns list of defects or None on error.
         """
         import time
@@ -61,90 +61,52 @@ class DefectChecker:
             logger.error("❌ beautifulsoup4 is not installed. Run: pip install beautifulsoup4")
             return None
 
-        # Track if we just re-authenticated to avoid immediate re-check
-        just_authenticated = False
+        encoded_component = urllib.parse.quote(component)
+        page_url = (
+            f"{self.build_break_base_url}"
+            f"?functionalArea={encoded_component}"
+            f"&tab=Build%2BBreak+Report"
+        )
 
         for attempt in range(max_retries):
             try:
-                session = self.authenticator.get_session()
-                if not session:
-                    logger.error(f"No valid session for fetching {component} defects")
-                    return None
-
                 if attempt > 0:
                     logger.info(f"🔄 Retry {attempt}/{max_retries-1} for {component}")
+                    time.sleep(2 ** attempt)
 
-                # Build URL — new cognitive portal URL
-                encoded_component = urllib.parse.quote(component)
-                page_url = (
-                    f"{self.build_break_base_url}"
-                    f"?functionalArea={encoded_component}"
-                    f"&tab=Build%2BBreak+Report"
-                )
-
-                # Increase timeout for retries
-                timeout = 30 + (attempt * 15)  # 30s, 45s, 60s
-
-                response = session.get(
-                    page_url,
-                    timeout=timeout,
-                    headers={
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Cache-Control': 'no-cache'
-                    },
-                    verify=False  # Disable SSL verification for IBM self-signed certs
-                )
-
-                # Check for authentication failure and re-authenticate
-                cookie_monitor = get_cookie_monitor()
-                if not just_authenticated and cookie_monitor.detect_cookie_expiration(response):
-                    logger.warning(f"🔴 Authentication failure for {component}, re-authenticating...")
-                    if self.authenticator.authenticate():
-                        time.sleep(3)
-                        session = self.authenticator.get_session()
-                        if session:
-                            just_authenticated = True
-                            continue
-                    else:
-                        logger.error("❌ Re-authentication failed")
-                        if attempt < max_retries - 1:
-                            time.sleep(2 ** attempt)
-                            continue
-                        return None
-                elif just_authenticated and cookie_monitor.detect_cookie_expiration(response):
-                    logger.warning(f"⚠️  Got 401 right after re-auth for {component} - likely slow server, continuing...")
-                    just_authenticated = False
-
-                if response.status_code != 200:
-                    logger.error(f"Failed to fetch defects for {component}: HTTP {response.status_code}")
+                # Ensure browser is started and logged in
+                if not self.authenticator.authenticate():
+                    logger.error(f"❌ Authentication failed for {component}")
                     if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)
                         continue
                     return None
 
-                # Check if we were redirected to login page
-                if "login" in response.url.lower():
-                    logger.warning(f"🔴 Redirected to login for {component}, re-authenticating...")
-                    if self.authenticator.authenticate():
-                        time.sleep(3)
-                        session = self.authenticator.get_session()
-                        if session:
-                            just_authenticated = True
-                            continue
+                # Use the Playwright browser to get the fully-rendered HTML
+                from browser_manager import get_browser_manager
+                browser_manager = get_browser_manager()
+                loop = browser_manager._ensure_event_loop()
+
+                html = loop.run_until_complete(
+                    browser_manager.fetch_rendered_html(page_url, timeout=45000)
+                )
+
+                if html is None:
+                    logger.warning(f"⚠️ No HTML returned for {component}")
+                    if attempt < max_retries - 1:
+                        continue
                     return None
 
-                # Parse the HTML response
-                defects = self._parse_build_break_html(response.text, component)
+                # Check if we got the login page instead of content
+                if "login.w3.ibm.com" in html or (len(html) < 1000 and "cognitive-app" not in html):
+                    logger.warning(f"🔴 Got login/empty page for {component}, re-authenticating...")
+                    if attempt < max_retries - 1:
+                        continue
+                    return None
+
+                defects = self._parse_build_break_html(html, component)
                 logger.info(f"✅ Fetched {len(defects)} defects for {component} from cognitive portal")
                 return defects
 
-            except requests.exceptions.Timeout as e:
-                if attempt < max_retries - 1:
-                    logger.debug(f"⏱️ Timeout fetching {component} (attempt {attempt+1}/{max_retries}), retrying...")
-                    time.sleep(2 ** attempt)
-                else:
-                    logger.warning(f"⚠️ Timeout after {max_retries} attempts for {component}, skipping...")
-                    return None
             except Exception as e:
                 logger.error(f"Error fetching defects for {component}: {e}")
                 if attempt < max_retries - 1:

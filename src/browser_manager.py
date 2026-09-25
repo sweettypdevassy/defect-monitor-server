@@ -478,17 +478,31 @@ class BrowserManager:
                         await page.wait_for_url("**/cognitive/**", timeout=120000)
                         logger.info("✅ Successfully authenticated with 2FA!")
                         
-                        # Wait a bit for cookies to be set
+                        # Wait for the page to fully settle and backend session to establish
                         await page.wait_for_timeout(3000)
                         
-                        # Get and save cookies
+                        # Navigate to a real component page so the backend creates a
+                        # fully-bound session (activates mod_auth_openidc_session for data API)
+                        logger.info("🔄 Activating backend session by loading a component page...")
+                        try:
+                            await page.goto(
+                                "https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html"
+                                "?functionalArea=Messaging&tab=Build%2BBreak+Report",
+                                wait_until="networkidle",
+                                timeout=30000
+                            )
+                            await page.wait_for_timeout(5000)
+                            logger.info(f"📍 Session activation page URL: {page.url}")
+                        except Exception as e:
+                            logger.warning(f"Session activation navigation warning (continuing): {e}")
+                        
+                        # Get and save cookies — now includes properly bound session
                         all_cookies = await self.context.cookies()
                         logger.info(f"📊 Total cookies after login: {len(all_cookies)}")
                         
                         # Check for important session cookies
                         session_cookies = [c for c in all_cookies if c.get('name') in ['LtpaToken2', 'JSESSIONID', 'mod_auth_openidc_session']]
                         
-                        logger.info(f"📊 Total cookies after login: {len(all_cookies)}")
                         if session_cookies:
                             logger.info(f"✅ Found {len(session_cookies)} important session cookies:")
                             for cookie in session_cookies:
@@ -597,6 +611,59 @@ class BrowserManager:
             logger.error(traceback.format_exc())
             return False
     
+    async def fetch_rendered_html(self, url: str, wait_for_selector: str = None, timeout: int = 30000) -> Optional[str]:
+        """
+        Navigate to a URL using the authenticated Playwright browser and return
+        the fully-rendered HTML after JavaScript execution.
+        This is needed for React SPAs that load data dynamically.
+        
+        Args:
+            url: The page URL to fetch
+            wait_for_selector: CSS selector to wait for before returning HTML
+            timeout: Navigation timeout in ms
+            
+        Returns:
+            Rendered HTML string, or None on error
+        """
+        if not self.context:
+            logger.error("Browser not started — cannot fetch rendered HTML")
+            return None
+        
+        page = None
+        try:
+            # Use a new page to avoid disrupting the main session page
+            page = await self.context.new_page()
+            
+            # Navigate and wait for JS to execute
+            await page.goto(url, wait_until="networkidle", timeout=timeout)
+            
+            # Wait for specific selector if provided
+            if wait_for_selector:
+                try:
+                    await page.wait_for_selector(wait_for_selector, timeout=15000)
+                except Exception:
+                    pass  # Continue even if selector not found
+            else:
+                # Default: wait for any table row or RTC link to appear
+                try:
+                    await page.wait_for_selector('tr td a, [class*="defect"], [class*="row"]', timeout=15000)
+                except Exception:
+                    # No defects found — page may be empty, still return HTML
+                    await page.wait_for_timeout(3000)
+            
+            html = await page.content()
+            return html
+            
+        except Exception as e:
+            logger.error(f"Error fetching rendered HTML for {url}: {e}")
+            return None
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
     async def stop(self):
         """Stop the browser session - DISABLED to keep session alive across restarts"""
         # DO NOT close the browser - we want to keep the session alive!
