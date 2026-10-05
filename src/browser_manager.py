@@ -745,22 +745,22 @@ class BrowserManager:
         """
         Fetch the Build Break Report data for a component.
 
-        From the browser Network tab screenshot, the actual API calls are:
-          - whoami/          → 200 (identity)
-          - navigation.json  → 200
-          - version/         → 200
-          - proxy_links.json → 200
-          - ab1252d0         → 204  ← short hash URLs, service worker cache hits
-          - ab1252d0         → 204  ← these serve the actual defect data from SW cache
+        From JS bundle analysis, the React app calls:
+            fetch(kt(baseUrl, tabName))
+            where kt = (e, t) => C(`${e}/data/${t}`)
+            and baseUrl comes from config as "external-data/"
 
-        The page renders fine in Chrome because Chrome has a service worker
-        registered with cached data. Our headless browser has a fresh profile,
-        so service worker calls return 204 (empty) and React renders nothing.
+        So the actual fetch is:  fetch("external-data/data/buildBreakReport")
+        Relative to /cognitive/ that is: /cognitive/external-data/data/buildBreakReport
 
-        FIX: Unregister the service worker on page load so the app falls back
-        to direct fetch calls, which will hit the real backend. Then intercept
-        ALL fetch responses (including the short hash-named ones) and capture
-        whichever one contains defect data.
+        The /cognitive/external-data/ nginx reverse-proxy backend is currently
+        returning 500 for all direct HTTP requests. However, the browser's service
+        worker intercepts these fetch() calls and serves them from its cache (200).
+
+        Strategy: Navigate the already-authenticated page to the component URL,
+        then use page.evaluate() to call fetch() from WITHIN the page's JS context.
+        This goes through the service worker cache, bypassing the broken backend.
+        If the SW call fails, fall back to intercepting the response event.
         """
         if not self.context:
             logger.error("Browser not started — cannot fetch component data")
@@ -780,29 +780,15 @@ class BrowserManager:
             logger.error("Cannot get fetch page — aborting")
             return None
 
-        captured_data = [None]   # will hold the first interesting JSON response body
-        discovered_api_url = [None]  # will hold the real data API URL when found
-
-        async def handle_request(request):
-            """Log ALL non-static requests so we can discover the real API URL."""
-            try:
-                url = request.url
-                if not any(url.endswith(ext) for ext in (".js", ".css", ".png", ".ico", ".woff", ".ttf", ".map", ".svg")):
-                    logger.info(f"   ➡️  REQ [{request.method}] {url}")
-            except Exception:
-                pass
+        captured_data = [None]
 
         async def handle_response(response):
             try:
                 url = response.url
                 status = response.status
                 ct = response.headers.get("content-type", "")
-
-                # Log every non-static response
                 if not any(url.endswith(ext) for ext in (".js", ".css", ".png", ".ico", ".woff", ".ttf", ".map", ".svg")):
                     logger.info(f"   📡 [{status}] {url}  ct={ct[:60]}")
-
-                # Capture any 200 JSON response that might have defect data
                 if captured_data[0] is None and status == 200:
                     try:
                         if "json" in ct.lower():
@@ -810,17 +796,14 @@ class BrowserManager:
                             body_str = str(body)
                             if any(kw in body_str for kw in ["defect", "Defect", "RTC", "untriaged", "summary", "functionalArea"]):
                                 captured_data[0] = body
-                                discovered_api_url[0] = url
                                 logger.info(f"🎯 FOUND DATA API URL: {url}")
-                                logger.info(f"✅ Captured data from: {url}")
                         elif "text" in ct.lower() or ct == "":
                             text = await response.text()
                             if text and any(kw in text for kw in ["RTC:", "defect", "untriaged"]):
                                 import json as _json
                                 try:
                                     captured_data[0] = _json.loads(text)
-                                    discovered_api_url[0] = url
-                                    logger.info(f"🎯 FOUND DATA API URL (text/plain): {url}")
+                                    logger.info(f"🎯 FOUND DATA (text): {url}")
                                 except Exception:
                                     pass
                     except Exception:
@@ -828,27 +811,9 @@ class BrowserManager:
             except Exception:
                 pass
 
-        page.on("request", handle_request)
         page.on("response", handle_response)
 
         try:
-            # Unregister service workers BEFORE navigating so the app fetches
-            # directly from the backend instead of from SW cache.
-            logger.info(f"🔧 Unregistering service workers...")
-            try:
-                await page.evaluate("""
-                    async () => {
-                        if ('serviceWorker' in navigator) {
-                            const regs = await navigator.serviceWorker.getRegistrations();
-                            for (const reg of regs) { await reg.unregister(); }
-                            return regs.length;
-                        }
-                        return 0;
-                    }
-                """)
-            except Exception:
-                pass
-
             logger.info(f"🌐 Navigating to {page_url}")
             try:
                 await page.goto(page_url, wait_until="domcontentloaded", timeout=timeout)
@@ -858,50 +823,79 @@ class BrowserManager:
                     self._fetch_page = None
                     return None
 
-            # Unregister again after load (in case SW re-registered during load)
-            try:
-                await page.evaluate("""
-                    async () => {
-                        if ('serviceWorker' in navigator) {
-                            const regs = await navigator.serviceWorker.getRegistrations();
-                            for (const reg of regs) { await reg.unregister(); }
-                        }
-                    }
-                """)
-            except Exception:
-                pass
+            # Wait for React to mount and the SW to become active
+            await _asyncio.sleep(3)
 
-            # Wait for React to render (up to 35s)
-            content_appeared = False
-            logger.info(f"   ⏳ Waiting for React to render...")
-            for _ in range(35):
+            # ── Primary: call fetch() from inside the page JS context ────────
+            # This goes through the service worker cache, which is the only path
+            # that actually returns data (the backend returns 500 for direct calls).
+            # The React app calls: fetch("external-data/data/buildBreakReport")
+            # relative to the page origin + /cognitive/ base.
+            logger.info(f"   🔧 Calling fetch() via service worker for {component}...")
+            sw_data = None
+            try:
+                sw_data = await page.evaluate(f"""
+                    async () => {{
+                        // The React app calls fetch relative to the page URL base.
+                        // Base URL is the origin + /cognitive/ path prefix.
+                        const base = window.location.origin + '/cognitive/';
+                        const encodedComp = encodeURIComponent({repr(component)});
+
+                        // Known fetch patterns from JS bundle analysis:
+                        //   kt(baseUrl, tabName) = baseUrl + "/data/" + tabName
+                        //   where baseUrl = "external-data/"
+                        const urls = [
+                            base + 'external-data/data/buildBreakReport?functionalArea=' + encodedComp,
+                            base + 'external-data/data/buildBreakReport?fas=' + encodedComp,
+                            'external-data/data/buildBreakReport?functionalArea=' + encodedComp,
+                        ];
+
+                        for (const url of urls) {{
+                            try {{
+                                const resp = await fetch(url, {{
+                                    credentials: 'include',
+                                    headers: {{
+                                        'Accept': 'application/json',
+                                        'X-Requested-With': 'XMLHttpRequest',
+                                    }}
+                                }});
+                                if (resp.ok) {{
+                                    const ct = resp.headers.get('content-type') || '';
+                                    if (ct.includes('json')) {{
+                                        const data = await resp.json();
+                                        const s = JSON.stringify(data);
+                                        if (s.includes('defect') || s.includes('Defect') ||
+                                            s.includes('untriaged') || s.includes('RTC')) {{
+                                            return data;
+                                        }}
+                                    }}
+                                }}
+                            }} catch(e) {{
+                                // try next URL
+                            }}
+                        }}
+                        return null;
+                    }}
+                """)
+            except Exception as e:
+                logger.warning(f"   SW fetch eval error for {component}: {e}")
+
+            if sw_data:
+                logger.info(f"✅ Service worker fetch succeeded for {component}")
+                return sw_data
+
+            # ── Fallback: wait for response interceptor to catch the data ────
+            logger.info(f"   ⏳ Waiting for response interceptor (up to 30s) for {component}...")
+            for _ in range(30):
                 await _asyncio.sleep(1)
                 if captured_data[0] is not None:
-                    content_appeared = True
                     break
-                for sel in ("table tr td", "h2", "h3", "h4",
-                            "[class*='defect']", "[class*='Defect']",
-                            "[class*='report']", "[class*='Report']",
-                            "[class*='analysis']"):
-                    try:
-                        if await page.locator(sel).count() > 0:
-                            logger.info(f"   ✅ Content: {sel!r}")
-                            content_appeared = True
-                            break
-                    except Exception:
-                        continue
-                if content_appeared:
-                    break
-
-            if not content_appeared:
-                logger.warning(f"   ⚠️  No content after 35s for {component}")
-
-            await _asyncio.sleep(2)
 
             if captured_data[0] is not None:
+                logger.info(f"✅ Response interceptor captured data for {component}")
                 return captured_data[0]
 
-            # Scrape DOM
+            # ── Last resort: scrape rendered DOM ────────────────────────────
             logger.info(f"🔍 Scraping DOM for {component}...")
             try:
                 dom_data = await page.evaluate("""
@@ -943,29 +937,21 @@ class BrowserManager:
                     self._fetch_page = None
                 return None
 
-            logger.info(
-                f"   📄 DOM: url={dom_data.get('currentURL','?')}, "
-                f"sections={len(dom_data.get('sections',[]))}, "
-                f"tableRows={len(dom_data.get('allTableRows',[]))}"
-            )
             raw_text = dom_data.get('rawText', '').strip()
+            logger.info(f"   📄 DOM: sections={len(dom_data.get('sections',[]))}, rows={len(dom_data.get('allTableRows',[]))}")
             if raw_text:
                 logger.info(f"   📝 Page text:\n{raw_text[:1500]}")
             else:
-                logger.warning(f"   ⚠️  Page still empty after SW unregister")
+                logger.warning(f"   ⚠️  Page empty after all attempts for {component}")
                 logger.info(f"   🔍 App HTML: {dom_data.get('appHTML','')[:800]}")
 
             all_rows = dom_data.get('allTableRows', [])
             sections = dom_data.get('sections', [])
             if all_rows or sections:
-                return {
-                    "_dom_scraped": True, "sections": sections,
-                    "allTableRows": all_rows,
-                    "pageTitle": dom_data.get('pageTitle', ''),
-                    "component": component
-                }
+                return {"_dom_scraped": True, "sections": sections, "allTableRows": all_rows,
+                        "pageTitle": dom_data.get('pageTitle', ''), "component": component}
 
-            logger.warning(f"   ⚠️  No table data for {component}")
+            logger.warning(f"   ⚠️  No data for {component}")
             return None
 
         except Exception as e:

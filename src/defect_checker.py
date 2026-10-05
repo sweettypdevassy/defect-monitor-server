@@ -82,11 +82,31 @@ class DefectChecker:
 
         Returns list of defects, or empty list on complete failure.
         """
+        # ── Primary: browser-based fetch via service worker cache ────────────
+        # The /cognitive/external-data/ backend returns 500 for direct HTTP calls.
+        # The ONLY path that works is the browser's service worker cache, which
+        # intercepts fetch("external-data/data/buildBreakReport") and serves data.
+        try:
+            from browser_manager import get_browser_manager
+            bm = get_browser_manager()
+            raw = bm._run_async(
+                bm.fetch_component_data_json(component),
+                timeout=90,
+            )
+            if raw is not None:
+                defects = self._parse_cognitive_json(raw, component)
+                logger.info(f"✅ Browser/SW fetch: {len(defects)} defects for {component}")
+                return defects
+            logger.warning(f"⚠️  Browser fetch returned nothing for {component}")
+        except Exception as e:
+            logger.warning(f"⚠️  Browser fetch error for {component}: {e}")
+
+        # ── Fallback: direct requests with saved cookies (works if backend recovers)
         defects = self._fetch_via_cognitive_api(component)
         if defects is not None:
             return defects
 
-        logger.warning(f"⚠️  Could not fetch defects for {component} from cognitive API")
+        logger.warning(f"⚠️  Could not fetch defects for {component} from any source")
         return []
 
     def _build_cognitive_session(self) -> Optional[requests.Session]:
