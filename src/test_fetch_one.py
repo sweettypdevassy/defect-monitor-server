@@ -1,125 +1,101 @@
 #!/usr/bin/env python3
 """
-Trigger a fetch through the RUNNING server's HTTP API so it uses
-the live browser context (with service worker active).
+Test the fetch by calling the RUNNING server's refresh endpoint.
+This uses the live gunicorn process where the browser context IS active.
 
 Run: docker compose exec defect-monitor python3 src/test_fetch_one.py
 """
-import sys, os, json, time
-sys.path.insert(0, '/app/src')
-
-import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-import requests
-import urllib3
+import sys, time, json
+import requests, urllib3
 urllib3.disable_warnings()
 
 BASE = 'http://localhost:5000'
+COMPONENT = 'Batch'
 
-print("\n" + "="*60)
-print("METHOD 1: Trigger fetch via running server API")
-print("="*60)
+print(f"\n{'='*60}")
+print(f"Triggering refresh for: {COMPONENT}")
+print(f"{'='*60}\n")
 
-# Trigger a background fetch for Batch via the /fetch_component endpoint
+# Step 1: Trigger async refresh
 try:
-    r = requests.post(f'{BASE}/api/fetch_component',
-                      json={'component': 'Batch'},
-                      timeout=120)
-    print(f"POST /api/fetch_component → [{r.status_code}]")
-    print(f"Response: {r.text[:500]}")
+    r = requests.post(f'{BASE}/api/refresh-component/{COMPONENT}', timeout=10)
+    print(f"Trigger: [{r.status_code}] {r.text[:200]}")
+    refresh_id = r.json().get('refresh_id', '') if r.status_code == 200 else ''
 except Exception as e:
-    print(f"POST /api/fetch_component → ERROR: {e}")
+    print(f"Trigger error: {e}")
+    refresh_id = ''
 
-# Also try GET variant
+if refresh_id:
+    print(f"\nWaiting for refresh {refresh_id} to complete...")
+    for i in range(30):
+        time.sleep(2)
+        try:
+            s = requests.get(f'{BASE}/api/refresh-status/{refresh_id}', timeout=5)
+            if s.status_code == 200:
+                status = s.json()
+                print(f"  [{i*2}s] status={status.get('status','?')} progress={status.get('progress','?')}")
+                if status.get('status') in ('completed', 'done', 'finished', 'error'):
+                    print(f"  Final: {status}")
+                    break
+        except Exception as e:
+            print(f"  [{i*2}s] status check error: {e}")
+else:
+    print("No refresh_id, waiting 30s for background fetch...")
+    time.sleep(30)
+
+# Step 2: Check results
+print(f"\n{'='*60}")
+print(f"Checking fetched defects for {COMPONENT}...")
+print(f"{'='*60}\n")
+
 try:
-    r = requests.get(f'{BASE}/api/fetch_component?component=Batch', timeout=120)
-    print(f"\nGET /api/fetch_component?component=Batch → [{r.status_code}]")
-    print(f"Response: {r.text[:500]}")
-except Exception as e:
-    print(f"GET → ERROR: {e}")
-
-print("\n" + "="*60)
-print("METHOD 2: Use the browser manager directly from INSIDE the container")
-print("(shares the same process as gunicorn via import)")
-print("="*60)
-
-# Try to connect to the running gunicorn's browser manager via its socket
-# The browser manager is a singleton — in gunicorn it's already started
-# We need to use the SAME process. Let's check if we can call it via the app
-
-try:
-    # Check what API endpoints exist
-    r = requests.get(f'{BASE}/health', timeout=5)
-    print(f"Health: [{r.status_code}] {r.text[:100]}")
-    
-    # Try dashboard data which triggers a real fetch
-    r = requests.get(f'{BASE}/api/dashboard_data?component=Batch&force_refresh=true', timeout=120)
-    print(f"\nGET /api/dashboard_data?component=Batch → [{r.status_code}]")
+    r = requests.get(f'{BASE}/api/insights/{COMPONENT}', timeout=15)
+    print(f"Insights [{r.status_code}]")
     if r.status_code == 200:
         data = r.json()
-        print(f"Keys: {list(data.keys()) if isinstance(data, dict) else 'list'}")
-        defects = data.get('defects', data.get('data', []))
-        print(f"Defects count: {len(defects) if isinstance(defects, list) else '?'}")
-        if defects and isinstance(defects, list):
-            print(f"First defect: {defects[0]}")
+        defects = data.get('defects', data.get('allDefects', []))
+        print(f"Defects: {len(defects)}")
+        if defects:
+            d = defects[0]
+            print(f"First: id={d.get('id')} summary={d.get('summary','')[:60]} source={d.get('source','?')}")
     else:
-        print(f"Body: {r.text[:300]}")
+        print(r.text[:300])
 except Exception as e:
-    print(f"ERROR: {e}")
+    print(f"Insights error: {e}")
 
-
-print("\n" + "="*60)
-print("METHOD 3: Check all available API routes on running server")
-print("="*60)
-
+# Also check all-components data
 try:
-    endpoints = [
-        '/api/components',
-        '/api/defects?component=Batch',
-        '/api/fetch?component=Batch',
-        '/dashboard',
-        '/api/trigger_fetch',
-        '/api/refresh',
-    ]
-    for ep in endpoints:
-        try:
-            r = requests.get(f'{BASE}{ep}', timeout=10)
-            print(f"  [{r.status_code}] {ep}  ct={r.headers.get('content-type','')[:40]}")
-            if r.status_code == 200 and 'json' in r.headers.get('content-type',''):
-                body = r.json()
-                if isinstance(body, list) and len(body) > 0:
-                    print(f"    → list[{len(body)}], first={str(body[0])[:100]}")
-                elif isinstance(body, dict):
-                    print(f"    → keys={list(body.keys())[:5]}")
-        except Exception as e:
-            print(f"  [ERR] {ep}: {e}")
+    r = requests.get(f'{BASE}/api/all-components', timeout=15)
+    if r.status_code == 200:
+        data = r.json()
+        comps = data if isinstance(data, list) else data.get('components', [])
+        batch = next((c for c in comps if isinstance(c, dict) and 
+                      COMPONENT.lower() in c.get('name','').lower()), None)
+        if batch:
+            print(f"\nAll-components data for {COMPONENT}:")
+            print(f"  defects={batch.get('defect_count', batch.get('defects','?'))}")
+            print(f"  last_updated={batch.get('last_updated','?')}")
+        else:
+            print(f"\nAll-components: {COMPONENT} not found. Keys sample: {str(comps[:2])[:200]}")
 except Exception as e:
-    print(f"ERROR: {e}")
+    print(f"All-components error: {e}")
 
+# Check live logs for the browser/SW activity
+print(f"\n{'='*60}")
+print("Checking container logs for browser/SW fetch activity...")
+print(f"{'='*60}\n")
+import subprocess
+result = subprocess.run(
+    ['docker', 'compose', 'logs', '--tail=50', 'defect-monitor'],
+    capture_output=True, text=True, cwd='/app'
+)
+lines = result.stdout.split('\n')
+relevant = [l for l in lines if any(k in l for k in [
+    'SW fetch', 'service worker', 'FOUND DATA', 'Browser/SW', 'fetch()',
+    'Calling fetch', 'Navigating to', 'external-data', 'evaluate',
+    COMPONENT, 'defects for'
+])]
+for l in relevant[-30:]:
+    print(l)
 
-print("\n" + "="*60)
-print("METHOD 4: Run the service worker fetch test from inside the")
-print("          EXISTING browser context (attach to running gunicorn)")
-print("="*60)
-
-# The browser manager in gunicorn has context. We can't share it across
-# processes. But we CAN use the /api/ endpoint to trigger and wait.
-# Let's find the right trigger endpoint by checking app.py routes.
-
-try:
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("app", "/app/src/app.py")
-    # Just read the routes from the file without importing
-    with open('/app/src/app.py') as f:
-        app_content = f.read()
-    import re
-    routes = re.findall(r'@app\.route\(["\']([^"\']+)["\']', app_content)
-    print(f"Available routes in app.py ({len(routes)}):")
-    for r in routes:
-        print(f"  {r}")
-except Exception as e:
-    print(f"ERROR reading routes: {e}")
-
-print("\n" + "="*60 + "\nDone.\n" + "="*60)
+print(f"\n{'='*60}\nDone.\n{'='*60}")
