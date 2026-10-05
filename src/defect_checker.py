@@ -139,14 +139,24 @@ class DefectChecker:
     # Confirmed from live API: oslc_cm:severity = severity.literal.l3
     _SEVERITY_BUILD_BREAK = "severity.literal.l3"
 
+    # Open states — the OSLC where clause is unreliable on this server, so we
+    # also post-filter by state here to exclude Canceled/Closed/Verified items.
+    _OPEN_STATES = {
+        "commonWorkflow.state.open",
+        "commonWorkflow.state.returned",
+        "commonWorkflow.state.debugging",
+        "commonWorkflow.state.inprogress",
+        "defect_workflow.state.s1",
+    }
+
     def _parse_oslc_response(self, data: dict, component: str) -> List[Dict]:
         """
-        Parse OSLC JSON response and post-filter to only Build Break defects
+        Parse OSLC JSON response and post-filter to only open Build Break defects
         for the requested functional area.
 
-        Enumeration fields (severity, functional_area, release, profileOrEdition)
-        are opaque literal IDs on this server, so we filter them here in Python
-        rather than in the OSLC where clause.
+        The OSLC where clause on this server is unreliable (ignores state filter),
+        so all filters — severity, state, and functional area — are applied here
+        in Python after fetching.
         """
         # This server returns oslc_cm:results (underscore variant)
         items = (data.get("oslc_cm:results")
@@ -157,8 +167,6 @@ class DefectChecker:
             return []
 
         # Resolve the functional area literal ID for this component name
-        # by finding it in the first item that matches (cached per component call)
-        # We identify the component by matching the display name via the enumeration URL suffix
         component_literal = self._resolve_functional_area_literal(component, items)
 
         defects = []
@@ -167,6 +175,10 @@ class DefectChecker:
             state_id = ""
             if isinstance(state_obj, dict):
                 state_id = state_obj.get("rdf:resource", "").split("/")[-1]
+
+            # Post-filter: only open states (where clause unreliable on this server)
+            if state_id not in self._OPEN_STATES:
+                continue
 
             # Post-filter: only Build Break severity
             sev_obj = item.get("oslc_cm:severity") or {}
