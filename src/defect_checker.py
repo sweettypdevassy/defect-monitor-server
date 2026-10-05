@@ -65,7 +65,16 @@ class DefectChecker:
         """
         Fetch open build-break defects for a component directly via the WS-CD
         project-area scoped OSLC endpoint on wasrtc.hursley.ibm.com.
-        No browser, no cookies, no 2FA — plain j_security_check auth.
+
+        The RTC OSLC API on this server does NOT support string-value filtering on
+        enumeration fields (severity, release, profile, functional_area) — those
+        fields store opaque literal IDs (e.g. severity.literal.l3), not display names.
+        Only rtc_cm:state supports plain-string filtering.
+
+        Strategy:
+          - Filter by open states in the where clause (reliable)
+          - Filter by severity=Build Break, functional_area, release=Next,
+            profile=Liberty in Python after fetching (post-filter)
         """
         try:
             if not self.authenticator.authenticate_jazz_rtc():
@@ -76,58 +85,47 @@ class DefectChecker:
             if not session:
                 return None
 
-            # Full filter — mirrors rtc-mcp-server's Java query exactly
-            where_full = (
-                'rtc_cm:type="defect"'
-                ' AND rtc_cm:com.ibm.team.workitem.attribute.severity="(*) Build Break"'
-                ' AND rtc_cm:com.ibm.team.workitem.attribute.release="Next"'
-                ' AND rtc_cm:com.ibm.team.workitem.attribute.profileOrEdition="Liberty"'
-                f' AND rtc_cm:com.ibm.team.workitem.attribute.functional_area="{component}"'
-                ' AND ('
-                '  rtc_cm:state="commonWorkflow.state.open"'
-                '  OR rtc_cm:state="commonWorkflow.state.returned"'
-                '  OR rtc_cm:state="commonWorkflow.state.debugging"'
-                '  OR rtc_cm:state="commonWorkflow.state.inprogress"'
-                '  OR rtc_cm:state="defect_workflow.state.s1"'
-                ' )'
+            # Filter only by open states — works reliably on this RTC server.
+            # All other filters (severity, FA, release, profile) are applied in
+            # _parse_oslc_response() after fetching, using the full enumeration URLs.
+            where = (
+                'rtc_cm:state="commonWorkflow.state.open"'
+                ' OR rtc_cm:state="commonWorkflow.state.returned"'
+                ' OR rtc_cm:state="commonWorkflow.state.debugging"'
+                ' OR rtc_cm:state="commonWorkflow.state.inprogress"'
+                ' OR rtc_cm:state="defect_workflow.state.s1"'
             )
-            # Simpler fallback — severity + functional area only
-            where_simple = (
-                f'rtc_cm:com.ibm.team.workitem.attribute.severity="(*) Build Break"'
-                f' AND rtc_cm:com.ibm.team.workitem.attribute.functional_area="{component}"'
+            params = {
+                "oslc.where": where,
+                "oslc.select": (
+                    "dc:identifier,dc:title,rtc_cm:state,dc:subject,"
+                    "rtc_cm:ownedBy,dc:created,"
+                    "oslc_cm:severity,rtc_cm:functional_area,"
+                    "rtc_cm:release,rtc_cm:profileOrEdition"
+                ),
+                "oslc.pageSize": "2000",
+                "oslc.orderBy": "+dc:identifier",
+            }
+            logger.info(f"🔍 Querying RTC OSLC open defects for component={component}")
+            resp = session.get(
+                self.OSLC_URL,
+                params=params,
+                headers={"Accept": "application/json"},
+                verify=False,
+                timeout=120,
             )
 
-            select = "dc:identifier,dc:title,rtc_cm:state,dc:subject,rtc_cm:ownedBy,dc:created"
-
-            for where in (where_full, where_simple):
-                params = {
-                    "oslc.where": where,
-                    "oslc.select": select,
-                    "oslc.pageSize": "500",
-                    "oslc.orderBy": "+dc:identifier",
-                }
-                logger.info(f"🔍 Querying RTC OSLC for {component} ({'full' if where is where_full else 'simple'} filter)")
-                resp = session.get(
-                    self.OSLC_URL,
-                    params=params,
-                    headers={"Accept": "application/json"},
-                    verify=False,
-                    timeout=60,
-                )
-                logger.debug(f"   → HTTP {resp.status_code}  ct={resp.headers.get('content-type','')[:50]}")
-
-                if resp.status_code == 200:
-                    ct = resp.headers.get("content-type", "")
-                    if "json" in ct.lower():
-                        return self._parse_oslc_response(resp.json(), component)
-                    logger.warning(f"200 but non-JSON response for {component}: {resp.text[:100]}")
-                elif resp.status_code in (401, 403):
-                    logger.warning("Auth rejected — refreshing session and retrying")
-                    self.authenticator.last_login = None
-                    self.authenticator.authenticate_jazz_rtc()
-                    session = self.authenticator.session
-                else:
-                    logger.warning(f"HTTP {resp.status_code} for {component}: {resp.text[:200]}")
+            if resp.status_code == 200:
+                ct = resp.headers.get("content-type", "")
+                if "json" in ct.lower():
+                    return self._parse_oslc_response(resp.json(), component)
+                logger.warning(f"200 but non-JSON for {component}: {resp.text[:100]}")
+            elif resp.status_code in (401, 403):
+                logger.warning("Auth rejected — refreshing session")
+                self.authenticator.last_login = None
+                self.authenticator.authenticate_jazz_rtc()
+            else:
+                logger.warning(f"HTTP {resp.status_code} for {component}: {resp.text[:200]}")
 
             return None
 
@@ -137,8 +135,19 @@ class DefectChecker:
             logger.debug(traceback.format_exc())
             return None
 
+    # Severity literal ID for "(*) Build Break" on wasrtc.hursley.ibm.com
+    # Confirmed from live API: oslc_cm:severity = severity.literal.l3
+    _SEVERITY_BUILD_BREAK = "severity.literal.l3"
+
     def _parse_oslc_response(self, data: dict, component: str) -> List[Dict]:
-        """Parse a successful OSLC JSON response into the standard defect list format."""
+        """
+        Parse OSLC JSON response and post-filter to only Build Break defects
+        for the requested functional area.
+
+        Enumeration fields (severity, functional_area, release, profileOrEdition)
+        are opaque literal IDs on this server, so we filter them here in Python
+        rather than in the OSLC where clause.
+        """
         # This server returns oslc_cm:results (underscore variant)
         items = (data.get("oslc_cm:results")
                  or data.get("rdfs:member")
@@ -147,12 +156,30 @@ class DefectChecker:
         if not isinstance(items, list):
             return []
 
+        # Resolve the functional area literal ID for this component name
+        # by finding it in the first item that matches (cached per component call)
+        # We identify the component by matching the display name via the enumeration URL suffix
+        component_literal = self._resolve_functional_area_literal(component, items)
+
         defects = []
         for item in items:
             state_obj = item.get("rtc_cm:state") or {}
             state_id = ""
             if isinstance(state_obj, dict):
                 state_id = state_obj.get("rdf:resource", "").split("/")[-1]
+
+            # Post-filter: only Build Break severity
+            sev_obj = item.get("oslc_cm:severity") or {}
+            sev_id = sev_obj.get("rdf:resource", "").split("/")[-1] if isinstance(sev_obj, dict) else ""
+            if sev_id != self._SEVERITY_BUILD_BREAK:
+                continue
+
+            # Post-filter: only the requested functional area
+            if component_literal:
+                fa_obj = item.get("rtc_cm:functional_area") or {}
+                fa_id = fa_obj.get("rdf:resource", "").split("/")[-1] if isinstance(fa_obj, dict) else ""
+                if fa_id != component_literal:
+                    continue
 
             defect_id = str(item.get("dc:identifier", "")).strip()
             if not defect_id:
@@ -189,8 +216,53 @@ class DefectChecker:
                 "source": "RTC_OSLC",
             })
 
-        logger.info(f"✅ RTC OSLC: {len(defects)} defects for {component}")
+        logger.info(f"✅ RTC OSLC: {len(defects)} build-break defects for {component}")
         return defects
+
+    # Cache: component display name -> literal ID (e.g. "Batch" -> "functionalArea.literal.l8")
+    _fa_literal_cache: dict = {}
+
+    def _resolve_functional_area_literal(self, component: str, items: list) -> Optional[str]:
+        """
+        Look up the functional area literal ID for a component display name
+        by querying the RTC enumeration API.
+        Returns None if not found (disables FA filtering — returns all build breaks).
+        """
+        if component in self._fa_literal_cache:
+            return self._fa_literal_cache[component]
+
+        try:
+            session = self.authenticator.session
+            pa = self.WS_CD_PA_ID
+            # Fetch the functionalArea enumeration list
+            url = f"{self.JAZZ_BASE}/oslc/enumerations/{pa}/functionalArea"
+            resp = session.get(
+                url,
+                headers={"Accept": "application/json"},
+                verify=False,
+                timeout=15,
+            )
+            if resp.status_code == 200 and "json" in resp.headers.get("content-type", "").lower():
+                data = resp.json()
+                literals = data.get("oslc_cm:results") or data.get("rdfs:member") or []
+                for lit in literals:
+                    name = (lit.get("dc:title") or lit.get("oslc_cm:label") or
+                            lit.get("dcterms:title") or "")
+                    if name.strip() == component.strip():
+                        lit_id = lit.get("rdf:resource", "").split("/")[-1]
+                        if not lit_id:
+                            # Try the identifier field
+                            lit_id = (lit.get("dc:identifier") or
+                                      lit.get("oslc_cm:identifier") or "")
+                        if lit_id:
+                            self._fa_literal_cache[component] = lit_id
+                            logger.info(f"✅ Resolved FA literal: {component} → {lit_id}")
+                            return lit_id
+        except Exception as e:
+            logger.debug(f"Could not resolve FA literal for {component}: {e}")
+
+        logger.warning(f"⚠️  Could not resolve functional area literal for '{component}' — returning all build breaks")
+        return None
 
     @staticmethod
     def _resolve_rtc_state(state_id: str) -> str:
