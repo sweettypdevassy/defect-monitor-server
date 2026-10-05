@@ -157,19 +157,20 @@ public class RTCFetchDefects {
     }
 
     static String resolveState(String id) {
-        return switch (id) {
-            case "commonWorkflow.state.open"           -> "Open";
-            case "commonWorkflow.state.returned"       -> "Returned";
-            case "commonWorkflow.state.debugging"      -> "Debugging";
-            case "commonWorkflow.state.inprogress"     -> "In Progress";
-            case "defect_workflow.state.s1"            -> "In Progress (GHE)";
-            case "commonWorkflow.state.buildpending"   -> "Pending Build";
-            case "commonWorkflow.state.deliverpending" -> "Pending Delivery";
-            case "commonWorkflow.state.reviewpending"  -> "Pending Review";
-            case "commonWorkflow.state.ready"          -> "Ready";
-            case "defect_workflow.state.s3"            -> "Ready to Verify (GHE)";
-            default -> id;
-        };
+        if (id == null) return "";
+        switch (id) {
+            case "commonWorkflow.state.open":           return "Open";
+            case "commonWorkflow.state.returned":       return "Returned";
+            case "commonWorkflow.state.debugging":      return "Debugging";
+            case "commonWorkflow.state.inprogress":     return "In Progress";
+            case "defect_workflow.state.s1":            return "In Progress (GHE)";
+            case "commonWorkflow.state.buildpending":   return "Pending Build";
+            case "commonWorkflow.state.deliverpending": return "Pending Delivery";
+            case "commonWorkflow.state.reviewpending":  return "Pending Review";
+            case "commonWorkflow.state.ready":          return "Ready";
+            case "defect_workflow.state.s3":            return "Ready to Verify (GHE)";
+            default:                                    return id;
+        }
     }
 
     static String escJson(String s) {
