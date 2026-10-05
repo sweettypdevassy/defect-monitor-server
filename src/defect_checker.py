@@ -194,7 +194,7 @@ class DefectChecker:
                     parse_errors += 1
                     continue
                 for url in urls:
-                    if isinstance(url, str) and "/WorkItem/" in url:
+                    if isinstance(url, str) and "WorkItem/" in url:
                         did = url.rstrip("/").split("/")[-1]
                         if did.isdigit():
                             defect_ids.add(did)
