@@ -95,12 +95,15 @@ class DefectChecker:
         project-areas and cache it on self.
         """
         try:
-            # Authenticate with Jazz/RTC
+            # Authenticate with Jazz/RTC directly — this sets up self.authenticator.session
+            # with Jazz/RTC cookies via j_security_check (no browser involved).
+            # We must NOT call get_session() here — that triggers the cognitive portal
+            # browser login and crashes the fetch page that is already in use.
             if not self.authenticator.authenticate_jazz_rtc():
                 logger.error(f"Jazz/RTC authentication failed — cannot fetch {component}")
                 return None
 
-            session = self.authenticator.get_session()
+            session = self.authenticator.session
             if not session:
                 return None
 
