@@ -85,49 +85,60 @@ class DefectChecker:
             if not session:
                 return None
 
-            # Filter only by open states — works reliably on this RTC server.
-            # All other filters (severity, FA, release, profile) are applied in
-            # _parse_oslc_response() after fetching, using the full enumeration URLs.
-            where = (
-                'rtc_cm:state="commonWorkflow.state.open"'
-                ' OR rtc_cm:state="commonWorkflow.state.returned"'
-                ' OR rtc_cm:state="commonWorkflow.state.debugging"'
-                ' OR rtc_cm:state="commonWorkflow.state.inprogress"'
-                ' OR rtc_cm:state="defect_workflow.state.s1"'
-            )
             params = {
-                "oslc.where": where,
                 "oslc.select": (
                     "dc:identifier,dc:title,rtc_cm:state,dc:subject,"
                     "rtc_cm:ownedBy,dc:created,"
                     "oslc_cm:severity,rtc_cm:functional_area,"
                     "rtc_cm:release,rtc_cm:profileOrEdition"
                 ),
-                "oslc.pageSize": "2000",
+                "oslc.pageSize": "100",
                 "oslc.orderBy": "+dc:identifier",
             }
+
+            # The server ignores oslc.where and paginates at ~50 items per page
+            # regardless of oslc.pageSize. Follow oslc_cm:next links to get all items.
             logger.info(f"🔍 Querying RTC OSLC open defects for component={component}")
-            resp = session.get(
-                self.OSLC_URL,
-                params=params,
-                headers={"Accept": "application/json"},
-                verify=False,
-                timeout=120,
-            )
-
-            if resp.status_code == 200:
+            all_items = []
+            next_url = self.OSLC_URL
+            next_params = params
+            page = 0
+            max_pages = 30  # safety cap: 30 × 50 = 1500 items
+            while next_url and page < max_pages:
+                resp = session.get(
+                    next_url,
+                    params=next_params,
+                    headers={"Accept": "application/json"},
+                    verify=False,
+                    timeout=120,
+                )
+                if resp.status_code in (401, 403):
+                    logger.warning("Auth rejected — refreshing session")
+                    self.authenticator.last_login = None
+                    self.authenticator.authenticate_jazz_rtc()
+                    return None
+                if resp.status_code != 200:
+                    logger.warning(f"HTTP {resp.status_code} for {component}: {resp.text[:200]}")
+                    return None
                 ct = resp.headers.get("content-type", "")
-                if "json" in ct.lower():
-                    return self._parse_oslc_response(resp.json(), component)
-                logger.warning(f"200 but non-JSON for {component}: {resp.text[:100]}")
-            elif resp.status_code in (401, 403):
-                logger.warning("Auth rejected — refreshing session")
-                self.authenticator.last_login = None
-                self.authenticator.authenticate_jazz_rtc()
-            else:
-                logger.warning(f"HTTP {resp.status_code} for {component}: {resp.text[:200]}")
+                if "json" not in ct.lower():
+                    logger.warning(f"200 but non-JSON for {component}: {resp.text[:100]}")
+                    return None
+                data = resp.json()
+                page_items = (data.get("oslc_cm:results")
+                              or data.get("rdfs:member")
+                              or data.get("oslc:results")
+                              or [])
+                all_items.extend(page_items)
+                page += 1
+                # Follow next page — clear params so the next URL is used as-is
+                next_url = data.get("oslc_cm:next")
+                next_params = None
+                if next_url:
+                    logger.debug(f"  page {page}: {len(page_items)} items, following next page...")
 
-            return None
+            logger.info(f"  fetched {len(all_items)} total items across {page} page(s)")
+            return self._parse_oslc_response({"oslc_cm:results": all_items}, component)
 
         except Exception as e:
             logger.error(f"Error in _fetch_via_rtc_oslc for {component}: {e}")
