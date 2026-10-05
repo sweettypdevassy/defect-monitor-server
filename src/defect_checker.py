@@ -1,19 +1,18 @@
 """
 Defect Checker Module
-Fetches and processes defects from IBM RTC via two-phase lookup:
-  Phase 1 — Cognitive store (libh-proxy1.fyre.ibm.com) gives current active
-             RTC defect IDs from recent failures (last 14 days).
-  Phase 2 — Direct RTC OSLC /workitems/{id} fetch for each ID gives live
-             FA, severity, state, owner, tags.
-No browser, no cookies, no 2FA — plain Jazz/RTC username + password auth.
+Fetches defects from IBM RTC using the RTC Java SDK (via subprocess).
+The Java CLI (RTCFetchDefects.java) uses the same SDK JARs as rtc-mcp-server
+and runs the Expression query API — which returns live, accurate data.
+No browser, no cookies, no 2FA needed.
 """
 
-import base64
 import json
+import os
+import subprocess
 import requests
 import logging
 import urllib.parse
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
@@ -28,14 +27,15 @@ class DefectChecker:
     """Handles fetching and processing defects from IBM systems"""
 
     JAZZ_BASE = "https://wasrtc.hursley.ibm.com:9443/jazz"
-    WS_CD_PA_ID = "_S8J7gPyvEeOd9KazONaSeQ"
-    # Direct per-item OSLC URL — returns live data (context/workitems endpoint is stale)
-    OSLC_ITEM_URL = f"{JAZZ_BASE}/oslc/workitems/{{id}}"
-    # Cognitive store query endpoint — gives current active defect IDs from recent failures
-    COGNITIVE_QUERY_URL = "https://libh-proxy1.fyre.ibm.com/cognitive-failure-views-stateStore/query"
-    COGNITIVE_SUBSCRIPTION_ID = "BobHackathon-CustomOutputURL-202604241252"
-    # RTC work item resource URL template used in Cognitive store defect references
-    RTC_RESOURCE_TEMPLATE = f"{JAZZ_BASE}/resource/itemName/com.ibm.team.workitem.WorkItem/{{id}}"
+    # Path to the compiled Java CLI class (RTCFetchDefects.class)
+    # Compiled from scripts/RTCFetchDefects.java using the RTC SDK JARs
+    _JAVA_CLI_CLASS = "RTCFetchDefects"
+    _JAVA_CLI_CLASSDIR = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "scripts", "out")
+    _RTC_JARS_DIR = os.environ.get(
+        "RTC_JARS_DIR",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "jars"))
 
     def __init__(self, authenticator, database=None):
         self.authenticator = authenticator
@@ -74,343 +74,75 @@ class DefectChecker:
 
     def _fetch_via_rtc_oslc(self, component: str) -> Optional[List[Dict]]:
         """
-        Fetch open build-break defects for a component using a two-phase strategy:
-
-        Phase 1 — Query the Cognitive store for recent failures (last 14 days).
-                   This gives a set of current active RTC defect IDs. The OSLC
-                   context endpoint (/oslc/contexts/{pa}/workitems) is stale and
-                   only indexes up to ID ~297166, so it cannot return recent defects.
-
-        Phase 2 — Fetch each defect directly via /oslc/workitems/{id} (live data).
-                   Post-filter by: open state, build-break severity, functional area.
+        Fetch open build-break defects for a component via the RTC Java SDK CLI.
+        Calls RTCFetchDefects (compiled from scripts/RTCFetchDefects.java) as a
+        subprocess — uses the same Expression query API as rtc-mcp-server, which
+        returns live accurate data directly from the RTC server.
         """
         try:
-            if not self.authenticator.authenticate_jazz_rtc():
-                logger.error(f"Jazz/RTC authentication failed — cannot fetch {component}")
+            logger.info(f"🔍 Querying RTC SDK for open build-break defects: component={component}")
+
+            classpath = f"{self._JAVA_CLI_CLASSDIR}:{self._RTC_JARS_DIR}/*"
+            cmd = [
+                "java", "-cp", classpath,
+                self._JAVA_CLI_CLASS,
+                self.authenticator.username,
+                self.authenticator.password,
+                component,
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                logger.error(f"RTCFetchDefects failed (rc={result.returncode}): {result.stderr[-500:]}")
                 return None
 
-            session = self.authenticator.session
-            if not session:
-                return None
+            raw_json = result.stdout.strip()
+            if not raw_json:
+                logger.warning(f"RTCFetchDefects returned empty output for {component}")
+                return []
 
-            logger.info(f"🔍 Querying RTC OSLC open defects for component={component}")
-
-            # ── Phase 1: get unique RTC defect IDs from Cognitive store ──────────
-            defect_ids = self._get_defect_ids_from_cognitive(session)
-            if defect_ids is None:
-                return None
-            logger.info(f"  Cognitive store: {len(defect_ids)} unique defect IDs from recent failures")
-
-            # ── Phase 2: fetch each defect directly, post-filter ─────────────────
-            component_literal = self._resolve_functional_area_literal(component, [])
-            if not component_literal:
-                logger.warning(f"Could not resolve FA literal for '{component}' — aborting")
-                return None
-
+            items = json.loads(raw_json)
             defects = []
-            with ThreadPoolExecutor(max_workers=10) as pool:
-                futures = {pool.submit(self._fetch_single_workitem, session, did): did
-                           for did in defect_ids}
-                for future in as_completed(futures):
-                    item = future.result()
-                    if item is None:
-                        continue
-                    state_id = self._extract_last(item.get("rtc_cm:state"))
-                    if state_id not in self._OPEN_STATES:
-                        continue
-                    sev_id = self._extract_last(item.get("oslc_cm:severity"))
-                    if sev_id != self._SEVERITY_BUILD_BREAK:
-                        continue
-                    fa_id = self._extract_last(item.get("rtc_cm:functional_area"))
-                    if fa_id != component_literal:
-                        continue
-                    defects.append(self._workitem_to_dict(item, component))
+            for item in items:
+                defect_id = str(item.get("id", "")).strip()
+                if not defect_id:
+                    continue
+                tags = item.get("tags") or []
+                defects.append({
+                    "id": defect_id,
+                    "summary": item.get("summary", ""),
+                    "functionalArea": component,
+                    "owner": item.get("owner", "Unassigned"),
+                    "state": item.get("state", ""),
+                    "triageTags": tags,
+                    "tags": tags,
+                    "number_builds": 0,
+                    "creation_date": "",
+                    "last_occurrence_date": "",
+                    "reported_builds": "",
+                    "buildsReported": [],
+                    "section": "untriaged" if not tags else "unknown",
+                    "source": "RTC_SDK",
+                })
 
-            defects.sort(key=lambda d: int(d["id"]))
-            logger.info(f"✅ RTC OSLC: {len(defects)} build-break defects for {component}")
+            logger.info(f"✅ RTC SDK: {len(defects)} build-break defects for {component}")
             return defects
 
+        except subprocess.TimeoutExpired:
+            logger.error(f"RTCFetchDefects timed out for {component}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"RTCFetchDefects returned invalid JSON for {component}: {e}")
+            return None
         except Exception as e:
             logger.error(f"Error in _fetch_via_rtc_oslc for {component}: {e}")
             import traceback
             logger.debug(traceback.format_exc())
             return None
-
-    def _get_defect_ids_from_cognitive(self, session) -> Optional[Set[str]]:
-        """
-        Query the Cognitive store for failures in the last 14 days and return
-        the set of unique RTC defect ID strings (e.g. {"303684", "309006"}).
-        """
-        try:
-            two_weeks_ago = int(time.time()) - 14 * 24 * 3600
-            query = {
-                "targetType": "Failures",
-                "subscriptionId": self.COGNITIVE_SUBSCRIPTION_ID,
-                "filters": [
-                    {"field": "startTime", "operation": "GREATER",
-                     "value": str(two_weeks_ago)},
-                ],
-                "resultProps": ["defects", "startTime"],
-                "excludeHeaders": True,
-            }
-            creds = base64.b64encode(
-                f"{self.authenticator.username}:{self.authenticator.password}".encode()
-            ).decode()
-            resp = session.post(
-                self.COGNITIVE_QUERY_URL,
-                json=query,
-                headers={
-                    "Authorization": f"Basic {creds}",
-                    "Content-Type": "application/json",
-                },
-                verify=False,
-                timeout=60,
-            )
-            if resp.status_code != 200:
-                logger.warning(f"Cognitive store query failed: HTTP {resp.status_code}")
-                return None
-
-            lines = resp.text.strip().split("\n")
-            # Log first line in full to diagnose URL format
-            first = lines[0] if lines else ""
-            logger.info(f"  Cognitive store raw response: {len(lines)} lines")
-            logger.info(f"  First line full: {repr(first[:300])}")
-
-            # Each line: pipelineId \t defects_json \t startTime
-            # defects_json is a JSON array of RTC resource URLs, e.g.:
-            # ["https://wasrtc.../WorkItem/309006"]
-            defect_ids: Set[str] = set()
-            parse_errors = 0
-            for line in lines:
-                parts = line.split("\t", 2)
-                if len(parts) < 2:
-                    continue
-                raw = parts[1].strip()
-                if not raw or raw == "null":
-                    continue
-                try:
-                    urls = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    parse_errors += 1
-                    continue
-                for url in urls:
-                    if isinstance(url, str) and "WorkItem/" in url:
-                        did = url.rstrip("/").split("/")[-1]
-                        if did.isdigit():
-                            defect_ids.add(did)
-            # Debug: show parse stats and a sample of the first non-empty raw value
-            sample_raw = next((line.split("\t", 2)[1].strip()
-                               for line in lines
-                               if len(line.split("\t", 2)) >= 2
-                               and line.split("\t", 2)[1].strip()
-                               and line.split("\t", 2)[1].strip() != "null"), "")
-            logger.info(f"  parse_errors={parse_errors}  sample_raw={repr(sample_raw[:150])}")
-            return defect_ids
-        except Exception as e:
-            logger.error(f"Error querying Cognitive store: {e}")
-            return None
-
-    def _fetch_single_workitem(self, session, defect_id: str) -> Optional[dict]:
-        """Fetch a single RTC work item by ID. Returns the parsed JSON or None."""
-        try:
-            url = self.OSLC_ITEM_URL.format(id=defect_id)
-            resp = session.get(
-                url,
-                headers={"Accept": "application/json"},
-                verify=False,
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                return resp.json()
-            return None
-        except Exception:
-            return None
-
-    @staticmethod
-    def _extract_last(field) -> str:
-        """Extract the last path segment from an rdf:resource URL field."""
-        if isinstance(field, dict):
-            return field.get("rdf:resource", "").split("/")[-1]
-        return ""
-
-    def _workitem_to_dict(self, item: dict, component: str) -> dict:
-        """Convert a raw OSLC work item JSON to the standard defect dict."""
-        defect_id = str(item.get("dc:identifier", "")).strip()
-        summary = str(item.get("dc:title", "")).strip()
-        owner_obj = item.get("rtc_cm:ownedBy") or {}
-        owner = (
-            owner_obj.get("foaf:name") or owner_obj.get("dc:title") or "Unassigned"
-            if isinstance(owner_obj, dict) else "Unassigned"
-        )
-        state_id = self._extract_last(item.get("rtc_cm:state"))
-        state_label = self._resolve_rtc_state(state_id)
-        tags_raw = item.get("dc:subject", "")
-        tags = (
-            [str(t).strip() for t in tags_raw if t] if isinstance(tags_raw, list)
-            else [t.strip() for t in str(tags_raw).split(",") if t.strip()]
-            if tags_raw else []
-        )
-        return {
-            "id": defect_id,
-            "summary": summary,
-            "functionalArea": component,
-            "owner": owner,
-            "state": state_label,
-            "triageTags": tags,
-            "tags": tags,
-            "number_builds": 0,
-            "creation_date": item.get("dc:created", "") or "",
-            "last_occurrence_date": "",
-            "reported_builds": "",
-            "buildsReported": [],
-            "section": "untriaged" if not tags else "unknown",
-            "source": "RTC_OSLC",
-        }
-
-    # Severity literal ID for "(*) Build Break" on wasrtc.hursley.ibm.com
-    # Confirmed from live API on current defects (303xxx+): severity.literal.l6
-    _SEVERITY_BUILD_BREAK = "severity.literal.l6"
-
-    # Open states — the OSLC where clause is unreliable on this server, so we
-    # also post-filter by state here to exclude Canceled/Closed/Verified items.
-    _OPEN_STATES = {
-        "commonWorkflow.state.open",
-        "commonWorkflow.state.returned",
-        "commonWorkflow.state.debugging",
-        "commonWorkflow.state.inprogress",
-        "defect_workflow.state.s1",
-    }
-
-    def _parse_oslc_response(self, data: dict, component: str) -> List[Dict]:
-        """
-        Parse OSLC JSON response and post-filter to only open Build Break defects
-        for the requested functional area.
-
-        The OSLC where clause on this server is unreliable (ignores state filter),
-        so all filters — severity, state, and functional area — are applied here
-        in Python after fetching.
-        """
-        # This server returns oslc_cm:results (underscore variant)
-        items = (data.get("oslc_cm:results")
-                 or data.get("rdfs:member")
-                 or data.get("oslc:results")
-                 or [])
-        if not isinstance(items, list):
-            return []
-
-        # Resolve the functional area literal ID for this component name
-        component_literal = self._resolve_functional_area_literal(component, items)
-
-        defects = []
-        for item in items:
-            state_obj = item.get("rtc_cm:state") or {}
-            state_id = ""
-            if isinstance(state_obj, dict):
-                state_id = state_obj.get("rdf:resource", "").split("/")[-1]
-
-            # Post-filter: only open states (where clause unreliable on this server)
-            if state_id not in self._OPEN_STATES:
-                continue
-
-            # Post-filter: only Build Break severity
-            sev_obj = item.get("oslc_cm:severity") or {}
-            sev_id = sev_obj.get("rdf:resource", "").split("/")[-1] if isinstance(sev_obj, dict) else ""
-            if sev_id != self._SEVERITY_BUILD_BREAK:
-                continue
-
-            # Post-filter: only the requested functional area
-            if component_literal:
-                fa_obj = item.get("rtc_cm:functional_area") or {}
-                fa_id = fa_obj.get("rdf:resource", "").split("/")[-1] if isinstance(fa_obj, dict) else ""
-                if fa_id != component_literal:
-                    continue
-
-            defect_id = str(item.get("dc:identifier", "")).strip()
-            if not defect_id:
-                continue
-
-            summary = str(item.get("dc:title", "")).strip()
-            owner_obj = item.get("rtc_cm:ownedBy") or {}
-            owner = (
-                owner_obj.get("foaf:name") or owner_obj.get("dc:title") or "Unassigned"
-                if isinstance(owner_obj, dict) else "Unassigned"
-            )
-            state_label = self._resolve_rtc_state(state_id)
-            tags_raw = item.get("dc:subject", "")
-            tags = (
-                [str(t).strip() for t in tags_raw if t] if isinstance(tags_raw, list)
-                else [t.strip() for t in str(tags_raw).split(",") if t.strip()]
-                if tags_raw else []
-            )
-            section = "untriaged" if not tags else "unknown"
-            defects.append({
-                "id": defect_id,
-                "summary": summary,
-                "functionalArea": component,
-                "owner": owner,
-                "state": state_label,
-                "triageTags": tags,
-                "tags": tags,
-                "number_builds": 0,
-                "creation_date": item.get("dc:created", "") or "",
-                "last_occurrence_date": "",
-                "reported_builds": "",
-                "buildsReported": [],
-                "section": section,
-                "source": "RTC_OSLC",
-            })
-
-        logger.info(f"✅ RTC OSLC: {len(defects)} build-break defects for {component}")
-        return defects
-
-    # Cache: component display name -> literal ID (e.g. "Batch" -> "functionalArea.literal.l8")
-    _fa_literal_cache: dict = {}
-
-    def _resolve_functional_area_literal(self, component: str, items: list) -> Optional[str]:
-        """
-        Look up the functional area literal ID for a component display name
-        by querying the RTC enumeration API.
-        Returns None if not found (disables FA filtering — returns all build breaks).
-        """
-        if component in self._fa_literal_cache:
-            return self._fa_literal_cache[component]
-
-        try:
-            session = self.authenticator.session
-            pa = self.WS_CD_PA_ID
-            # Fetch the functionalArea enumeration list
-            url = f"{self.JAZZ_BASE}/oslc/enumerations/{pa}/functionalArea"
-            resp = session.get(
-                url,
-                headers={"Accept": "application/json"},
-                verify=False,
-                timeout=15,
-            )
-            if resp.status_code == 200 and "json" in resp.headers.get("content-type", "").lower():
-                data = resp.json()
-                # The enumeration API returns a plain JSON array directly
-                if isinstance(data, list):
-                    literals = data
-                else:
-                    literals = data.get("oslc_cm:results") or data.get("rdfs:member") or []
-                for lit in literals:
-                    name = (lit.get("dc:title") or lit.get("oslc_cm:label") or
-                            lit.get("dcterms:title") or "")
-                    if name.strip() == component.strip():
-                        lit_id = lit.get("rdf:resource", "").split("/")[-1]
-                        if not lit_id:
-                            # Try the identifier field
-                            lit_id = (lit.get("dc:identifier") or
-                                      lit.get("oslc_cm:identifier") or "")
-                        if lit_id:
-                            self._fa_literal_cache[component] = lit_id
-                            logger.info(f"✅ Resolved FA literal: {component} → {lit_id}")
-                            return lit_id
-        except Exception as e:
-            logger.debug(f"Could not resolve FA literal for {component}: {e}")
-
-        logger.warning(f"⚠️  Could not resolve functional area literal for '{component}' — returning all build breaks")
-        return None
 
     @staticmethod
     def _resolve_rtc_state(state_id: str) -> str:
