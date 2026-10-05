@@ -22,6 +22,9 @@ class DefectChecker:
     """Handles fetching and processing defects from IBM systems"""
 
     JAZZ_BASE = "https://wasrtc.hursley.ibm.com:9443/jazz"
+    # WS-CD project area ID on wasrtc.hursley.ibm.com — used for scoped OSLC queries
+    WS_CD_PA_ID = "_S8J7gPyvEeOd9KazONaSeQ"
+    OSLC_URL = f"{JAZZ_BASE}/oslc/contexts/{WS_CD_PA_ID}/workitems"
 
     def __init__(self, authenticator, database=None):
         self.authenticator = authenticator
@@ -58,69 +61,10 @@ class DefectChecker:
         logger.warning(f"⚠️  Could not fetch defects for {component} after {max_retries} attempts")
         return []
 
-    # Project area ID for WS-CD on wasrtc.hursley.ibm.com
-    # Obtained from: GET /jazz/process/project-areas (look for "WS-CD")
-    _PROJECT_AREA_ID: Optional[str] = None  # cached after first lookup
-
-    def _get_project_area_id(self, session) -> Optional[str]:
-        """Look up the WS-CD project area UUID — needed for scoped OSLC queries."""
-        if DefectChecker._PROJECT_AREA_ID:
-            return DefectChecker._PROJECT_AREA_ID
-
-        try:
-            resp = session.get(
-                f"{self.JAZZ_BASE}/process/project-areas",
-                headers={"Accept": "application/json"},
-                verify=False,
-                timeout=30,
-            )
-            if resp.status_code != 200:
-                logger.warning(f"Could not fetch project areas: HTTP {resp.status_code}")
-                return None
-
-            ct = resp.headers.get("content-type", "")
-            if "json" not in ct.lower():
-                # Try XML parsing if JSON not available
-                import re
-                match = re.search(
-                    r'itemId="([0-9a-f\-]{36})"[^>]*>\s*<name>WS-CD</name>',
-                    resp.text
-                )
-                if not match:
-                    # Try alternate XML structure
-                    match = re.search(
-                        r'<jp06:name>WS-CD</jp06:name>.*?<jp06:itemId>([^<]+)</jp06:itemId>',
-                        resp.text, re.DOTALL
-                    )
-                if match:
-                    DefectChecker._PROJECT_AREA_ID = match.group(1)
-                    logger.info(f"✅ WS-CD project area ID: {DefectChecker._PROJECT_AREA_ID}")
-                    return DefectChecker._PROJECT_AREA_ID
-                return None
-
-            areas = resp.json()
-            # Response may be list or wrapped
-            if isinstance(areas, list):
-                items = areas
-            elif isinstance(areas, dict):
-                items = areas.get("jp06:project-area") or areas.get("results") or []
-
-            for area in (items if isinstance(items, list) else [items]):
-                name = area.get("jp06:name") or area.get("dc:title") or area.get("name", "")
-                if "WS-CD" in name:
-                    pid = area.get("jp06:itemId") or area.get("itemId") or ""
-                    if pid:
-                        DefectChecker._PROJECT_AREA_ID = pid
-                        logger.info(f"✅ WS-CD project area ID: {pid}")
-                        return pid
-        except Exception as e:
-            logger.warning(f"Error looking up project area: {e}")
-        return None
-
     def _fetch_via_rtc_oslc(self, component: str) -> Optional[List[Dict]]:
         """
-        Fetch open build-break defects for a component directly via RTC OSLC REST API.
-        Tries multiple URL patterns since the exact endpoint varies by RTC server version.
+        Fetch open build-break defects for a component directly via the WS-CD
+        project-area scoped OSLC endpoint on wasrtc.hursley.ibm.com.
         No browser, no cookies, no 2FA — plain j_security_check auth.
         """
         try:
@@ -132,8 +76,7 @@ class DefectChecker:
             if not session:
                 return None
 
-            # Build where-clause — try both short and fully-qualified attribute IDs
-            # The correct form depends on the RTC server version
+            # Full filter — mirrors rtc-mcp-server's Java query exactly
             where_full = (
                 'rtc_cm:type="defect"'
                 ' AND rtc_cm:com.ibm.team.workitem.attribute.severity="(*) Build Break"'
@@ -148,7 +91,7 @@ class DefectChecker:
                 '  OR rtc_cm:state="defect_workflow.state.s1"'
                 ' )'
             )
-            # Simpler fallback — fewer filters, broader match
+            # Simpler fallback — severity + functional area only
             where_simple = (
                 f'rtc_cm:com.ibm.team.workitem.attribute.severity="(*) Build Break"'
                 f' AND rtc_cm:com.ibm.team.workitem.attribute.functional_area="{component}"'
@@ -156,50 +99,36 @@ class DefectChecker:
 
             select = "dc:identifier,dc:title,rtc_cm:state,dc:subject,rtc_cm:ownedBy,dc:created"
 
-            # Build candidate URL list — scoped (with project area) first, then global
-            pa_id = self._get_project_area_id(session)
-            candidate_urls = []
-            if pa_id:
-                candidate_urls.append(f"{self.JAZZ_BASE}/oslc/contexts/{pa_id}/workitems")
-            candidate_urls.append(f"{self.JAZZ_BASE}/oslc/workitems.json")
-            candidate_urls.append(f"{self.JAZZ_BASE}/oslc/workitems")
+            for where in (where_full, where_simple):
+                params = {
+                    "oslc.where": where,
+                    "oslc.select": select,
+                    "oslc.pageSize": "500",
+                    "oslc.orderBy": "+dc:identifier",
+                }
+                logger.info(f"🔍 Querying RTC OSLC for {component} ({'full' if where is where_full else 'simple'} filter)")
+                resp = session.get(
+                    self.OSLC_URL,
+                    params=params,
+                    headers={"Accept": "application/json"},
+                    verify=False,
+                    timeout=60,
+                )
+                logger.debug(f"   → HTTP {resp.status_code}  ct={resp.headers.get('content-type','')[:50]}")
 
-            for url in candidate_urls:
-                for where in (where_full, where_simple):
-                    params = {
-                        "oslc.where": where,
-                        "oslc.select": select,
-                        "oslc.pageSize": "500",
-                        "oslc.orderBy": "+dc:identifier",
-                    }
-                    logger.info(f"🔍 Trying {url} for {component}")
-                    resp = session.get(
-                        url,
-                        params=params,
-                        headers={"Accept": "application/json"},
-                        verify=False,
-                        timeout=60,
-                    )
-                    logger.debug(f"   → HTTP {resp.status_code}  ct={resp.headers.get('content-type','')[:50]}")
-                    if resp.status_code == 200:
-                        ct = resp.headers.get("content-type", "")
-                        if "json" in ct.lower():
-                            # Found a working endpoint+where combo
-                            return self._parse_oslc_response(resp.json(), component)
-                        logger.debug(f"   200 but non-JSON: {resp.text[:100]}")
-                    elif resp.status_code in (301, 302):
-                        logger.debug(f"   Redirect → {resp.headers.get('location','')[:80]}")
-                    elif resp.status_code in (401, 403):
-                        logger.warning(f"   Auth rejected — re-authenticating")
-                        self.authenticator.last_login = None
-                        self.authenticator.authenticate_jazz_rtc()
-                        session = self.authenticator.session
-                        break  # retry outer loop with fresh session
-                    # 404 = wrong URL, try next candidate
-                    logger.debug(f"   HTTP {resp.status_code} — trying next candidate")
+                if resp.status_code == 200:
+                    ct = resp.headers.get("content-type", "")
+                    if "json" in ct.lower():
+                        return self._parse_oslc_response(resp.json(), component)
+                    logger.warning(f"200 but non-JSON response for {component}: {resp.text[:100]}")
+                elif resp.status_code in (401, 403):
+                    logger.warning("Auth rejected — refreshing session and retrying")
+                    self.authenticator.last_login = None
+                    self.authenticator.authenticate_jazz_rtc()
+                    session = self.authenticator.session
+                else:
+                    logger.warning(f"HTTP {resp.status_code} for {component}: {resp.text[:200]}")
 
-            logger.error(f"All OSLC URL candidates returned non-200 for {component}")
-            logger.error(f"Response body preview: {resp.text[:300]}")
             return None
 
         except Exception as e:
@@ -210,7 +139,11 @@ class DefectChecker:
 
     def _parse_oslc_response(self, data: dict, component: str) -> List[Dict]:
         """Parse a successful OSLC JSON response into the standard defect list format."""
-        items = data.get("rdfs:member") or data.get("oslc:results") or []
+        # This server returns oslc_cm:results (underscore variant)
+        items = (data.get("oslc_cm:results")
+                 or data.get("rdfs:member")
+                 or data.get("oslc:results")
+                 or [])
         if not isinstance(items, list):
             return []
 
