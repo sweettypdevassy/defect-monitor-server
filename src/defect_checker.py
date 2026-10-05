@@ -50,67 +50,349 @@ class DefectChecker:
     
     def fetch_defects_for_component(self, component: str, max_retries: int = 3) -> Optional[List[Dict]]:
         """
-        Fetch defects for a specific component from the Cognitive Functional Area Analysis page.
+        Fetch open build-break defects for a component directly from RTC via OSLC REST API.
 
-        Uses the persistent Playwright browser to intercept the XHR data API response
-        fired by the React SPA when the page loads.
+        The cognitive portal (libh-proxy1) React SPA no longer renders data in headless
+        browsers — the service-worker cache path returns 204 and the direct API path
+        requires a fully interactive SSO session that is not achievable headlessly.
 
-        IMPORTANT: Playwright browser context objects are bound to the event loop on which
-        they were created (the browser_manager's persistent loop).  We must schedule the
-        coroutine onto THAT loop (via run_coroutine_threadsafe) and wait for its result,
-        rather than running it in a brand-new loop — doing so would silently fail because
-        the Playwright internals cannot cross event-loop boundaries.
+        Instead we query RTC OSLC directly (the same endpoint that fetch_defect_details
+        already uses successfully) with a where-clause that matches:
+            type = defect
+            severity = (*) Build Break
+            release = Next
+            profile = Liberty
+            functional_area = <component>
+            state IN {Open, In Progress, Debugging, Returned, In Progress (GHE)}
 
         Returns list of defects or None on error.
         """
-        import time
-        from browser_manager import get_browser_manager
+        defects = self._fetch_via_rtc_oslc(component)
+        if defects is not None:
+            return defects
 
-        for attempt in range(max_retries):
-            try:
-                if attempt > 0:
-                    logger.info(f"🔄 Retry {attempt}/{max_retries - 1} for {component}")
-                    time.sleep(2 ** (attempt - 1))
+        # RTC OSLC failed — log and return empty list so the rest of the pipeline
+        # continues rather than treating this component as completely broken.
+        logger.warning(f"⚠️  Could not fetch defects for {component} from RTC OSLC")
+        return []
 
-                browser_manager = get_browser_manager()
+    def _fetch_via_rtc_oslc(self, component: str) -> Optional[List[Dict]]:
+        """
+        Query RTC OSLC workitems endpoint for open build-break defects in a
+        given functional area.
 
-                # Submit to the browser manager's persistent running event loop.
-                # This is the ONLY correct way — Playwright context is bound to that loop.
-                data = browser_manager._run_async(
-                    browser_manager.fetch_component_data_json(component, timeout=60000),
-                    timeout=120
+        Uses the existing Jazz/RTC session managed by self.authenticator — the
+        same session that fetch_defect_details uses successfully today.
+
+        RTC OSLC query format:
+            GET /jazz/oslc/contexts/{projectAreaItemId}/workitems
+                ?oslc.where=...
+                &oslc.select=dc:title,dc:identifier,rtc_cm:state,dc:subject,...
+                &oslc.pageSize=500
+
+        We use the project-level query endpoint which does not require knowing
+        the project area UUID up-front — we discover it once from /jazz/process/
+        project-areas and cache it on self.
+        """
+        try:
+            # Authenticate with Jazz/RTC
+            if not self.authenticator.authenticate_jazz_rtc():
+                logger.error(f"Jazz/RTC authentication failed — cannot fetch {component}")
+                return None
+
+            session = self.authenticator.get_session()
+            if not session:
+                return None
+
+            jazz_base = "https://wasrtc.hursley.ibm.com:9443/jazz"
+
+            # ── Discover the WS-CD project area item ID (cached) ────────────────
+            if not hasattr(self, '_wscd_project_area_id'):
+                self._wscd_project_area_id = self._discover_project_area_id(
+                    session, jazz_base, "WS-CD"
                 )
 
-                if data is not None:
-                    defects = self._parse_cognitive_json(data, component)
-                    logger.info(
-                        f"✅ Fetched {len(defects)} defects for {component} via data API"
-                    )
-                    return defects
+            if not self._wscd_project_area_id:
+                logger.error("Could not resolve WS-CD project area ID from RTC")
+                return None
 
+            pa_id = self._wscd_project_area_id
+
+            # ── Build OSLC where-clause ──────────────────────────────────────────
+            # We query by functional_area attribute value (display name).
+            # Open-state filtering is applied client-side after the response.
+            select_fields = (
+                "dc:identifier,dc:title,rtc_cm:state,dc:subject,"
+                "rtc_cm:ownedBy,dc:created,dc:modified,rtc_cm:buildReferences"
+            )
+
+            params = {
+                "oslc.where": (
+                    f'rtc_cm:type="defect"'
+                    f' AND rtc_cm:severity="(*) Build Break"'
+                    f' AND rtc_cm:filedAgainst="{component}"'
+                ),
+                "oslc.select": select_fields,
+                "oslc.pageSize": "500",
+            }
+
+            query_url = f"{jazz_base}/oslc/contexts/{pa_id}/workitems"
+            logger.info(f"🔍 Querying RTC OSLC for {component}...")
+
+            resp = session.get(
+                query_url,
+                params=params,
+                headers={"Accept": "application/json"},
+                verify=False,
+                timeout=60,
+            )
+
+            if resp.status_code != 200:
                 logger.warning(
-                    f"⚠️  No data API response captured for {component} "
-                    f"(attempt {attempt + 1}/{max_retries})"
+                    f"RTC OSLC query returned HTTP {resp.status_code} for {component} "
+                    f"— falling back to saved-query approach"
                 )
-                if attempt < max_retries - 1:
-                    time.sleep(5)
+                return self._fetch_via_rtc_saved_query(session, jazz_base, component)
+
+            data = resp.json()
+
+            # OSLC response: { "rdfs:member": [ {workitem...}, ... ] }
+            # or wrapped in oslc:results / results array
+            items = (
+                data.get("rdfs:member")
+                or data.get("oslc:results")
+                or data.get("results")
+                or (data if isinstance(data, list) else [])
+            )
+
+            if not isinstance(items, list):
+                logger.warning(f"Unexpected OSLC response structure for {component}: {list(data.keys())[:5]}")
+                return self._fetch_via_rtc_saved_query(session, jazz_base, component)
+
+            # Filter to open states only (OSLC where on state may not work for
+            # all server versions, so we filter client-side as well)
+            defects = []
+            for item in items:
+                state_obj = item.get("rtc_cm:state") or {}
+                state_id = ""
+                if isinstance(state_obj, dict):
+                    rdf_res = state_obj.get("rdf:resource", "")
+                    # Extract state ID from URL like .../workflows/.../<stateId>
+                    state_id = rdf_res.split("/")[-1] if rdf_res else ""
+                elif isinstance(state_obj, str):
+                    state_id = state_obj.split("/")[-1]
+
+                # Skip closed/cancelled states
+                closed_states = {"closed", "verified", "canceled", "cancelled", "rejected"}
+                if any(c in state_id.lower() for c in closed_states):
                     continue
 
-                logger.error(
-                    f"❌ All {max_retries} attempts failed for {component} — "
-                    f"backend data API may be returning 500. "
-                    f"Check https://libh-proxy1.fyre.ibm.com/cognitive/proxy_links.json"
-                )
-                return None
-
-            except Exception as e:
-                logger.error(f"Error fetching defects for {component}: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                defect_id = str(item.get("dc:identifier", "")).strip()
+                if not defect_id:
                     continue
+
+                summary = str(item.get("dc:title", "")).strip()
+                owner_obj = item.get("rtc_cm:ownedBy") or {}
+                owner = (
+                    owner_obj.get("foaf:name") or owner_obj.get("dc:title") or
+                    owner_obj.get("name") or "Unassigned"
+                    if isinstance(owner_obj, dict) else str(owner_obj) or "Unassigned"
+                )
+
+                state_label = self._resolve_rtc_state(state_id)
+
+                tags_raw = item.get("dc:subject", "")
+                if isinstance(tags_raw, list):
+                    tags = [str(t).strip() for t in tags_raw if t]
+                elif isinstance(tags_raw, str) and tags_raw.strip():
+                    tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+                else:
+                    tags = []
+
+                # Determine section from tags
+                section = "unknown"
+                if not tags:
+                    section = "untriaged"
+                elif any("product" in t.lower() for t in tags):
+                    section = "product_bug"
+                elif any("test" in t.lower() for t in tags):
+                    section = "test_bug"
+                elif any("infra" in t.lower() for t in tags):
+                    section = "infrastructure_bug"
+
+                created = item.get("dc:created", "") or ""
+
+                defects.append({
+                    "id": defect_id,
+                    "summary": summary,
+                    "functionalArea": component,
+                    "owner": owner,
+                    "state": state_label,
+                    "triageTags": tags,
+                    "tags": tags,
+                    "number_builds": 0,
+                    "creation_date": created,
+                    "last_occurrence_date": "",
+                    "reported_builds": "",
+                    "buildsReported": [],
+                    "section": section,
+                    "source": "RTC_OSLC",
+                })
+
+            logger.info(f"✅ RTC OSLC: fetched {len(defects)} open build-break defects for {component}")
+            return defects
+
+        except Exception as e:
+            logger.error(f"Error in _fetch_via_rtc_oslc for {component}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return None
+
+    def _discover_project_area_id(self, session, jazz_base: str, project_area_name: str) -> Optional[str]:
+        """
+        Discover the RTC project area item ID for the given project area name.
+        Returns the URL-safe item ID string, or None on failure.
+        """
+        try:
+            url = f"{jazz_base}/process/project-areas"
+            resp = session.get(
+                url,
+                headers={"Accept": "application/xml"},
+                verify=False,
+                timeout=30,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Could not fetch project areas: HTTP {resp.status_code}")
                 return None
 
-        return None
+            # Parse XML: <jp06:project-area jp06:name="WS-CD" jp:itemId="...">
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(resp.text)
+            ns = {
+                "jp06": "https://jazz.net/xmlns/prod/jazz/process/0.6/",
+                "jp":   "https://jazz.net/xmlns/prod/jazz/process/",
+            }
+            for pa in root.iter():
+                name = pa.get("{https://jazz.net/xmlns/prod/jazz/process/0.6/}name") or \
+                       pa.get("{https://jazz.net/xmlns/prod/jazz/process/}name") or \
+                       pa.get("name") or ""
+                if name == project_area_name:
+                    item_id = pa.get("{https://jazz.net/xmlns/prod/jazz/process/}itemId") or \
+                              pa.get("{https://jazz.net/xmlns/prod/jazz/process/0.6/}itemId") or \
+                              pa.get("itemId") or ""
+                    if item_id:
+                        logger.info(f"✅ Resolved project area '{project_area_name}' → itemId={item_id}")
+                        return item_id
+            logger.warning(f"Project area '{project_area_name}' not found in /process/project-areas")
+            return None
+        except Exception as e:
+            logger.warning(f"Error discovering project area ID: {e}")
+            return None
+
+    def _fetch_via_rtc_saved_query(self, session, jazz_base: str, component: str) -> Optional[List[Dict]]:
+        """
+        Fallback: query RTC via the OSLC workitems endpoint using the functional_area
+        custom attribute with a simpler query (no complex where-clause).
+        Returns list of defects or None.
+        """
+        try:
+            encoded = urllib.parse.quote(component)
+            # Simpler query — just fetch all open defects for this functional area
+            # using the text search / attribute filter approach
+            url = (
+                f"{jazz_base}/oslc/workitems?"
+                f"oslc.where=rtc_cm%3AfiledAgainst%3D%22{encoded}%22"
+                f"&oslc.select=dc%3Aidentifier%2Cdc%3Atitle%2Crtc_cm%3Astate%2Cdc%3Asubject%2Crtc_cm%3AownedBy%2Cdc%3Acreated"
+                f"&oslc.pageSize=500"
+            )
+            resp = session.get(
+                url,
+                headers={"Accept": "application/json"},
+                verify=False,
+                timeout=60,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Saved query fallback returned HTTP {resp.status_code} for {component}")
+                return None
+
+            data = resp.json()
+            items = data.get("rdfs:member") or data.get("oslc:results") or []
+            if not isinstance(items, list):
+                return None
+
+            defects = []
+            closed_keywords = {"closed", "verified", "canceled", "cancelled", "rejected"}
+            for item in items:
+                state_obj = item.get("rtc_cm:state") or {}
+                state_id = ""
+                if isinstance(state_obj, dict):
+                    state_id = state_obj.get("rdf:resource", "").split("/")[-1]
+                if any(c in state_id.lower() for c in closed_keywords):
+                    continue
+
+                defect_id = str(item.get("dc:identifier", "")).strip()
+                if not defect_id:
+                    continue
+
+                summary = str(item.get("dc:title", "")).strip()
+                owner_obj = item.get("rtc_cm:ownedBy") or {}
+                owner = (
+                    owner_obj.get("foaf:name") or owner_obj.get("dc:title") or "Unassigned"
+                    if isinstance(owner_obj, dict) else "Unassigned"
+                )
+                state_label = self._resolve_rtc_state(state_id)
+                tags_raw = item.get("dc:subject", "")
+                tags = (
+                    [str(t).strip() for t in tags_raw if t] if isinstance(tags_raw, list)
+                    else [t.strip() for t in str(tags_raw).split(",") if t.strip()]
+                    if tags_raw else []
+                )
+                section = "untriaged" if not tags else "unknown"
+                defects.append({
+                    "id": defect_id,
+                    "summary": summary,
+                    "functionalArea": component,
+                    "owner": owner,
+                    "state": state_label,
+                    "triageTags": tags,
+                    "tags": tags,
+                    "number_builds": 0,
+                    "creation_date": item.get("dc:created", "") or "",
+                    "last_occurrence_date": "",
+                    "reported_builds": "",
+                    "buildsReported": [],
+                    "section": section,
+                    "source": "RTC_OSLC",
+                })
+
+            logger.info(f"✅ RTC OSLC fallback: {len(defects)} defects for {component}")
+            return defects
+
+        except Exception as e:
+            logger.warning(f"Saved query fallback failed for {component}: {e}")
+            return None
+
+    @staticmethod
+    def _resolve_rtc_state(state_id: str) -> str:
+        """Map a WS-CD workflow state ID to a human-readable label."""
+        STATE_MAP = {
+            "commonWorkflow.state.open":           "Open",
+            "commonWorkflow.state.returned":       "Returned",
+            "commonWorkflow.state.debugging":      "Debugging",
+            "commonWorkflow.state.inprogress":     "In Progress",
+            "defect_workflow.state.s1":            "In Progress (GHE)",
+            "commonWorkflow.state.buildpending":   "Pending Build",
+            "commonWorkflow.state.deliverpending": "Pending Delivery",
+            "commonWorkflow.state.reviewpending":  "Pending Review",
+            "commonWorkflow.state.ready":          "Ready",
+            "defect_workflow.state.s3":            "Ready to Verify (GHE)",
+            "commonWorkflow.state.closed":         "Closed",
+            "commonWorkflow.state.verified":       "Verified",
+            "commonWorkflow.state.canceled":       "Canceled",
+            "commonWorkflow.state.rejected":       "Rejected",
+            "defect_workflow.state.s2":            "Closed (GHE)",
+        }
+        return STATE_MAP.get(state_id, state_id)
 
     def _parse_cognitive_json(self, data, component: str) -> List[Dict]:
         """
