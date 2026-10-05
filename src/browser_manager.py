@@ -106,6 +106,9 @@ class BrowserManager:
             # Use headless=False with virtual display args so the React app's JS
             # executes fully — some apps detect headless mode and skip rendering.
             # --no-sandbox / --disable-gpu are standard for Docker/VM environments.
+            # --disable-features=ServiceWorker: prevents the service worker from
+            # intercepting fetch calls, so the React app hits the real backend API
+            # directly instead of returning 204 cache hits.
             self.context = await self.playwright.chromium.launch_persistent_context(
                 user_data_dir,
                 headless=False,
@@ -118,6 +121,7 @@ class BrowserManager:
                     '--disable-blink-features=AutomationControlled',
                     '--disable-web-security',
                     '--allow-running-insecure-content',
+                    '--disable-features=ServiceWorker',
                 ]
             )
             
@@ -776,7 +780,17 @@ class BrowserManager:
             logger.error("Cannot get fetch page — aborting")
             return None
 
-        captured_data = [None]   # will hold (url, body_text) of the first interesting response
+        captured_data = [None]   # will hold the first interesting JSON response body
+        discovered_api_url = [None]  # will hold the real data API URL when found
+
+        async def handle_request(request):
+            """Log ALL non-static requests so we can discover the real API URL."""
+            try:
+                url = request.url
+                if not any(url.endswith(ext) for ext in (".js", ".css", ".png", ".ico", ".woff", ".ttf", ".map", ".svg")):
+                    logger.info(f"   ➡️  REQ [{request.method}] {url}")
+            except Exception:
+                pass
 
         async def handle_response(response):
             try:
@@ -785,27 +799,28 @@ class BrowserManager:
                 ct = response.headers.get("content-type", "")
 
                 # Log every non-static response
-                if not any(url.endswith(ext) for ext in (".js", ".css", ".png", ".ico", ".woff", ".ttf", ".map")):
-                    logger.info(f"   📡 [{status}] {url}  ct={ct[:40]}")
+                if not any(url.endswith(ext) for ext in (".js", ".css", ".png", ".ico", ".woff", ".ttf", ".map", ".svg")):
+                    logger.info(f"   📡 [{status}] {url}  ct={ct[:60]}")
 
-                # Capture any 200 response that returns JSON and might have defect data
+                # Capture any 200 JSON response that might have defect data
                 if captured_data[0] is None and status == 200:
                     try:
                         if "json" in ct.lower():
                             body = await response.json()
-                            # Check if it contains defect-like data
                             body_str = str(body)
                             if any(kw in body_str for kw in ["defect", "Defect", "RTC", "untriaged", "summary", "functionalArea"]):
                                 captured_data[0] = body
+                                discovered_api_url[0] = url
+                                logger.info(f"🎯 FOUND DATA API URL: {url}")
                                 logger.info(f"✅ Captured data from: {url}")
                         elif "text" in ct.lower() or ct == "":
-                            # Some APIs return text/plain
                             text = await response.text()
                             if text and any(kw in text for kw in ["RTC:", "defect", "untriaged"]):
                                 import json as _json
                                 try:
                                     captured_data[0] = _json.loads(text)
-                                    logger.info(f"✅ Captured text/json from: {url}")
+                                    discovered_api_url[0] = url
+                                    logger.info(f"🎯 FOUND DATA API URL (text/plain): {url}")
                                 except Exception:
                                     pass
                     except Exception:
@@ -813,6 +828,7 @@ class BrowserManager:
             except Exception:
                 pass
 
+        page.on("request", handle_request)
         page.on("response", handle_response)
 
         try:
@@ -958,6 +974,10 @@ class BrowserManager:
                 self._fetch_page = None
             return None
         finally:
+            try:
+                page.remove_listener("request", handle_request)
+            except Exception:
+                pass
             try:
                 page.remove_listener("response", handle_response)
             except Exception:

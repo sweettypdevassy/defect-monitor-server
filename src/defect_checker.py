@@ -48,43 +48,155 @@ class DefectChecker:
         """Check if ML suggester is trained"""
         return self.tag_suggester.trained
     
+    # Candidate backend API URL patterns for the cognitive portal.
+    # These are tried in order; the first one that returns 200 JSON with defect data wins.
+    # Once a working URL is found it is cached in _working_api_url for the session lifetime.
+    _COGNITIVE_API_CANDIDATES = [
+        # Old URL — may still work
+        "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas?fas={component}",
+        # New cognitive portal patterns (most likely first)
+        "https://libh-proxy1.fyre.ibm.com/cognitive/external-data/buildBreakReport?functionalArea={component}",
+        "https://libh-proxy1.fyre.ibm.com/cognitive/external-data/buildBreakReport?fas={component}",
+        "https://libh-proxy1.fyre.ibm.com/cognitive/external-data/defects/buildbreak/fas?fas={component}",
+        "https://libh-proxy1.fyre.ibm.com/cognitive/external-data/defects/buildbreak?functionalArea={component}",
+        "https://libh-proxy1.fyre.ibm.com/cognitive/external-data/buildbreak?functionalArea={component}",
+        "https://libh-proxy1.fyre.ibm.com/cognitive/api/buildBreakReport?functionalArea={component}",
+        "https://libh-proxy1.fyre.ibm.com/cognitive/api/defects/buildbreak?functionalArea={component}",
+        "https://libh-proxy1.fyre.ibm.com/cognitive/rest2/defects/buildbreak/fas?fas={component}",
+        "https://libh-proxy1.fyre.ibm.com/cognitive/rest/defects/buildbreak/fas?fas={component}",
+        "https://libh-proxy1.fyre.ibm.com/cognitive/data/buildBreakReport?functionalArea={component}",
+    ]
+    _working_api_url: Optional[str] = None  # class-level cache of confirmed working URL template
+
     def fetch_defects_for_component(self, component: str, max_retries: int = 3) -> Optional[List[Dict]]:
         """
-        Fetch open build-break defects for a component directly from RTC via OSLC REST API.
+        Fetch open build-break defects for a component from the IBM cognitive portal
+        backend API, using session cookies from the Playwright browser login.
 
-        The cognitive portal (libh-proxy1) React SPA no longer renders data in headless
-        browsers — the service-worker cache path returns 204 and the direct API path
-        requires a fully interactive SSO session that is not achievable headlessly.
+        Strategy:
+          1. Load saved browser cookies (set by the Playwright 2FA login flow).
+          2. Try each candidate API URL pattern with those cookies until one returns
+             valid JSON defect data.  The working URL template is cached for the
+             remainder of the process lifetime.
+          3. Parse the response with _parse_cognitive_json.
 
-        Instead we query RTC OSLC directly (the same endpoint that fetch_defect_details
-        already uses successfully) with a where-clause that matches:
-            type = defect
-            severity = (*) Build Break
-            release = Next
-            profile = Liberty
-            functional_area = <component>
-            state IN {Open, In Progress, Debugging, Returned, In Progress (GHE)}
-
-        Returns list of defects or None on error.
+        Returns list of defects, or empty list on complete failure.
         """
-        defects = self._fetch_via_rtc_oslc(component)
+        defects = self._fetch_via_cognitive_api(component)
         if defects is not None:
             return defects
 
-        # RTC OSLC failed — log and return empty list so the rest of the pipeline
-        # continues rather than treating this component as completely broken.
-        logger.warning(f"⚠️  Could not fetch defects for {component} from RTC OSLC")
+        logger.warning(f"⚠️  Could not fetch defects for {component} from cognitive API")
         return []
+
+    def _build_cognitive_session(self) -> Optional[requests.Session]:
+        """
+        Build a requests.Session loaded with the saved Playwright browser cookies.
+        Returns None if no cookies are available.
+        """
+        try:
+            from cookie_storage import load_cookies
+            raw_cookies = load_cookies()
+            if not raw_cookies:
+                logger.warning("No saved browser cookies — authenticate via the portal first")
+                return None
+
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': (
+                    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+                    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                ),
+                'Accept': 'application/json, text/plain, */*',
+                'Referer': 'https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html',
+                'Cache-Control': 'no-cache',
+            })
+            for c in raw_cookies:
+                domain = c.get('domain', '').lstrip('.')
+                session.cookies.set(
+                    c['name'], c['value'],
+                    domain=domain,
+                    path=c.get('path', '/'),
+                )
+            logger.debug(f"Built cognitive session with {len(raw_cookies)} cookies")
+            return session
+        except Exception as e:
+            logger.warning(f"Failed to build cognitive session: {e}")
+            return None
+
+    def _fetch_via_cognitive_api(self, component: str) -> Optional[List[Dict]]:
+        """
+        Try each candidate API URL in order until one returns valid defect data.
+        Caches the working URL template at the class level.
+        """
+        import urllib.parse
+
+        session = self._build_cognitive_session()
+        if not session:
+            return None
+
+        encoded = urllib.parse.quote(component)
+
+        # If we already know a working URL from a previous call, try it first
+        candidates = []
+        if DefectChecker._working_api_url:
+            candidates.append(DefectChecker._working_api_url)
+        for tmpl in self._COGNITIVE_API_CANDIDATES:
+            url = tmpl.format(component=encoded)
+            if url not in candidates:
+                candidates.append(url)
+
+        for url in candidates:
+            try:
+                logger.info(f"🔍 Trying API: {url}")
+                resp = session.get(url, timeout=30, verify=False)
+                status = resp.status_code
+                ct = resp.headers.get('content-type', '')
+
+                if status == 200 and 'json' in ct.lower():
+                    try:
+                        data = resp.json()
+                        data_str = str(data)
+                        if any(kw in data_str for kw in ['defect', 'Defect', 'RTC', 'untriaged', 'summary']):
+                            # ✅ Working URL found
+                            tmpl_guess = url.replace(encoded, '{component}').replace(component, '{component}')
+                            if DefectChecker._working_api_url != tmpl_guess:
+                                logger.info(f"🎯 Working cognitive API URL: {tmpl_guess}")
+                                DefectChecker._working_api_url = tmpl_guess
+                            defects = self._parse_cognitive_json(data, component)
+                            logger.info(f"✅ Cognitive API: {len(defects)} defects for {component}")
+                            return defects
+                        else:
+                            logger.debug(f"   200 JSON but no defect keywords: {url}")
+                    except Exception as je:
+                        logger.debug(f"   JSON parse error for {url}: {je}")
+                elif status == 302 or status == 301:
+                    loc = resp.headers.get('location', '')
+                    if 'login' in loc.lower():
+                        logger.warning(f"   Session expired (redirect to login) — cookies need refresh")
+                        return None  # stop trying, all URLs will have same auth issue
+                    logger.debug(f"   {status} redirect → {loc[:80]}: {url}")
+                elif status == 404:
+                    logger.debug(f"   404: {url}")
+                elif status in (401, 403):
+                    logger.warning(f"   {status} auth required — cookies may be expired")
+                    return None  # stop trying
+                else:
+                    logger.debug(f"   {status}: {url}  ct={ct}")
+            except requests.exceptions.Timeout:
+                logger.debug(f"   Timeout: {url}")
+            except Exception as e:
+                logger.debug(f"   Error: {url} → {e}")
+
+        logger.warning(f"All cognitive API candidates failed for {component}")
+        return None
 
     def _fetch_via_rtc_oslc(self, component: str) -> Optional[List[Dict]]:
         """
         Fetch open build-break defects for a component via RTC OSLC REST API.
-        Delegates directly to _fetch_via_rtc_saved_query which uses the
-        /jazz/oslc/workitems endpoint — no project area discovery needed.
+        Kept as a reference / fallback; the primary path is _fetch_via_cognitive_api.
         """
         try:
-            # Authenticate with Jazz/RTC directly — sets up self.authenticator.session
-            # via j_security_check (plain HTTP, no browser involved).
             if not self.authenticator.authenticate_jazz_rtc():
                 logger.error(f"Jazz/RTC authentication failed — cannot fetch {component}")
                 return None

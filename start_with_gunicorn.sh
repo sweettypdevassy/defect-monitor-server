@@ -7,6 +7,11 @@ cd /app
 pkill -f "python src/app.py" || true
 pkill -f "gunicorn" || true
 
+# Clear Chrome profile lock files left by previous container runs
+rm -f /app/data/chrome_profile/SingletonLock \
+      /app/data/chrome_profile/SingletonCookie \
+      /app/data/chrome_profile/SingletonSocket
+
 # Start Xvfb virtual display so Chromium can run headless=False
 # (React apps that detect headless mode need a real display to execute JS)
 Xvfb :99 -screen 0 1920x1080x24 -ac &
