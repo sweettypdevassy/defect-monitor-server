@@ -11,15 +11,11 @@ SQLAlchemy==2.0.23
 # Authentication & Security
 cryptography==41.0.7
 PyJWT==2.8.0
-browser-cookie3>=0.19.1
-playwright==1.40.0
-
-# HTML Parsing (for cognitive portal scraping)
-beautifulsoup4==4.12.3
 
 # Utilities
 pytz==2023.3
 python-dateutil==2.8.2
+urllib3>=2.0.0
 
 # Logging
 colorlog==6.8.0

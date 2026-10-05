@@ -3,27 +3,6 @@
 
 cd /app
 
-# Kill any existing Flask/Gunicorn processes
-pkill -f "python src/app.py" || true
-pkill -f "gunicorn" || true
-
-# Clear Chrome profile lock files left by previous container runs
-rm -f /app/data/chrome_profile/SingletonLock \
-      /app/data/chrome_profile/SingletonCookie \
-      /app/data/chrome_profile/SingletonSocket
-
-# Start Xvfb virtual display so Chromium can run headless=False
-# (React apps that detect headless mode need a real display to execute JS)
-Xvfb :99 -screen 0 1920x1080x24 -ac &
-XVFB_PID=$!
-echo "Started Xvfb with PID $XVFB_PID on DISPLAY=:99"
-# Give Xvfb a moment to initialise
-sleep 2
-
-export DISPLAY=:99
-
-# Start with Gunicorn (production mode)
-# Timeout increased to 30 minutes (1800s) for long-running ML operations
 exec gunicorn \
     --bind 0.0.0.0:5000 \
     --workers 1 \
@@ -33,5 +12,3 @@ exec gunicorn \
     --error-logfile - \
     --log-level info \
     "src.app:app"
-
-# Made with Bob
