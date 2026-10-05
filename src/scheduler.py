@@ -8,7 +8,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 import pytz
-from cache_cleaner import clean_chrome_cache
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 logger = logging.getLogger(__name__)
@@ -53,17 +52,7 @@ class DefectScheduler:
             )
             
             logger.info(f"✅ Scheduled ML retraining on {ml_retrain_day} at {ml_retrain_time} {self.timezone}")
-            
-            # Schedule daily cache cleanup (2am IST)
-            self.scheduler.add_job(
-                self.clean_cache,
-                CronTrigger(hour=2, minute=0, timezone=self.timezone),
-                id="cache_cleanup",
-                name="Daily Chrome Cache Cleanup",
-                replace_existing=True
-            )
-            logger.info(f"✅ Scheduled daily cache cleanup at 02:00 {self.timezone}")
-            
+
             # Schedule team-based defect checks
             teams = self.config.get("teams", [])
             if teams:
@@ -175,28 +164,6 @@ class DefectScheduler:
             
             logger.info(f"✅ Scheduled weekly dashboard on {dashboard_day} at {dashboard_time} {self.timezone}")
             
-            # Schedule proactive 2FA authentication
-            proactive_auth_times = self.config.get("schedule", {}).get("proactive_auth_times", [])
-            if proactive_auth_times:
-                logger.info(f"📋 Scheduling proactive authentication at {len(proactive_auth_times)} times...")
-                for auth_time in proactive_auth_times:
-                    try:
-                        hour, minute = map(int, auth_time.split(":"))
-                        
-                        self.scheduler.add_job(
-                            self.run_proactive_authentication,
-                            CronTrigger(hour=hour, minute=minute, timezone=self.timezone),
-                            id=f"proactive_auth_{auth_time.replace(':', '')}",
-                            name=f"Proactive 2FA Authentication at {auth_time}",
-                            replace_existing=True
-                        )
-                        
-                        logger.info(f"✅ Scheduled proactive authentication at {auth_time} {self.timezone}")
-                    except Exception as e:
-                        logger.error(f"Error scheduling proactive auth at {auth_time}: {e}")
-            else:
-                logger.info("ℹ️  No proactive authentication times configured")
-            
             # Schedule data cleanup weekly
             self.scheduler.add_job(
                 self.cleanup_old_data,
@@ -285,26 +252,6 @@ class DefectScheduler:
             
             # Store failed check in history
             self.database.store_check_history({}, False, str(e))
-    
-    def clean_cache(self):
-        """Clean Chrome profile cache to prevent unbounded growth"""
-        try:
-            logger.info("=" * 60)
-            logger.info("🧹 Starting scheduled cache cleanup")
-            logger.info("=" * 60)
-            
-            result = clean_chrome_cache()
-            
-            logger.info("=" * 60)
-            logger.info("✅ Cache cleanup completed")
-            logger.info(f"   Files/dirs deleted: {result['files_deleted']}")
-            logger.info(f"   Space freed: {result['bytes_freed'] / 1024 / 1024:.2f} MB")
-            if result['errors'] > 0:
-                logger.warning(f"   Errors: {result['errors']}")
-            logger.info("=" * 60)
-            
-        except Exception as e:
-            logger.error(f"❌ Error in cache cleanup: {e}")
     
     def run_all_components_fetch(self):
         """
@@ -562,97 +509,6 @@ class DefectScheduler:
         logger.info(f"✅ Total aggregated insights: {len(all_insights['duplicates'])} duplicate groups, {len(all_insights['rare_defects'])} rare defects")
         
         return all_insights
-    
-    def refresh_session(self):
-        """Refresh IBM session (no error notifications)"""
-        try:
-            logger.info("🔄 Refreshing IBM session...")
-            
-            if self.defect_checker.authenticator.refresh_session():
-                logger.info("✅ Session refreshed successfully")
-            else:
-                # Session refresh failed, but check if we can still authenticate
-                logger.warning("⚠️ Session refresh returned false, verifying authentication...")
-                
-                # Try to get a session - this will trigger re-authentication if needed
-                session = self.defect_checker.authenticator.get_session()
-                
-                if session:
-                    logger.info("✅ Session recovered through re-authentication")
-                else:
-                    # Log error but don't send notification (user doesn't want spam)
-                    logger.error("❌ Session refresh and re-authentication both failed")
-                    logger.info("💡 Tip: Refresh your cookies using ./refresh_cookies_auto.sh")
-                
-        except Exception as e:
-            logger.error(f"Error refreshing session: {e}")
-            logger.info("💡 Tip: Refresh your cookies using ./refresh_cookies_auto.sh")
-    
-    def run_proactive_authentication(self):
-        """
-        Proactively authenticate with IBM to keep session fresh
-        Forces a FRESH LOGIN with 2FA to reset session expiration timer
-        This prevents mid-task authentication failures
-        """
-        try:
-            logger.info("=" * 60)
-            logger.info("🔐 Starting proactive FRESH 2FA authentication")
-            logger.info("   (Forcing fresh login to reset session timer)")
-            logger.info("=" * 60)
-            
-            # Get the browser manager
-            from browser_manager import get_browser_manager
-            browser_manager = get_browser_manager()
-
-            # Get credentials from config
-            ibm_config = self.config.get("ibm", {})
-            username = ibm_config.get("username", "")
-            password = ibm_config.get("password", "")
-
-            # Start browser if not already started (submitted to its own loop)
-            if not browser_manager.context:
-                logger.info("🚀 Starting browser session for fresh login...")
-                browser_manager._run_async(
-                    browser_manager.start(username, password), timeout=60
-                )
-
-            # Force a fresh login with 2FA to get brand new cookies
-            logger.info("🔄 Forcing fresh login to reset session expiration...")
-            success = browser_manager._run_async(
-                browser_manager.force_fresh_login(), timeout=180
-            )
-            
-            if success:
-                logger.info("=" * 60)
-                logger.info("✅ Proactive authentication completed successfully")
-                logger.info("   Session is now fresh and ready for scheduled tasks")
-                logger.info("=" * 60)
-            else:
-                logger.error("=" * 60)
-                logger.error("❌ Proactive authentication failed")
-                logger.error("   Please check 2FA approval or cookie configuration")
-                logger.error("=" * 60)
-                
-                # Send notification about authentication failure
-                try:
-                    self.slack_notifier.send_error_notification(
-                        "⚠️ Proactive authentication failed. Please approve 2FA or check cookie configuration."
-                    )
-                except Exception as notify_error:
-                    logger.error(f"Failed to send authentication failure notification: {notify_error}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error in proactive authentication: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
-            # Send error notification
-            try:
-                self.slack_notifier.send_error_notification(
-                    f"Proactive authentication error: {str(e)}"
-                )
-            except Exception as notify_error:
-                logger.error(f"Failed to send error notification: {notify_error}")
     
     def cleanup_old_data(self):
         """Clean up old data from database"""

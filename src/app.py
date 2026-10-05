@@ -88,66 +88,6 @@ def load_config():
         raise
 
 
-def _start_browser_with_saved_cookies(ibm_config: dict):
-    """
-    Start the Playwright browser in background using saved cookies so the
-    service worker cache is available for fetch_component_data_json() calls.
-    Does NOT require 2FA — loads /app/data/session_cookies.json into the
-    browser context and navigates to the cognitive portal to activate the SW.
-    Runs entirely in the background thread so it doesn't block app startup.
-    """
-    def _do_start():
-        try:
-            from browser_manager import get_browser_manager
-            bm = get_browser_manager()
-
-            username = ibm_config.get('username', '')
-            password = ibm_config.get('password', '')
-
-            async def _launch():
-                # Start the browser (creates context from persistent profile)
-                started = await bm.start(username, password)
-                if not started or not bm.context:
-                    logger.warning("⚠️  Browser failed to start during init")
-                    return
-
-                # Load saved cookies into the context
-                from cookie_storage import load_cookies
-                saved = load_cookies()
-                if saved:
-                    try:
-                        await bm.context.add_cookies(saved)
-                        logger.info(f"✅ Loaded {len(saved)} cookies into browser at startup")
-                    except Exception as e:
-                        logger.warning(f"Cookie load warning: {e}")
-
-                # Navigate to the cognitive portal to activate the service worker
-                pages = bm.context.pages
-                page = pages[0] if pages else await bm.context.new_page()
-                try:
-                    await page.goto(
-                        "https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaList.html",
-                        wait_until="domcontentloaded",
-                        timeout=30000
-                    )
-                    import asyncio
-                    await asyncio.sleep(5)  # give SW time to register & populate cache
-                    logger.info(f"✅ Browser ready at startup — page: {page.url}")
-
-                    # Pre-warm the fetch page so first component fetch is fast
-                    await bm._ensure_fetch_page()
-                except Exception as e:
-                    logger.warning(f"Browser startup navigation warning: {e}")
-
-            bm._run_async(_launch(), timeout=120)
-        except Exception as e:
-            logger.warning(f"Browser auto-start failed (will retry on first fetch): {e}")
-
-    t = threading.Thread(target=_do_start, name="browser-autostart", daemon=True)
-    t.start()
-    logger.info("🌐 Browser auto-start launched in background")
-
-
 def initialize_services():
     """Initialize all services"""
     global authenticator, defect_checker, slack_notifier, database, scheduler, insights_analyzer
@@ -159,16 +99,11 @@ def initialize_services():
         # Set Flask secret key
         app.secret_key = config.get("dashboard", {}).get("secret_key", "change-me")
         
-        # Initialize authenticator
+        # Initialize authenticator (Jazz/RTC username + password only)
         ibm_config = config.get("ibm", {})
-        auth_method = ibm_config.get("auth_method", "password")
-        cookies = ibm_config.get("cookies", {})
-        
         authenticator = IBMAuthenticator(
             username=ibm_config.get("username", ""),
             password=ibm_config.get("password", ""),
-            auth_method=auth_method,
-            cookies=cookies
         )
         
         # Initialize database first (needed by defect_checker)
@@ -196,10 +131,6 @@ def initialize_services():
         insights_analyzer.set_duplicate_detector(defect_checker.duplicate_detector)
         insights_analyzer.set_defect_checker(defect_checker)
         logger.info("✅ Insights analyzer initialized")
-
-        # Auto-start browser with saved cookies so fetch_component_data_json works
-        # without requiring a 2FA login after every container restart.
-        _start_browser_with_saved_cookies(ibm_config)
 
         logger.info("✅ All services initialized successfully")
         

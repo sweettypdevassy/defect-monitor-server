@@ -1,6 +1,7 @@
 """
 Defect Checker Module
-Fetches and processes defects from IBM Cognitive Functional Area Analysis and SOE Triage
+Fetches and processes defects from IBM RTC OSLC REST API directly.
+No browser, no cookies, no 2FA — plain Jazz/RTC username + password auth.
 """
 
 import requests
@@ -11,210 +12,60 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from ml_tag_suggester import MLTagSuggester
-from cookie_monitor import get_cookie_monitor
 from duplicate_detector import DuplicateDetector
 from fetch_checkpoint import FetchCheckpoint
-try:
-    from bs4 import BeautifulSoup
-    BS4_AVAILABLE = True
-except ImportError:
-    BS4_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
 
 class DefectChecker:
     """Handles fetching and processing defects from IBM systems"""
-    
+
+    JAZZ_BASE = "https://wasrtc.hursley.ibm.com:9443/jazz"
+
     def __init__(self, authenticator, database=None):
         self.authenticator = authenticator
         self.database = database
-        self.build_break_base_url = "https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html"
-        self.soe_triage_url = "https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workitems.json"
         self.tag_suggester = MLTagSuggester()
-        
+
         # ML model status logged only if not trained
         ml_stats = self.tag_suggester.get_training_stats()
         if not ml_stats.get('trained'):
             logger.warning("⚠️  ML model not trained. Run: docker-compose exec defect-monitor python3 retrain_model.sh")
-        
-        # Lower threshold to 0.85 for summary-only matching (was 0.7)
-        # Use 80% threshold for duplicate detection
-        # With descriptions, this provides good balance between catching duplicates and avoiding false positives
+
         self.duplicate_detector = DuplicateDetector(similarity_threshold=0.80)
-    
+
     @property
     def suggester_trained(self):
         """Check if ML suggester is trained"""
         return self.tag_suggester.trained
-    
-    # Candidate backend API URL patterns for the cognitive portal.
-    # These are tried in order; the first one that returns 200 JSON with defect data wins.
-    # Once a working URL is found it is cached in _working_api_url for the session lifetime.
-    _COGNITIVE_API_CANDIDATES = [
-        # Old URL — may still work
-        "https://libh-proxy1.fyre.ibm.com/buildBreakReport/rest2/defects/buildbreak/fas?fas={component}",
-        # New cognitive portal patterns (most likely first)
-        "https://libh-proxy1.fyre.ibm.com/cognitive/external-data/buildBreakReport?functionalArea={component}",
-        "https://libh-proxy1.fyre.ibm.com/cognitive/external-data/buildBreakReport?fas={component}",
-        "https://libh-proxy1.fyre.ibm.com/cognitive/external-data/defects/buildbreak/fas?fas={component}",
-        "https://libh-proxy1.fyre.ibm.com/cognitive/external-data/defects/buildbreak?functionalArea={component}",
-        "https://libh-proxy1.fyre.ibm.com/cognitive/external-data/buildbreak?functionalArea={component}",
-        "https://libh-proxy1.fyre.ibm.com/cognitive/api/buildBreakReport?functionalArea={component}",
-        "https://libh-proxy1.fyre.ibm.com/cognitive/api/defects/buildbreak?functionalArea={component}",
-        "https://libh-proxy1.fyre.ibm.com/cognitive/rest2/defects/buildbreak/fas?fas={component}",
-        "https://libh-proxy1.fyre.ibm.com/cognitive/rest/defects/buildbreak/fas?fas={component}",
-        "https://libh-proxy1.fyre.ibm.com/cognitive/data/buildBreakReport?functionalArea={component}",
-    ]
-    _working_api_url: Optional[str] = None  # class-level cache of confirmed working URL template
 
     def fetch_defects_for_component(self, component: str, max_retries: int = 3) -> Optional[List[Dict]]:
         """
-        Fetch open build-break defects for a component from the IBM cognitive portal
-        backend API, using session cookies from the Playwright browser login.
-
-        Strategy:
-          1. Load saved browser cookies (set by the Playwright 2FA login flow).
-          2. Try each candidate API URL pattern with those cookies until one returns
-             valid JSON defect data.  The working URL template is cached for the
-             remainder of the process lifetime.
-          3. Parse the response with _parse_cognitive_json.
-
-        Returns list of defects, or empty list on complete failure.
+        Fetch open build-break defects for a component directly from RTC OSLC REST API.
+        Uses Jazz username + password auth (j_security_check) — no browser, no 2FA needed.
         """
-        # ── Primary: browser-based fetch via service worker cache ────────────
-        # The /cognitive/external-data/ backend returns 500 for direct HTTP calls.
-        # The ONLY path that works is the browser's service worker cache, which
-        # intercepts fetch("external-data/data/buildBreakReport") and serves data.
-        try:
-            from browser_manager import get_browser_manager
-            bm = get_browser_manager()
-            raw = bm._run_async(
-                bm.fetch_component_data_json(component),
-                timeout=90,
-            )
-            if raw is not None:
-                defects = self._parse_cognitive_json(raw, component)
-                logger.info(f"✅ Browser/SW fetch: {len(defects)} defects for {component}")
-                return defects
-            logger.warning(f"⚠️  Browser fetch returned nothing for {component}")
-        except Exception as e:
-            logger.warning(f"⚠️  Browser fetch error for {component}: {e}")
-
-        # ── Fallback: direct requests with saved cookies (works if backend recovers)
-        defects = self._fetch_via_cognitive_api(component)
-        if defects is not None:
-            return defects
-
-        logger.warning(f"⚠️  Could not fetch defects for {component} from any source")
-        return []
-
-    def _build_cognitive_session(self) -> Optional[requests.Session]:
-        """
-        Build a requests.Session loaded with the saved Playwright browser cookies.
-        Returns None if no cookies are available.
-        """
-        try:
-            from cookie_storage import load_cookies
-            raw_cookies = load_cookies()
-            if not raw_cookies:
-                logger.warning("No saved browser cookies — authenticate via the portal first")
-                return None
-
-            session = requests.Session()
-            session.headers.update({
-                'User-Agent': (
-                    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
-                    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                ),
-                'Accept': 'application/json, text/plain, */*',
-                'Referer': 'https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaAnalysis.html',
-                'Cache-Control': 'no-cache',
-            })
-            for c in raw_cookies:
-                domain = c.get('domain', '').lstrip('.')
-                session.cookies.set(
-                    c['name'], c['value'],
-                    domain=domain,
-                    path=c.get('path', '/'),
-                )
-            logger.debug(f"Built cognitive session with {len(raw_cookies)} cookies")
-            return session
-        except Exception as e:
-            logger.warning(f"Failed to build cognitive session: {e}")
-            return None
-
-    def _fetch_via_cognitive_api(self, component: str) -> Optional[List[Dict]]:
-        """
-        Try each candidate API URL in order until one returns valid defect data.
-        Caches the working URL template at the class level.
-        """
-        import urllib.parse
-
-        session = self._build_cognitive_session()
-        if not session:
-            return None
-
-        encoded = urllib.parse.quote(component)
-
-        # If we already know a working URL from a previous call, try it first
-        candidates = []
-        if DefectChecker._working_api_url:
-            candidates.append(DefectChecker._working_api_url)
-        for tmpl in self._COGNITIVE_API_CANDIDATES:
-            url = tmpl.format(component=encoded)
-            if url not in candidates:
-                candidates.append(url)
-
-        for url in candidates:
+        for attempt in range(1, max_retries + 1):
             try:
-                logger.info(f"🔍 Trying API: {url}")
-                resp = session.get(url, timeout=30, verify=False)
-                status = resp.status_code
-                ct = resp.headers.get('content-type', '')
-
-                if status == 200 and 'json' in ct.lower():
-                    try:
-                        data = resp.json()
-                        data_str = str(data)
-                        if any(kw in data_str for kw in ['defect', 'Defect', 'RTC', 'untriaged', 'summary']):
-                            # ✅ Working URL found
-                            tmpl_guess = url.replace(encoded, '{component}').replace(component, '{component}')
-                            if DefectChecker._working_api_url != tmpl_guess:
-                                logger.info(f"🎯 Working cognitive API URL: {tmpl_guess}")
-                                DefectChecker._working_api_url = tmpl_guess
-                            defects = self._parse_cognitive_json(data, component)
-                            logger.info(f"✅ Cognitive API: {len(defects)} defects for {component}")
-                            return defects
-                        else:
-                            logger.debug(f"   200 JSON but no defect keywords: {url}")
-                    except Exception as je:
-                        logger.debug(f"   JSON parse error for {url}: {je}")
-                elif status == 302 or status == 301:
-                    loc = resp.headers.get('location', '')
-                    if 'login' in loc.lower():
-                        logger.warning(f"   Session expired (redirect to login) — cookies need refresh")
-                        return None  # stop trying, all URLs will have same auth issue
-                    logger.debug(f"   {status} redirect → {loc[:80]}: {url}")
-                elif status == 404:
-                    logger.debug(f"   404: {url}")
-                elif status in (401, 403):
-                    logger.warning(f"   {status} auth required — cookies may be expired")
-                    return None  # stop trying
-                else:
-                    logger.debug(f"   {status}: {url}  ct={ct}")
-            except requests.exceptions.Timeout:
-                logger.debug(f"   Timeout: {url}")
+                defects = self._fetch_via_rtc_oslc(component)
+                if defects is not None:
+                    return defects
             except Exception as e:
-                logger.debug(f"   Error: {url} → {e}")
+                logger.warning(f"⚠️  OSLC fetch attempt {attempt}/{max_retries} failed for {component}: {e}")
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)
 
-        logger.warning(f"All cognitive API candidates failed for {component}")
-        return None
+        logger.warning(f"⚠️  Could not fetch defects for {component} after {max_retries} attempts")
+        return []
 
     def _fetch_via_rtc_oslc(self, component: str) -> Optional[List[Dict]]:
         """
-        Fetch open build-break defects for a component via RTC OSLC REST API.
-        Kept as a reference / fallback; the primary path is _fetch_via_cognitive_api.
+        Fetch open build-break defects for a component directly via RTC OSLC REST API.
+        Mirrors the exact filter used by rtc-mcp-server RTCRepository:
+          type=defect, severity=(*) Build Break, release=Next, profile=Liberty,
+          functional_area=<component>, state in {Open, Returned, Debugging,
+          In Progress, In Progress (GHE)}.
+        No browser, no cookies, no 2FA — plain j_security_check auth.
         """
         try:
             if not self.authenticator.authenticate_jazz_rtc():
@@ -225,28 +76,20 @@ class DefectChecker:
             if not session:
                 return None
 
-            jazz_base = "https://wasrtc.hursley.ibm.com:9443/jazz"
-            return self._fetch_via_rtc_saved_query(session, jazz_base, component)
-
-        except Exception as e:
-            logger.error(f"Error in _fetch_via_rtc_oslc for {component}: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-            return None
-
-    def _fetch_via_rtc_saved_query(self, session, jazz_base: str, component: str) -> Optional[List[Dict]]:
-        """
-        Query RTC OSLC /jazz/oslc/workitems for open build-break defects in a
-        functional area. Uses oslc.where to filter by the custom functional_area
-        attribute and severity=Build Break.
-        Returns list of defects or None.
-        """
-        try:
-            # Build the where-clause. RTC OSLC uses the short attribute ID.
-            # functional_area is a custom WS-CD attribute; rtc_cm:severity filters to Build Breaks.
+            # Exact OSLC where-clause matching rtc-mcp-server's Java query
             where = (
-                f'rtc_cm:com.ibm.team.workitem.attribute.severity="(*) Build Break"'
-                f' AND rtc_cm:com.ibm.team.workitem.linktype.functional_area="{component}"'
+                'rtc_cm:type="defect"'
+                ' AND rtc_cm:com.ibm.team.workitem.attribute.severity="(*) Build Break"'
+                ' AND rtc_cm:com.ibm.team.workitem.attribute.release="Next"'
+                ' AND rtc_cm:com.ibm.team.workitem.attribute.profileOrEdition="Liberty"'
+                f' AND rtc_cm:com.ibm.team.workitem.attribute.functional_area="{component}"'
+                ' AND ('
+                '  rtc_cm:state="commonWorkflow.state.open"'
+                '  OR rtc_cm:state="commonWorkflow.state.returned"'
+                '  OR rtc_cm:state="commonWorkflow.state.debugging"'
+                '  OR rtc_cm:state="commonWorkflow.state.inprogress"'
+                '  OR rtc_cm:state="defect_workflow.state.s1"'
+                ' )'
             )
             params = {
                 "oslc.where": where,
@@ -255,8 +98,9 @@ class DefectChecker:
                     "rtc_cm:ownedBy,dc:created"
                 ),
                 "oslc.pageSize": "500",
+                "oslc.orderBy": "+dc:identifier",
             }
-            url = f"{jazz_base}/oslc/workitems"
+            url = f"{self.JAZZ_BASE}/oslc/workitems"
             logger.info(f"🔍 Querying RTC OSLC for build-break defects: {component}")
             resp = session.get(
                 url,
@@ -270,7 +114,6 @@ class DefectChecker:
                 logger.debug(f"Response: {resp.text[:300]}")
                 return None
 
-            # Detect non-JSON response (e.g. HTML login redirect)
             ct = resp.headers.get("content-type", "")
             if "json" not in ct.lower():
                 logger.error(f"RTC OSLC returned non-JSON (content-type: {ct}) for {component}")
@@ -283,14 +126,11 @@ class DefectChecker:
                 return None
 
             defects = []
-            closed_keywords = {"closed", "verified", "canceled", "cancelled", "rejected"}
             for item in items:
                 state_obj = item.get("rtc_cm:state") or {}
                 state_id = ""
                 if isinstance(state_obj, dict):
                     state_id = state_obj.get("rdf:resource", "").split("/")[-1]
-                if any(c in state_id.lower() for c in closed_keywords):
-                    continue
 
                 defect_id = str(item.get("dc:identifier", "")).strip()
                 if not defect_id:
@@ -327,11 +167,13 @@ class DefectChecker:
                     "source": "RTC_OSLC",
                 })
 
-            logger.info(f"✅ RTC OSLC fallback: {len(defects)} defects for {component}")
+            logger.info(f"✅ RTC OSLC: {len(defects)} defects for {component}")
             return defects
 
         except Exception as e:
-            logger.warning(f"Saved query fallback failed for {component}: {e}")
+            logger.error(f"Error in _fetch_via_rtc_oslc for {component}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return None
 
     @staticmethod
@@ -668,172 +510,6 @@ class DefectChecker:
         return defects
 
 
-    def _parse_build_break_html(self, html: str, component: str) -> List[Dict]:
-        """
-        Parse the Build Break Report HTML page from the cognitive portal.
-        Extracts defects from all sections: Untriaged, High Impact, Product Defects, etc.
-
-        The page structure has sections with <h2> or <h3> headings followed by tables.
-        Each table row contains: Defect link, Summary, Impact icon, Count, Tags, State, Owner.
-        """
-        soup = BeautifulSoup(html, 'html.parser')
-        defects = []
-
-        # Find all defect table rows. Each section (Untriaged, High Impact, etc.)
-        # contains a table with rows of defect data.
-        # The defect ID links look like: <a href="...">RTC: 312186</a>
-        # We collect ALL defects across all sections.
-
-        # Find all tables that contain defect data
-        # Section headings identify the type (untriaged, high_impact, product_bug, test_bug, etc.)
-        current_section = "unknown"
-
-        for element in soup.find_all(['h2', 'h3', 'h4', 'table', 'section', 'div']):
-            tag_name = element.name
-
-            # Detect section heading to label defect type
-            if tag_name in ('h2', 'h3', 'h4'):
-                heading_text = element.get_text(strip=True).lower()
-                if 'untriaged' in heading_text:
-                    current_section = 'untriaged'
-                elif 'high impact' in heading_text:
-                    current_section = 'high_impact'
-                elif 'product' in heading_text:
-                    current_section = 'product_bug'
-                elif 'test' in heading_text:
-                    current_section = 'test_bug'
-                elif 'infra' in heading_text or 'infrastructure' in heading_text:
-                    current_section = 'infrastructure_bug'
-                else:
-                    current_section = heading_text.replace(' ', '_')[:30]
-                continue
-
-            if tag_name == 'table':
-                rows = element.find_all('tr')
-                for row in rows:
-                    cells = row.find_all(['td', 'th'])
-                    if not cells:
-                        continue
-
-                    # Skip header rows
-                    if row.find('th'):
-                        continue
-
-                    # Extract defect ID from first cell link (e.g. "RTC: 312186")
-                    first_cell = cells[0]
-                    defect_link = first_cell.find('a')
-                    if not defect_link:
-                        continue
-
-                    raw_id_text = defect_link.get_text(strip=True)
-                    # Handle formats: "RTC: 312186" or "RTC:312186" or just "312186"
-                    defect_id = raw_id_text.replace('RTC:', '').replace('RTC: ', '').strip()
-                    if not defect_id.isdigit():
-                        continue
-
-                    # Extract summary (2nd cell)
-                    summary = cells[1].get_text(strip=True) if len(cells) > 1 else ''
-
-                    # Extract count / impact (3rd or 4th cell — page shows Impact icon + Count)
-                    number_builds = 0
-                    if len(cells) > 3:
-                        count_text = cells[3].get_text(strip=True)
-                        try:
-                            number_builds = int(count_text)
-                        except (ValueError, TypeError):
-                            number_builds = 0
-                    elif len(cells) > 2:
-                        count_text = cells[2].get_text(strip=True)
-                        try:
-                            number_builds = int(count_text)
-                        except (ValueError, TypeError):
-                            number_builds = 0
-
-                    # Extract tags (5th cell — shown as badge spans)
-                    tags = []
-                    if len(cells) > 4:
-                        tag_cell = cells[4]
-                        tag_spans = tag_cell.find_all(['span', 'a', 'badge'])
-                        if tag_spans:
-                            for span in tag_spans:
-                                tag_text = span.get_text(strip=True)
-                                if tag_text and tag_text not in ('...', ''):
-                                    tags.append(tag_text)
-                        else:
-                            raw_tags = tag_cell.get_text(separator=',', strip=True)
-                            tags = [t.strip() for t in raw_tags.split(',') if t.strip() and t.strip() != '...']
-
-                    # Extract state (6th cell)
-                    state = ''
-                    if len(cells) > 5:
-                        state = cells[5].get_text(strip=True)
-
-                    # Extract owner (7th cell)
-                    owner = 'Unassigned'
-                    if len(cells) > 6:
-                        owner_text = cells[6].get_text(strip=True)
-                        if owner_text:
-                            owner = owner_text
-
-                    # Determine triage tags from section + existing tags
-                    triage_tags = list(tags)
-                    if current_section == 'product_bug' and not any('product' in t.lower() for t in triage_tags):
-                        triage_tags.append('product_bug')
-                    elif current_section == 'test_bug' and not any('test' in t.lower() for t in triage_tags):
-                        triage_tags.append('test_bug')
-                    elif current_section == 'infrastructure_bug' and not any('infra' in t.lower() for t in triage_tags):
-                        triage_tags.append('infrastructure_bug')
-
-                    defects.append({
-                        'id': defect_id,
-                        'summary': summary,
-                        'functionalArea': component,
-                        'owner': owner,
-                        'state': state,
-                        'triageTags': triage_tags,
-                        'tags': triage_tags,
-                        'number_builds': number_builds,
-                        'creation_date': '',       # Will be enriched from Jazz/RTC
-                        'last_occurrence_date': '',
-                        'reported_builds': '',
-                        'buildsReported': [],
-                        'section': current_section,  # Track which section this came from
-                        'source': 'COGNITIVE_BUILD_BREAK'
-                    })
-
-        if not defects:
-            # Fallback: try finding any RTC links on the page directly
-            logger.debug(f"No defects found via table parsing for {component}, trying link scan...")
-            for link in soup.find_all('a', href=True):
-                text = link.get_text(strip=True)
-                if text.startswith('RTC:') or text.startswith('RTC: '):
-                    defect_id = text.replace('RTC:', '').replace('RTC: ', '').strip()
-                    if defect_id.isdigit():
-                        # Get surrounding text for summary
-                        parent = link.find_parent('tr')
-                        summary = ''
-                        if parent:
-                            cells = parent.find_all('td')
-                            summary = cells[1].get_text(strip=True) if len(cells) > 1 else ''
-                        defects.append({
-                            'id': defect_id,
-                            'summary': summary,
-                            'functionalArea': component,
-                            'owner': 'Unassigned',
-                            'state': '',
-                            'triageTags': [],
-                            'tags': [],
-                            'number_builds': 0,
-                            'creation_date': '',
-                            'last_occurrence_date': '',
-                            'reported_builds': '',
-                            'buildsReported': [],
-                            'section': 'unknown',
-                            'source': 'COGNITIVE_BUILD_BREAK'
-                        })
-
-        return defects
-    
     def extract_creation_date_from_builds(self, reported_builds: str) -> str:
         """
         Extract creation date from the FIRST build in reported_builds string.
