@@ -150,7 +150,7 @@ class DefectChecker:
                     {"field": "startTime", "operation": "GREATER",
                      "value": str(two_weeks_ago)},
                 ],
-                "resultProps": ["defects"],
+                "resultProps": ["defects", "startTime"],
                 "excludeHeaders": True,
             }
             creds = base64.b64encode(
@@ -170,11 +170,14 @@ class DefectChecker:
                 logger.warning(f"Cognitive store query failed: HTTP {resp.status_code}")
                 return None
 
-            # Each line: pipelineId \t defects_json \t ...
+            lines = resp.text.strip().split("\n")
+            logger.info(f"  Cognitive store raw response: {len(lines)} lines, first={repr(lines[0][:120]) if lines else 'empty'}")
+
+            # Each line: pipelineId \t defects_json \t startTime
             # defects_json is a JSON array of RTC resource URLs, e.g.:
             # ["https://wasrtc.../WorkItem/309006"]
             defect_ids: Set[str] = set()
-            for line in resp.text.strip().split("\n"):
+            for line in lines:
                 parts = line.split("\t", 2)
                 if len(parts) < 2:
                     continue
