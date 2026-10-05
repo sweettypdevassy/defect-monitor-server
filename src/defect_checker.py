@@ -171,7 +171,10 @@ class DefectChecker:
                 return None
 
             lines = resp.text.strip().split("\n")
-            logger.info(f"  Cognitive store raw response: {len(lines)} lines, first={repr(lines[0][:120]) if lines else 'empty'}")
+            # Log first line in full to diagnose URL format
+            first = lines[0] if lines else ""
+            logger.info(f"  Cognitive store raw response: {len(lines)} lines")
+            logger.info(f"  First line full: {repr(first[:300])}")
 
             # Each line: pipelineId \t defects_json \t startTime
             # defects_json is a JSON array of RTC resource URLs, e.g.:
