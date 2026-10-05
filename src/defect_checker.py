@@ -180,6 +180,7 @@ class DefectChecker:
             # defects_json is a JSON array of RTC resource URLs, e.g.:
             # ["https://wasrtc.../WorkItem/309006"]
             defect_ids: Set[str] = set()
+            parse_errors = 0
             for line in lines:
                 parts = line.split("\t", 2)
                 if len(parts) < 2:
@@ -190,12 +191,20 @@ class DefectChecker:
                 try:
                     urls = json.loads(raw)
                 except (json.JSONDecodeError, ValueError):
+                    parse_errors += 1
                     continue
                 for url in urls:
                     if isinstance(url, str) and "/WorkItem/" in url:
                         did = url.rstrip("/").split("/")[-1]
                         if did.isdigit():
                             defect_ids.add(did)
+            # Debug: show parse stats and a sample of the first non-empty raw value
+            sample_raw = next((line.split("\t", 2)[1].strip()
+                               for line in lines
+                               if len(line.split("\t", 2)) >= 2
+                               and line.split("\t", 2)[1].strip()
+                               and line.split("\t", 2)[1].strip() != "null"), "")
+            logger.info(f"  parse_errors={parse_errors}  sample_raw={repr(sample_raw[:150])}")
             return defect_ids
         except Exception as e:
             logger.error(f"Error querying Cognitive store: {e}")
