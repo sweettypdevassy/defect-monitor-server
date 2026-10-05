@@ -244,7 +244,11 @@ class DefectChecker:
             )
             if resp.status_code == 200 and "json" in resp.headers.get("content-type", "").lower():
                 data = resp.json()
-                literals = data.get("oslc_cm:results") or data.get("rdfs:member") or []
+                # The enumeration API returns a plain JSON array directly
+                if isinstance(data, list):
+                    literals = data
+                else:
+                    literals = data.get("oslc_cm:results") or data.get("rdfs:member") or []
                 for lit in literals:
                     name = (lit.get("dc:title") or lit.get("oslc_cm:label") or
                             lit.get("dcterms:title") or "")
