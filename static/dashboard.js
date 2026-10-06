@@ -63,7 +63,13 @@ async function loadDashboardData(skipAutoRefresh = false) {
         
     } catch (error) {
         console.error('Error loading dashboard data:', error);
-        document.body.innerHTML = '<div class="loading"><div class="loading-spinner"></div><div><h2>Error Loading Data</h2><p style="margin-top:10px;color:#8899a6;">Please try refreshing the page.</p></div></div>';
+        // Only replace the page if the explorer dashboard is not already visible.
+        // This prevents wiping the page when the user is interacting with the explorer.
+        const explorerVisible = document.getElementById('explorerDashboard')?.style.display !== 'none'
+                             && document.getElementById('explorerDashboard')?.style.display !== '';
+        if (!explorerVisible) {
+            document.body.innerHTML = '<div class="loading"><div class="loading-spinner"></div><div><h2>Error Loading Data</h2><p style="margin-top:10px;color:#8899a6;">Please try refreshing the page.</p></div></div>';
+        }
     }
 }
 
@@ -1239,7 +1245,10 @@ async function renderTriagedDefects(selectedComponents = null) {
 // No auto-load for monitored components - user selects components first
 
 // Add keyboard shortcut for refresh (R key)
+// Guard: do not fire when the user is typing in an input, textarea or select
 document.addEventListener('keydown', (e) => {
+    const tag = document.activeElement?.tagName?.toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
     if (e.key === 'r' || e.key === 'R') {
         console.log('Refreshing dashboard...');
         loadDashboardData();
