@@ -295,6 +295,9 @@ class SlackNotifier:
         # Check if we have component-organized insights
         by_component = insights.get("by_component", {})
         
+        has_duplicates = False
+        has_rare = False
+
         if by_component:
             # Display insights organized by component
             for component, comp_insights in by_component.items():
@@ -304,6 +307,7 @@ class SlackNotifier:
                 # Duplicate defects for this component
                 if comp_insights.get("duplicates") and len(comp_insights["duplicates"]) > 0:
                     has_insights = True
+                    has_duplicates = True
                     for group in comp_insights["duplicates"][:10]:  # Show up to 10 duplicate groups per component
                         defect_ids = [group["main_defect"]["id"]]
                         if group.get("similar_defects"):
@@ -315,12 +319,13 @@ class SlackNotifier:
                 # Rare/old defects for this component
                 if comp_insights.get("rare_defects") and len(comp_insights["rare_defects"]) > 0:
                     has_insights = True
+                    has_rare = True
                     for defect in comp_insights["rare_defects"][:15]:  # Show up to 15 rare defects per component
                         age_info = defect.get("age_info", "old defect")
                         build_count = defect.get("build_count", 1)
                         defect_id = defect['id']
-                        build_info = f" - {build_count} build{'s' if build_count > 1 else ''}"
-                        component_message += f"  • Defect #{defect_id} ({age_info}{build_info})\n"
+                        build_info = f", seen {build_count} time{'s' if build_count > 1 else ''}" if build_count > 0 else ""
+                        component_message += f"  • Defect #{defect_id} (last seen {age_info}, no recent recurrence{build_info})\n"
 
                 # Only add component section if it has insights
                 if has_insights:
@@ -330,6 +335,7 @@ class SlackNotifier:
             # Fallback to aggregated view (backward compatibility)
             # Duplicate defects
             if insights.get("duplicates") and len(insights["duplicates"]) > 0:
+                has_duplicates = True
                 for group in insights["duplicates"][:10]:  # Show up to 10 duplicate groups
                     defect_ids = [group["main_defect"]["id"]]
                     if group.get("similar_defects"):
@@ -340,12 +346,19 @@ class SlackNotifier:
             
             # Rare/old defects
             if insights.get("rare_defects") and len(insights["rare_defects"]) > 0:
+                has_rare = True
                 for defect in insights["rare_defects"][:15]:  # Show up to 15 rare defects
                     age_info = defect.get("age_info", "old defect")
                     build_count = defect.get("build_count", 1)
                     defect_id = defect['id']
-                    build_info = f" - {build_count} build{'s' if build_count > 1 else ''}"
-                    message += f"• Defect #{defect_id} ({age_info}{build_info})\n"
+                    build_info = f", seen {build_count} time{'s' if build_count > 1 else ''}" if build_count > 0 else ""
+                    message += f"• Defect #{defect_id} (last seen {age_info}, no recent recurrence{build_info})\n"
+
+        # Single action notes at the end — one each, regardless of how many components had matches
+        if has_duplicates:
+            message += "\nℹ️ _If a defect is a duplicate, return it as a duplicate of the appropriate defect and then cancel it._\n"
+        if has_rare:
+            message += "ℹ️ _If a defect is invalid or hasn't occurred in a month, cancel it as unreproducible._\n"
 
         # If no insights at all
         if not by_component and not insights.get("duplicates") and not insights.get("rare_defects"):
