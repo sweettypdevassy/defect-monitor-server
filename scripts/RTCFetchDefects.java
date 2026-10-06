@@ -50,7 +50,7 @@ public class RTCFetchDefects {
         try {
             ITeamRepository repo = TeamPlatform.getTeamRepositoryService()
                     .getTeamRepository(REPO_URL);
-            repo.registerLoginHandler(r -> new ITeamRepository.ILoginHandler.ILoginInfo() {
+            repo.registerLoginHandler((ITeamRepository.ILoginHandler) r -> new ITeamRepository.ILoginHandler.ILoginInfo() {
                 public String getUserId()   { return user; }
                 public String getPassword() { return pass; }
             });

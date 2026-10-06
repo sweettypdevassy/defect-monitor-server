@@ -94,7 +94,7 @@ class DefectChecker:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=600,  # 10 min — large components (e.g. Systems Management ~600 defects) need ~6 min
             )
             if result.returncode != 0:
                 logger.error(f"RTCFetchDefects failed (rc={result.returncode}): {result.stderr[-500:]}")
@@ -133,7 +133,7 @@ class DefectChecker:
             return defects
 
         except subprocess.TimeoutExpired:
-            logger.error(f"RTCFetchDefects timed out for {component}")
+            logger.error(f"RTCFetchDefects timed out for {component} after 600s (component may have 500+ defects or RTC is slow)")
             return None
         except json.JSONDecodeError as e:
             logger.error(f"RTCFetchDefects returned invalid JSON for {component}: {e}")
