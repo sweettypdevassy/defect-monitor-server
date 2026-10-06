@@ -1077,6 +1077,8 @@ async function renderUntriagedDefects(selectedComponents = null) {
                 `;
             }).join('');
         }
+        // Re-apply any active filters to the freshly rendered rows
+        applyDefectFilters();
     } catch (error) {
         console.error('Error loading untriaged defects:', error);
         tbody.innerHTML = `
@@ -1216,6 +1218,8 @@ async function renderTriagedDefects(selectedComponents = null) {
         productTbody.innerHTML = renderDefectRows(productBugs, '✅ No product defects found');
         infraTbody.innerHTML = renderDefectRows(infraBugs, '✅ No infrastructure defects found');
         testTbody.innerHTML = renderDefectRows(testBugs, '✅ No test defects found');
+        // Re-apply any active filters to the freshly rendered rows
+        applyDefectFilters();
         
     } catch (error) {
         console.error('Error loading triaged defects:', error);
@@ -2389,6 +2393,85 @@ function initializeAutoRefreshToggle() {
         
         console.log(`⚙️ Auto-refresh initialized: ${isEnabled ? 'ON' : 'OFF'}`);
     }
+}
+
+// ============================================
+// DEFECT TABLE FILTERS (tag + state)
+// ============================================
+
+/**
+ * Apply tag and state filters to all five defect tables in real-time.
+ * The filter bar sits above the tables but is shared by all of them.
+ *
+ * Tag filter  — substring match (case-insensitive) against:
+ *   • untriaged table : the "Suggested Tag" cell (col index 5)
+ *   • triaged tables  : the "Triage Tags" cell    (col index 5)
+ *
+ * State filter — exact match (case-insensitive) against the "State" cell
+ *   (col index 4 in every table).
+ */
+function applyDefectFilters() {
+    const tagRaw   = (document.getElementById('filterTagInput')?.value  || '').trim().toLowerCase();
+    const stateRaw = (document.getElementById('filterStateSelect')?.value || '').trim().toLowerCase();
+
+    const tableIds = [
+        'untriagedDefectsTableBody',
+        'productDefectsTableBody',
+        'infraDefectsTableBody',
+        'testDefectsTableBody'
+    ];
+
+    let totalVisible = 0;
+    let totalRows    = 0;
+
+    tableIds.forEach(tbodyId => {
+        const tbody = document.getElementById(tbodyId);
+        if (!tbody) return;
+
+        const rows = tbody.querySelectorAll('tr');
+        rows.forEach(row => {
+            // Skip placeholder / loading rows (they have a single colspan cell)
+            const cells = row.querySelectorAll('td');
+            if (cells.length < 5) return; // loading / empty-state row — always show
+
+            totalRows++;
+
+            // State is always column index 4
+            const stateText = cells[4]?.textContent?.trim().toLowerCase() || '';
+
+            // Tag is always column index 5
+            const tagText   = cells[5]?.textContent?.trim().toLowerCase() || '';
+
+            const tagMatch   = !tagRaw   || tagText.includes(tagRaw);
+            const stateMatch = !stateRaw || stateText.includes(stateRaw);
+
+            if (tagMatch && stateMatch) {
+                row.style.display = '';
+                totalVisible++;
+            } else {
+                row.style.display = 'none';
+            }
+        });
+    });
+
+    // Update match counter badge
+    const counter = document.getElementById('filterMatchCount');
+    if (counter) {
+        if (tagRaw || stateRaw) {
+            counter.textContent = `${totalVisible} / ${totalRows} shown`;
+        } else {
+            counter.textContent = '';
+        }
+    }
+}
+
+/** Reset both filter inputs and re-show all rows */
+function clearDefectFilters() {
+    const tagInput    = document.getElementById('filterTagInput');
+    const stateSelect = document.getElementById('filterStateSelect');
+    if (tagInput)    tagInput.value    = '';
+    if (stateSelect) stateSelect.value = '';
+    applyDefectFilters();
 }
 
 // Initialize component explorer on page load (no tabs, direct access)

@@ -7,6 +7,7 @@ from flask import Flask, render_template, jsonify, request, redirect, url_for
 import yaml
 import json
 import logging
+import os
 from pathlib import Path
 import sys
 from datetime import datetime
@@ -1191,7 +1192,8 @@ def main():
         # Get dashboard config
         dashboard_config = config.get("dashboard", {})
         host = dashboard_config.get("host", "0.0.0.0")
-        port = dashboard_config.get("port", 5000)
+        # Allow PORT env var to override config (useful for local dev when 5000 is taken)
+        port = int(os.environ.get("PORT", dashboard_config.get("port", 5000)))
         
         logger.info(f"🌐 Dashboard will be available at http://{host}:{port}")
         logger.info("=" * 60)

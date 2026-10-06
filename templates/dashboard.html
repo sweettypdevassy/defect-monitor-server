@@ -628,6 +628,76 @@
             font-size: 13px;
         }
 
+        /* Defect Filter Bar */
+        .defect-filter-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+
+        .defect-filter-bar label {
+            font-size: 12px;
+            color: #8899a6;
+            white-space: nowrap;
+        }
+
+        .defect-filter-bar input[type="text"],
+        .defect-filter-bar select {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 6px;
+            color: #e1e8ed;
+            font-size: 12px;
+            padding: 6px 10px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .defect-filter-bar input[type="text"] {
+            width: 180px;
+        }
+
+        .defect-filter-bar select {
+            width: 160px;
+            cursor: pointer;
+        }
+
+        .defect-filter-bar input[type="text"]:focus,
+        .defect-filter-bar select:focus {
+            border-color: rgba(29, 155, 240, 0.5);
+        }
+
+        .defect-filter-bar input[type="text"]::placeholder {
+            color: #8899a6;
+        }
+
+        .filter-clear-btn {
+            padding: 6px 14px;
+            background: rgba(255, 255, 255, 0.07);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 6px;
+            color: #8899a6;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .filter-clear-btn:hover {
+            background: rgba(255, 255, 255, 0.12);
+            color: #e1e8ed;
+        }
+
+        .filter-match-count {
+            margin-left: auto;
+            font-size: 11px;
+            color: #8899a6;
+        }
 
     </style>
 </head>
@@ -750,8 +820,26 @@
                     </div>
                 </div>
                 
+                <!-- Defect Filter Bar (applies to all defect tables below) -->
+                <div class="defect-filter-bar" id="defectFilterBar" style="margin-top: 12px;">
+                    <label>🏷️ Filter by tag:</label>
+                    <input type="text" id="filterTagInput" placeholder="e.g. derby, product_bug…" oninput="applyDefectFilters()">
+                    <label>📌 Filter by state:</label>
+                    <select id="filterStateSelect" onchange="applyDefectFilters()">
+                        <option value="">All States</option>
+                        <option value="New">New</option>
+                        <option value="In Progress">In Progress</option>
+                        <option value="Reopened">Reopened</option>
+                        <option value="Resolved">Resolved</option>
+                        <option value="Closed">Closed</option>
+                        <option value="Verified">Verified</option>
+                    </select>
+                    <button class="filter-clear-btn" onclick="clearDefectFilters()">✕ Clear</button>
+                    <span class="filter-match-count" id="filterMatchCount"></span>
+                </div>
+
                 <!-- All Untriaged Defects Table -->
-                <div class="chart-card" style="margin-top: 12px;">
+                <div class="chart-card" style="margin-top: 0;">
                     <div class="chart-title">🔍 All Untriaged Defects</div>
                     <div class="table-wrapper" style="max-height: 400px; overflow-y: auto; display: block;">
                         <table class="defects-table">
@@ -843,6 +931,6 @@
         <!-- End Explorer Tab -->
     </div>
 
-    <script src="/static/dashboard.js?v=1776530900"></script>
+    <script src="/static/dashboard.js?v=1776530901"></script>
 </body>
 </html>
