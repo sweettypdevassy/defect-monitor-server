@@ -8,6 +8,11 @@
  *
  * Run:
  *   java -cp "/path/to/rtc-mcp-server/jars/*:out" RTCFetchDefects <user> <pass> <functionalArea>
+ *
+ * Output JSON fields per defect:
+ *   id, summary, owner, state, tags,
+ *   number_builds        — count of build-label tags (e.g. clYYYYMMDD...)
+ *   last_occurrence_date — ISO date parsed from the most recent build-label tag
  */
 
 import com.ibm.rtcutil.core.RTCRepoProjectArea;
@@ -29,8 +34,13 @@ import com.ibm.team.workitem.common.expression.Term.Operator;
 import com.ibm.team.workitem.common.model.AttributeOperation;
 import com.ibm.team.workitem.common.model.IWorkItem;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class RTCFetchDefects {
 
@@ -75,12 +85,21 @@ public class RTCFetchDefects {
                 List<String> tags = wi.getTags2() != null ? wi.getTags2() : List.of();
                 String summary = wi.getHTMLSummary() != null
                         ? escJson(wi.getHTMLSummary().toString()) : "";
+
+                // Extract build-label tags (e.g. "cl260520260416-1902") to derive
+                // number_builds and last_occurrence_date without extra RTC calls.
+                List<String> buildDates = extractBuildDates(tags);
+                int numberBuilds = buildDates.size();
+                String lastOccurrenceDate = buildDates.isEmpty() ? "" : buildDates.get(buildDates.size() - 1);
+
                 sb.append("{")
                   .append("\"id\":").append(wi.getId()).append(",")
                   .append("\"summary\":\"").append(summary).append("\",")
                   .append("\"owner\":\"").append(escJson(owner)).append("\",")
                   .append("\"state\":\"").append(escJson(state)).append("\",")
-                  .append("\"tags\":").append(toJsonArray(tags))
+                  .append("\"tags\":").append(toJsonArray(tags)).append(",")
+                  .append("\"number_builds\":").append(numberBuilds).append(",")
+                  .append("\"last_occurrence_date\":\"").append(lastOccurrenceDate).append("\"")
                   .append("}");
             }
             sb.append("]");
@@ -171,6 +190,34 @@ public class RTCFetchDefects {
             case "defect_workflow.state.s3":            return "Ready to Verify (GHE)";
             default:                                    return id;
         }
+    }
+
+    /**
+     * Extracts ISO dates (YYYY-MM-DD) from build-label tags.
+     * Build labels follow the pattern cl<seq><YYYYMMDD>-<time>, e.g. cl260520260416-1902.
+     * Returns dates sorted oldest-first; last element is the most recent occurrence.
+     */
+    static List<String> extractBuildDates(List<String> tags) {
+        // Match 8-digit date within a tag, e.g. "cl260520260416-1902" → "20260416"
+        Pattern p = Pattern.compile("\\b(\\d{4})(\\d{2})(\\d{2})\\b");
+        List<String> dates = new ArrayList<>();
+        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyyMMdd");
+        for (String tag : tags) {
+            Matcher m = p.matcher(tag);
+            while (m.find()) {
+                String raw = m.group(1) + m.group(2) + m.group(3);
+                try {
+                    LocalDate d = LocalDate.parse(raw, fmt);
+                    // Sanity-check: only accept dates in a plausible range (2020–2035)
+                    if (d.getYear() >= 2020 && d.getYear() <= 2035) {
+                        dates.add(d.toString()); // YYYY-MM-DD
+                        break; // one date per tag is enough
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+        dates.sort(Comparator.naturalOrder());
+        return dates;
     }
 
     static String escJson(String s) {

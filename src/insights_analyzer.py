@@ -142,34 +142,26 @@ class InsightsAnalyzer:
         return duplicates
     
     def _find_rare_defects(self, component_name: str, defects: List[Dict]) -> List[Dict]:
-        """Find defects whose last occurrence is older than 30 days (regardless of total occurrence count)"""
+        """Find defects whose last occurrence is older than 30 days.
+        Only uses last_occurrence_date — does NOT fall back to last_modified or creation_date
+        as those do not represent when the defect last actually occurred in a build."""
         rare_defects = []
-        
-        logger.debug(f"🔍 Checking {len(defects)} defects for aged defects (last_occurrence >= 30 days)")
-        
+
+        logger.debug(f"🔍 Checking {len(defects)} defects for aged defects (last_occurrence > 30 days ago)")
+
         try:
-            # Find defects where last occurrence is older than 30 days
-            # This identifies defects that haven't recurred in 30+ days, regardless of how many times they occurred before
             for defect in defects:
                 defect_id = defect['id']
                 build_count = defect.get('number_builds', 0)
-                
-                # Determine the true last occurrence date using a reliable priority chain:
-                # 1. last_occurrence_date — extracted from the last entry in reported_builds (most accurate)
-                # 2. last_modified_date   — RTC work item last-edited (fallback if builds not parsed)
-                # 3. creation_date        — last resort; only valid if defect truly occurred once at creation
-                last_occurrence_date = (
-                    defect.get('last_occurrence_date') or
-                    defect.get('last_modified_date') or
-                    defect.get('last_modified') or
-                    defect.get('creation_date')
-                )
+
+                # Only use the real last occurrence date — no fallback to last_modified or creation_date
+                last_occurrence_date = defect.get('last_occurrence_date')
 
                 logger.debug(f"  Checking defect {defect_id}: number_builds={build_count}, last_occurrence_date={last_occurrence_date}")
 
-                # Skip if no date at all
+                # Skip if no real occurrence date available
                 if not last_occurrence_date:
-                    logger.debug(f"    → Defect {defect_id} has no date available, skipping")
+                    logger.debug(f"    → Defect {defect_id} has no last_occurrence_date, skipping")
                     continue
                 
                 age_info = "old defect"
