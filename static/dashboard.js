@@ -1057,8 +1057,13 @@ async function renderUntriagedDefects(selectedComponents = null) {
                     </span>`;
                 }
                 
+                // Build searchable tag string: all raw IBM RTC tags + the ML suggested tag
+                const rawTags = (defect.triageTags || defect.tags || []).map(t => String(t).toLowerCase());
+                if (finalTag && finalTag !== 'unknown') rawTags.push(finalTag.toLowerCase());
+                const allTagsAttr = rawTags.join(' ');
+
                 return `
-                    <tr>
+                    <tr data-tags="${allTagsAttr}" data-state="${(defect.state || '').toLowerCase()}">
                         <td>
                             <a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${defect.id}"
                                target="_blank"
@@ -1200,8 +1205,11 @@ async function renderTriagedDefects(selectedComponents = null) {
                     }).join('')
                     : '<span style="color: #8899a6;">-</span>';
                 
+                // Build searchable tag string from all raw IBM RTC tags
+                const allTagsStr = (defect.allTags || triageTags).map(t => String(t).toLowerCase()).join(' ');
+
                 return `
-                    <tr>
+                    <tr data-tags="${allTagsStr}" data-state="${state.toLowerCase()}">
                         <td>
                             <a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${defectId}"
                                target="_blank"
@@ -2439,20 +2447,17 @@ function applyDefectFilters() {
 
         const rows = tbody.querySelectorAll('tr');
         rows.forEach(row => {
-            // Skip placeholder / loading rows (they have a single colspan cell)
-            const cells = row.querySelectorAll('td');
-            if (cells.length < 5) return; // loading / empty-state row — always show
+            // Skip placeholder / loading rows — they have no data-tags attribute
+            if (!row.hasAttribute('data-tags')) return;
 
             totalRows++;
 
-            // State is always column index 4
-            const stateText = cells[4]?.textContent?.trim().toLowerCase() || '';
-
-            // Tag is always column index 5
-            const tagText   = cells[5]?.textContent?.trim().toLowerCase() || '';
+            // Read from data attributes — these contain the full raw tag list and exact state
+            const tagText   = row.getAttribute('data-tags') || '';
+            const stateText = row.getAttribute('data-state') || '';
 
             const tagMatch   = !tagRaw   || tagText.includes(tagRaw);
-            // Use exact match for state so "In Progress" doesn't match "In Progress (GHE)"
+            // Exact match for state so "In Progress" doesn't accidentally match "In Progress (GHE)"
             const stateMatch = !stateRaw || stateText === stateRaw;
 
             if (tagMatch && stateMatch) {

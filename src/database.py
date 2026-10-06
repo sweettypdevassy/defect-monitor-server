@@ -856,7 +856,8 @@ class DefectDatabase:
                         'state': parsed_state,
                         'functionalArea': defect.get('functionalArea', 'Unknown'),
                         'triageTags': filtered_tags,  # Only show primary category tag
-                        'tags': filtered_tags
+                        'tags': filtered_tags,
+                        'allTags': tags  # All raw IBM RTC tags for filtering
                     }
                     
                     # Categorize by priority: infra_bug > test_bug > product_bug
