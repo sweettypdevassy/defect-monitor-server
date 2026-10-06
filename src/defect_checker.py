@@ -1315,6 +1315,10 @@ class DefectChecker:
                     
                     # ALWAYS use tags and functional_area from API - they are authoritative from Build Break Report
                     # If API returns empty values, they were removed
+                    # Use last_occurrence_date from API if non-empty, otherwise keep cached value
+                    api_last_occurrence = defect.get('last_occurrence_date', '')
+                    last_occurrence = api_last_occurrence or cached_desc.get('last_occurrence_date', '')
+
                     defect_to_update = {
                         'id': defect_id,
                         'description': cached_desc.get('description', ''),
@@ -1324,7 +1328,8 @@ class DefectChecker:
                         'state': defect.get('state', ''),  # Fresh state from API
                         'triageTags': api_tags,  # ALWAYS use fresh tags from API
                         'creation_date': cached_desc.get('creation_date', ''),
-                        'number_builds': defect.get('number_builds', 0)  # Include number_builds from API
+                        'number_builds': defect.get('number_builds', 0),  # Include number_builds from API
+                        'last_occurrence_date': last_occurrence,  # Fresh from SDK build-label tags
                     }
                     defects_to_update_state.append(defect_to_update)
             
@@ -1392,6 +1397,13 @@ class DefectChecker:
                     if isinstance(desc_data, dict):
                         defect['description'] = desc_data.get('description', '')
                         defect['creation_date'] = desc_data.get('creation_date', '')
+                        # Restore last_occurrence_date and number_builds from cache so
+                        # the insights analyzer can correctly identify aged defects.
+                        # Only overwrite if the defect doesn't already have a value from the SDK.
+                        if not defect.get('last_occurrence_date'):
+                            defect['last_occurrence_date'] = desc_data.get('last_occurrence_date', '')
+                        if not defect.get('number_builds'):
+                            defect['number_builds'] = desc_data.get('number_builds', 0)
                         # DO NOT restore cached tags - use fresh tags from API
                         # This ensures defects reflect current state in IBM RTC
                     else:
