@@ -2443,7 +2443,8 @@ function applyDefectFilters() {
             const tagText   = cells[5]?.textContent?.trim().toLowerCase() || '';
 
             const tagMatch   = !tagRaw   || tagText.includes(tagRaw);
-            const stateMatch = !stateRaw || stateText.includes(stateRaw);
+            // Use exact match for state so "In Progress" doesn't match "In Progress (GHE)"
+            const stateMatch = !stateRaw || stateText === stateRaw;
 
             if (tagMatch && stateMatch) {
                 row.style.display = '';

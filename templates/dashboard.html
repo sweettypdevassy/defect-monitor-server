@@ -827,12 +827,10 @@
                     <label>📌 Filter by state:</label>
                     <select id="filterStateSelect" onchange="applyDefectFilters()">
                         <option value="">All States</option>
-                        <option value="New">New</option>
+                        <option value="Open">Open</option>
                         <option value="In Progress">In Progress</option>
-                        <option value="Reopened">Reopened</option>
-                        <option value="Resolved">Resolved</option>
-                        <option value="Closed">Closed</option>
-                        <option value="Verified">Verified</option>
+                        <option value="Returned">Returned</option>
+                        <option value="In Progress (GHE)">In Progress (GHE)</option>
                     </select>
                     <button class="filter-clear-btn" onclick="clearDefectFilters()">✕ Clear</button>
                     <span class="filter-match-count" id="filterMatchCount"></span>
@@ -931,6 +929,6 @@
         <!-- End Explorer Tab -->
     </div>
 
-    <script src="/static/dashboard.js?v=1776530901"></script>
+    <script src="/static/dashboard.js?v=1776530902"></script>
 </body>
 </html>
