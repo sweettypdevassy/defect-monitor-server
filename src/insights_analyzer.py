@@ -154,12 +154,28 @@ class InsightsAnalyzer:
                 defect_id = defect['id']
                 build_count = defect.get('number_builds', 0)
 
-                # Only use the real last occurrence date — no fallback to last_modified or creation_date
+                # Primary: use the real last occurrence date from build-label tags
                 last_occurrence_date = defect.get('last_occurrence_date')
+
+                if not last_occurrence_date:
+                    # Fallback 1: dc:modified from Jazz OSLC — updated whenever a new build
+                    # failure is linked to the defect, so it reliably tracks last occurrence
+                    last_occurrence_date = defect.get('last_modified_date') or defect.get('last_modified')
+                    if last_occurrence_date:
+                        logger.debug(f"    → Defect {defect_id} using last_modified_date as proxy")
+
+                if not last_occurrence_date:
+                    # Fallback 2: human-applied not_recently_occurred tag — use creation_date
+                    # as a conservative lower bound (tag confirms no recent recurrence)
+                    tags = defect.get('tags', defect.get('triageTags', []))
+                    if 'not_recently_occurred' in tags:
+                        last_occurrence_date = defect.get('creation_date')
+                        if last_occurrence_date:
+                            logger.debug(f"    → Defect {defect_id} using creation_date as proxy (has not_recently_occurred tag)")
 
                 logger.debug(f"  Checking defect {defect_id}: number_builds={build_count}, last_occurrence_date={last_occurrence_date}")
 
-                # Skip if no real occurrence date available
+                # Skip if no reliable occurrence date available
                 if not last_occurrence_date:
                     logger.debug(f"    → Defect {defect_id} has no last_occurrence_date, skipping")
                     continue

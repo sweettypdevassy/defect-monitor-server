@@ -239,11 +239,26 @@ class DefectDatabase:
 
                 # Get number_builds if available
                 number_builds = defect.get('number_builds', defect.get('numberBuilds', 0))
-                
+
+                # Insert new row or update existing — but preserve last_modified_date and
+                # last_occurrence_date if the incoming values are empty (avoids wiping good data
+                # when doing a tag/state-only update that doesn't re-fetch OSLC details)
                 cursor.execute("""
-                    INSERT OR REPLACE INTO defect_descriptions
+                    INSERT INTO defect_descriptions
                     (defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date, last_occurrence_date, fetched_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(defect_id) DO UPDATE SET
+                        description = CASE WHEN excluded.description != '' THEN excluded.description ELSE description END,
+                        summary = CASE WHEN excluded.summary != '' THEN excluded.summary ELSE summary END,
+                        component = CASE WHEN excluded.component != '' THEN excluded.component ELSE component END,
+                        functional_area = CASE WHEN excluded.functional_area != '' THEN excluded.functional_area ELSE functional_area END,
+                        state = excluded.state,
+                        tags = CASE WHEN excluded.tags != '[]' AND excluded.tags != '' THEN excluded.tags ELSE tags END,
+                        creation_date = CASE WHEN excluded.creation_date IS NOT NULL AND excluded.creation_date != '' THEN excluded.creation_date ELSE creation_date END,
+                        number_builds = CASE WHEN excluded.number_builds > 0 THEN excluded.number_builds ELSE number_builds END,
+                        last_modified_date = CASE WHEN excluded.last_modified_date IS NOT NULL AND excluded.last_modified_date != '' THEN excluded.last_modified_date ELSE last_modified_date END,
+                        last_occurrence_date = CASE WHEN excluded.last_occurrence_date IS NOT NULL AND excluded.last_occurrence_date != '' THEN excluded.last_occurrence_date ELSE last_occurrence_date END,
+                        updated_at = excluded.updated_at
                 """, (
                     defect_id,
                     defect.get('description', ''),

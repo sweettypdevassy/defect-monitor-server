@@ -1268,6 +1268,7 @@ class DefectChecker:
                     for defect_id, details in newly_fetched_details.items():
                         description = details.get('description', '')
                         creation_date = details.get('created', '')
+                        modified = details.get('modified', '')
                         state = details.get('state', '')
                         is_cancelled = details.get('is_cancelled', False)
                         tags = details.get('tags', [])  # Get tags from IBM RTC API
@@ -1283,6 +1284,7 @@ class DefectChecker:
                             if defect_info:
                                 defect_info['description'] = description
                                 defect_info['creation_date'] = creation_date
+                                defect_info['last_modified'] = modified  # Store dc:modified for last_occurrence fallback
                                 defect_info['state'] = state
                                 defect_info['is_cancelled'] = is_cancelled
                                 defect_info['component'] = component
@@ -1303,6 +1305,45 @@ class DefectChecker:
             # This ensures both state changes and tag changes are reflected
             # Tags come from Build Break API (fetched above), so they are authoritative
             defects_to_update_state = []
+
+            # Identify defects with no build-label last_occurrence_date whose cached
+            # last_modified_date may be stale — re-fetch dc:modified for these only.
+            # This is a small targeted set (defects with only generic triage tags).
+            stale_modified_ids = []
+            for defect in all_defects_for_dup_check:
+                defect_id = str(defect.get('id'))
+                if defect_id not in cached_descriptions:
+                    continue
+                cached_desc = cached_descriptions[defect_id]
+                # Only re-fetch if: no build-label last_occurrence_date AND
+                # (no last_modified_date stored OR last_modified_date is itself > 30 days old)
+                has_build_occ = bool(defect.get('last_occurrence_date') or cached_desc.get('last_occurrence_date'))
+                if not has_build_occ:
+                    cached_modified = cached_desc.get('last_modified_date', '')
+                    if cached_modified:
+                        try:
+                            from datetime import datetime as _dt
+                            clean = str(cached_modified).split('+')[0].split('.')[0]
+                            mod_dt = _dt.strptime(clean, '%Y-%m-%dT%H:%M:%S')
+                            if (_dt.now() - mod_dt).days >= 30:
+                                stale_modified_ids.append(defect_id)
+                        except Exception:
+                            pass
+                    else:
+                        # No last_modified_date at all — queue for refresh
+                        stale_modified_ids.append(defect_id)
+
+            # Re-fetch dc:modified for stale defects (parallel, lightweight — header-only not needed,
+            # but we reuse fetch_defect_details which returns modified in one call)
+            if stale_modified_ids:
+                logger.info(f"   🔄 Re-fetching dc:modified for {len(stale_modified_ids)} defects with no build-label dates...")
+                refreshed = self.fetch_details_parallel(stale_modified_ids, max_workers=8)
+                for defect_id, details in refreshed.items():
+                    modified = details.get('modified', '')
+                    if modified and defect_id in cached_descriptions:
+                        cached_descriptions[defect_id]['last_modified_date'] = modified
+                logger.info(f"   ✅ Refreshed dc:modified for {len(refreshed)} defects")
+
             for defect in all_defects_for_dup_check:
                 defect_id = str(defect.get('id'))
                 if defect_id in cached_descriptions:
@@ -1312,9 +1353,7 @@ class DefectChecker:
                     api_tags = defect.get('tags', defect.get('triageTags', []))
                     # Build Break API may return functional_area or functionalArea
                     functional_area = defect.get('functional_area', defect.get('functionalArea', ''))
-                    
-                    # ALWAYS use tags and functional_area from API - they are authoritative from Build Break Report
-                    # If API returns empty values, they were removed
+
                     # Use last_occurrence_date from API if non-empty, otherwise keep cached value
                     api_last_occurrence = defect.get('last_occurrence_date', '')
                     last_occurrence = api_last_occurrence or cached_desc.get('last_occurrence_date', '')
@@ -1330,6 +1369,7 @@ class DefectChecker:
                         'creation_date': cached_desc.get('creation_date', ''),
                         'number_builds': defect.get('number_builds', 0),  # Include number_builds from API
                         'last_occurrence_date': last_occurrence,  # Fresh from SDK build-label tags
+                        'last_modified': cached_desc.get('last_modified_date', ''),  # Preserved/refreshed dc:modified
                     }
                     defects_to_update_state.append(defect_to_update)
             
