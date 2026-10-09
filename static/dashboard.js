@@ -1057,8 +1057,14 @@ async function renderUntriagedDefects(selectedComponents = null) {
                     </span>`;
                 }
                 
-                // Build searchable tag string: all raw IBM RTC tags + the ML suggested tag
-                const rawTags = (defect.triageTags || defect.tags || []).map(t => String(t).toLowerCase());
+                // Build searchable tag string: full IBM RTC tags (allTags from dc:subject) +
+                // section-level triage tags + the ML suggested tag
+                const rawTags = (defect.allTags || defect.triageTags || defect.tags || []).map(t => String(t).toLowerCase());
+                // Also fold in triageTags so section labels (product_bug etc.) are still searchable
+                (defect.triageTags || defect.tags || []).forEach(t => {
+                    const tl = String(t).toLowerCase();
+                    if (!rawTags.includes(tl)) rawTags.push(tl);
+                });
                 if (finalTag && finalTag !== 'unknown') rawTags.push(finalTag.toLowerCase());
                 const allTagsAttr = rawTags.join(' ');
 
@@ -2427,6 +2433,41 @@ function initializeAutoRefreshToggle() {
  * State filter — exact match (case-insensitive) against the "State" cell
  *   (col index 4 in every table).
  */
+// Map raw IBM RTC state URLs/IDs to the same human-readable labels used in defect_checker.py
+const RTC_STATE_URL_MAP = {
+    'commonworkflow.state.open':           'open',
+    'commonworkflow.state.returned':       'returned',
+    'commonworkflow.state.debugging':      'debugging',
+    'commonworkflow.state.inprogress':     'in progress',
+    'defect_workflow.state.s1':            'in progress (ghe)',
+    'commonworkflow.state.buildpending':   'pending build',
+    'commonworkflow.state.deliverpending': 'pending delivery',
+    'commonworkflow.state.reviewpending':  'pending review',
+    'commonworkflow.state.ready':          'ready',
+    'defect_workflow.state.s3':            'ready to verify (ghe)',
+    'commonworkflow.state.closed':         'closed',
+    'commonworkflow.state.verified':       'verified',
+    'commonworkflow.state.canceled':       'canceled',
+    'commonworkflow.state.rejected':       'rejected',
+    'defect_workflow.state.s2':            'closed (ghe)',
+};
+
+function resolveStateLabel(rawState) {
+    if (!rawState) return '';
+    const lower = rawState.toLowerCase();
+    // If it's a raw URL, extract the state ID suffix and look it up
+    if (lower.includes('jazz/oslc/workflows')) {
+        // The state ID is the last path segment, e.g. "commonWorkflow.state.open"
+        const parts = lower.split('/');
+        const lastPart = parts[parts.length - 1];
+        // Try the full last segment first, then just the final dot-segment
+        return RTC_STATE_URL_MAP[lastPart]
+            || RTC_STATE_URL_MAP[lastPart.split('.').slice(-3).join('.')]
+            || lower;
+    }
+    return lower;
+}
+
 function applyDefectFilters() {
     const tagRaw   = (document.getElementById('filterTagInput')?.value  || '').trim().toLowerCase();
     const stateRaw = (document.getElementById('filterStateSelect')?.value || '').trim().toLowerCase();
@@ -2454,7 +2495,9 @@ function applyDefectFilters() {
 
             // Read from data attributes — these contain the full raw tag list and exact state
             const tagText   = row.getAttribute('data-tags') || '';
-            const stateText = row.getAttribute('data-state') || '';
+            const stateRaw2 = row.getAttribute('data-state') || '';
+            // Resolve raw RTC state URLs to human-readable labels before comparing
+            const stateText = resolveStateLabel(stateRaw2);
 
             const tagMatch   = !tagRaw   || tagText.includes(tagRaw);
             // Exact match for state so "In Progress" doesn't accidentally match "In Progress (GHE)"

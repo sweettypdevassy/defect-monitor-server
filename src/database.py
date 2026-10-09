@@ -793,6 +793,12 @@ class DefectDatabase:
                     # Ensure it's an array
                     if not isinstance(tags, list):
                         tags = []
+
+                    # Full raw tag list (from dc:subject) — used for tag-based filtering in the UI.
+                    # Falls back to triageTags if allTags wasn't stored (older snapshots).
+                    all_tags_raw = defect.get('allTags', tags)
+                    if not isinstance(all_tags_raw, list):
+                        all_tags_raw = []
                     
                     # Convert all tags to lowercase for checking
                     tags_lower = [str(tag).lower().strip() for tag in tags]
@@ -857,7 +863,7 @@ class DefectDatabase:
                         'functionalArea': defect.get('functionalArea', 'Unknown'),
                         'triageTags': filtered_tags,  # Only show primary category tag
                         'tags': filtered_tags,
-                        'allTags': tags  # All raw IBM RTC tags for filtering
+                        'allTags': all_tags_raw  # All raw IBM RTC tags for filtering
                     }
                     
                     # Categorize by priority: infra_bug > test_bug > product_bug

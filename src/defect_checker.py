@@ -298,16 +298,34 @@ class DefectChecker:
                             pass
                         break
 
-                # Tags
-                tags = []
-                for tag_key in ("tags", "triageTags", "labels", "dc:subject", "dcterms:subject"):
+                # Tags — collect from all known keys and always merge dc:subject
+                # (dc:subject is a comma-separated string with the full IBM RTC tag set,
+                #  e.g. "test_bug, derby_deadlock, soe_cl260"; earlier keys like "tags"
+                #  may exist but only carry section-level labels, so we must not break
+                #  early — instead we union everything together.)
+                tags_set = []
+                for tag_key in ("tags", "triageTags", "labels"):
                     raw = item.get(tag_key)
                     if raw:
                         if isinstance(raw, list):
-                            tags = [str(t).strip() for t in raw if t]
+                            tags_set.extend([str(t).strip() for t in raw if t])
                         elif isinstance(raw, str):
-                            tags = [raw.strip()] if raw.strip() else []
-                        break
+                            tags_set.extend([t.strip() for t in raw.split(",") if t.strip()])
+                # Always merge dc:subject / dcterms:subject regardless of other keys
+                for subject_key in ("dc:subject", "dcterms:subject"):
+                    raw = item.get(subject_key)
+                    if raw:
+                        if isinstance(raw, list):
+                            tags_set.extend([str(t).strip() for t in raw if t])
+                        elif isinstance(raw, str):
+                            tags_set.extend([t.strip() for t in raw.split(",") if t.strip()])
+                # Deduplicate while preserving order
+                seen = set()
+                tags = []
+                for t in tags_set:
+                    if t and t.lower() not in seen:
+                        seen.add(t.lower())
+                        tags.append(t)
 
                 # Augment tags from section context (product_bug / test_bug / infrastructure_bug)
                 triage_tags = list(tags)
@@ -335,6 +353,7 @@ class DefectChecker:
                     "state": state,
                     "triageTags": triage_tags,
                     "tags": triage_tags,
+                    "allTags": tags,  # Full IBM RTC tag list (from dc:subject) for filtering
                     "number_builds": number_builds,
                     "creation_date": item.get("creationDate") or item.get("creation_date") or
                                      item.get("dc:created") or item.get("dcterms:created") or "",
@@ -617,18 +636,17 @@ class DefectChecker:
                     state_obj = data.get('rtc_cm:state', {})
                     state = state_obj.get('rdf:resource', '') if isinstance(state_obj, dict) else ''
                     
-                    # Extract tags from dc:subject field
-                    # Tags are stored as a string (e.g., "infrastructure", "test", "product")
-                    # Convert to list format for consistency with the rest of the system
+                    # Extract tags from dc:subject field.
+                    # IBM RTC stores all tags as a comma-separated string, e.g.:
+                    #   "test_bug, derby_deadlock, soe_cl260"
+                    # Split on commas so each tag is an individual list element.
                     tags = []
                     subject = data.get('dc:subject', '')
                     if subject:
-                        # If it's already a list, use it
                         if isinstance(subject, list):
-                            tags = subject
-                        # If it's a string, convert to list
+                            tags = [str(t).strip() for t in subject if str(t).strip()]
                         elif isinstance(subject, str):
-                            tags = [subject]
+                            tags = [t.strip() for t in subject.split(",") if t.strip()]
                     
                     # Check if defect is cancelled
                     is_cancelled = self.is_defect_cancelled(state)
