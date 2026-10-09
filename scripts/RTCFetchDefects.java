@@ -149,7 +149,15 @@ public class RTCFetchDefects {
                         new AttributeExpression(qState, AttributeOperation.EQUALS,
                                 "commonWorkflow.state.returned"),
                         new AttributeExpression(qState, AttributeOperation.EQUALS,
-                                "defect_workflow.state.s1"),
+                                "defect_workflow.state.s1"),   // In Progress (GHE)
+                        new AttributeExpression(qState, AttributeOperation.EQUALS,
+                                "defect_workflow.state.s3"),   // Ready to Verify (GHE)
+                        new AttributeExpression(qState, AttributeOperation.EQUALS,
+                                "commonWorkflow.state.buildpending"),  // Pending Build
+                        new AttributeExpression(qState, AttributeOperation.EQUALS,
+                                "commonWorkflow.state.reviewpending"), // Pending Review
+                        new AttributeExpression(qState, AttributeOperation.EQUALS,
+                                "commonWorkflow.state.deliverpending"), // Pending Delivery
                     })
                 }),
                 List.of(new SortCriteria(pa.findQueryableAttribute(IWorkItem.ID_PROPERTY), true)));
