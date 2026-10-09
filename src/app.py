@@ -333,10 +333,29 @@ def _do_refresh_components(component_names: List[str], refresh_id: str, include_
                         refresh_status[refresh_id]["errors"] = errors
                         refresh_status[refresh_id]["progress"] = idx + 1
                     continue
+
+                # Guard: if RTC returned an empty list, skip storing to avoid
+                # overwriting good data with zeros from a transient RTC failure.
+                if len(defects) == 0:
+                    logger.warning(f"⚠️  {component_name}: RTC returned 0 defects — skipping DB write to preserve existing data")
+                    errors.append({"component": component_name, "error": "RTC returned 0 defects (possible transient failure) — existing data preserved"})
+                    with refresh_lock:
+                        refresh_status[refresh_id]["errors"] = errors
+                        refresh_status[refresh_id]["progress"] = idx + 1
+                    continue
                 
                 # Use parse_defects with collect_triaged=False for faster processing
                 # This skips ML and duplicate detection but includes full defect data
                 parsed_data = defect_checker.parse_defects(defects, component_name, collect_triaged=False)
+
+                # Second guard: parsed result must have at least 1 active defect to be trustworthy
+                if parsed_data.get("total", 0) == 0 and parsed_data.get("untriaged", 0) == 0:
+                    logger.warning(f"⚠️  {component_name}: parsed 0 total defects — skipping DB write to preserve existing data")
+                    errors.append({"component": component_name, "error": "Parsed 0 defects — existing data preserved"})
+                    with refresh_lock:
+                        refresh_status[refresh_id]["errors"] = errors
+                        refresh_status[refresh_id]["progress"] = idx + 1
+                    continue
                 
                 results.append({
                     "component": component_name,
