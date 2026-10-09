@@ -120,6 +120,7 @@ class DefectChecker:
                     "state": item.get("state", ""),
                     "triageTags": tags,
                     "tags": tags,
+                    "allTags": tags,  # Full IBM RTC tag list for UI tag filtering
                     "number_builds": item.get("number_builds", 0),
                     "creation_date": "",
                     "last_occurrence_date": item.get("last_occurrence_date", ""),
@@ -1012,7 +1013,9 @@ class DefectChecker:
                     "description": description,
                     "tags": tags,  # Add tags for triage detection
                     "triageTags": tags,  # Also add as triageTags for compatibility
-                    "state": item.get('rtc_cm:state', {}).get('rdf:resource', '') if isinstance(item.get('rtc_cm:state'), dict) else '',  # State for filtering cancelled defects
+                    "state": self._resolve_rtc_state(
+                        (item.get('rtc_cm:state', {}).get('rdf:resource', '') if isinstance(item.get('rtc_cm:state'), dict) else '').split('/')[-1]
+                    ),  # Resolve state URL to human-readable label
                     "source": "SOE_TRIAGE"
                 })
                 
