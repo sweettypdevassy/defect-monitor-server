@@ -6,7 +6,7 @@ Handles automated scheduling of defect checks and dashboard generation
 import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
@@ -23,6 +23,8 @@ class DefectScheduler:
         self.database = database
         self.scheduler = BackgroundScheduler()
         self.timezone = pytz.timezone(config.get("schedule", {}).get("timezone", "Asia/Kolkata"))
+        # Guard: track last successful run time per team to prevent duplicate executions
+        self._last_team_run: dict = {}
     
     def start(self):
         """Start the scheduler"""
@@ -72,7 +74,9 @@ class DefectScheduler:
                             CronTrigger(day_of_week='mon-fri', hour=hour, minute=minute, timezone=self.timezone),
                             id=f"team_check_{team_name}",
                             name=f"Team Check: {team_name}",
-                            replace_existing=True
+                            replace_existing=True,
+                            misfire_grace_time=60,
+                            max_instances=1
                         )
                         logger.info(f"✅ Scheduled {team_name} check at {check_time} (Mon-Fri) {self.timezone}")
                     else:
@@ -82,7 +86,9 @@ class DefectScheduler:
                             CronTrigger(hour=hour, minute=minute, timezone=self.timezone),
                             id=f"team_check_{team_name}",
                             name=f"Team Check: {team_name}",
-                            replace_existing=True
+                            replace_existing=True,
+                            misfire_grace_time=60,
+                            max_instances=1
                         )
                         logger.info(f"✅ Scheduled {team_name} check at {check_time} (daily) {self.timezone}")
                     
@@ -636,6 +642,18 @@ class DefectScheduler:
         """
         try:
             team_name = team.get("name", "Unknown Team")
+
+            # Dedup guard: skip if this team already ran within the last 5 minutes
+            now = datetime.now()
+            last_run = self._last_team_run.get(team_name)
+            if last_run and (now - last_run) < timedelta(minutes=5):
+                logger.warning(
+                    f"⚠️  Skipping duplicate run for {team_name} "
+                    f"(last ran {int((now - last_run).total_seconds())}s ago)"
+                )
+                return
+            self._last_team_run[team_name] = now
+
             logger.info("=" * 60)
             logger.info(f"🔍 Starting defect check for team: {team_name}")
             logger.info("=" * 60)
