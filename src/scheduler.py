@@ -477,10 +477,8 @@ class DefectScheduler:
         
         for component in components:
             try:
-                # Get cached defects for the component
-                # Pass include_cancelled=True so insights_analyzer can filter them out itself
-                # This ensures cancelled defects are properly excluded from insights
-                cached_defects = self.database.get_all_cached_descriptions_for_component(component, include_cancelled=True)
+                # Get cached active defects for the component (exclude closed/cancelled defects)
+                cached_defects = self.database.get_all_cached_descriptions_for_component(component, include_cancelled=False)
                 
                 logger.info(f"📊 Component '{component}': Found {len(cached_defects) if cached_defects else 0} cached defects")
                 

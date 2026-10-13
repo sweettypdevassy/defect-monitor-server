@@ -52,8 +52,18 @@ class InsightsAnalyzer:
         
         logger.info(f"📊 Starting insights analysis for {component_name} with {len(defects)} defects")
         
-        # Filter out cancelled defects BEFORE analysis
-        # Check state field for cancelled/closed/resolved keywords
+        # Filter out cancelled/closed defects BEFORE analysis
+        # Includes RTC state URLs (e.g. defect_workflow.state.s2 for Closed GHE) and plain text states
+        INACTIVE_STATE_PATTERNS = [
+            'defect_workflow.state.s2',  # Closed (GHE)
+            'canceled',
+            'cancelled',
+            'closed',
+            'resolved',
+            'rejected',
+            'verified'
+        ]
+        
         active_defects = []
         cancelled_count = 0
         for defect in defects:
@@ -62,16 +72,10 @@ class InsightsAnalyzer:
             
             if state and isinstance(state, str):
                 state_lower = state.lower()
-                if 'jazz/oslc/workflows' in state_lower:
-                    # RTC state URL — check path segment
-                    if '.canceled' in state_lower or '.cancelled' in state_lower or '.closed' in state_lower or '.resolved' in state_lower:
-                        is_cancelled = True
-                elif state_lower == 'canceled':
-                    # Plain text state stored in cache
+                if any(pattern in state_lower for pattern in INACTIVE_STATE_PATTERNS):
                     is_cancelled = True
-                if is_cancelled:
                     cancelled_count += 1
-                    logger.debug(f"Filtering out cancelled defect {defect.get('id')} (state: {state[:100]})")
+                    logger.debug(f"Filtering out inactive/closed defect {defect.get('id')} (state: {state[:100]})")
 
             if not is_cancelled:
                 active_defects.append(defect)

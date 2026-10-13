@@ -351,11 +351,11 @@ class DefectDatabase:
                 # Filter out cancelled/closed/resolved defects (unless include_cancelled=True)
                 if not include_cancelled and state and isinstance(state, str):
                     state_lower = state.lower()
-                    if any(keyword in state_lower for keyword in ['canceled', 'cancelled', 'closed', 'resolved']):
-                        if 'jazz/oslc/workflows' in state_lower:  # Only filter if it's a valid RTC state URL
-                            filtered_count += 1
-                            logger.debug(f"Filtering cached cancelled defect {defect_id}")
-                            continue
+                    inactive_patterns = ['defect_workflow.state.s2', 'canceled', 'cancelled', 'closed', 'resolved', 'rejected', 'verified']
+                    if any(keyword in state_lower for keyword in inactive_patterns):
+                        filtered_count += 1
+                        logger.debug(f"Filtering cached inactive/closed defect {defect_id}")
+                        continue
                 
                 results.append({
                     'id': defect_id,
