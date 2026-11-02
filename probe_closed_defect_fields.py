@@ -2,6 +2,7 @@
 """
 Read-only probe: show which date/state fields RTC returns for closed defects.
 Usage: python3 probe_closed_defect_fields.py 307958 308600 308744
+Needs only: requests, urllib3, pyyaml (no numpy / ML deps).
 """
 
 import re
@@ -9,9 +10,7 @@ import sys
 sys.path.insert(0, 'src')
 
 import yaml
-from defect_checker import DefectChecker
 from ibm_auth import IBMAuthenticator
-from database import DefectDatabase
 
 ids = sys.argv[1:] or ['307958', '308600', '308744']
 
@@ -23,13 +22,14 @@ auth = IBMAuthenticator(
     password=config['ibm']['password'],
     auth_method='password'
 )
-checker = DefectChecker(auth, DefectDatabase(db_path='data/defects.db'))
 
 date_re = re.compile(r'^\d{4}-\d{2}-\d{2}T')
 
 for defect_id in ids:
     session = auth.get_session()
-    auth.authenticate_jazz_rtc()
+    if not session:
+        print("Authentication failed")
+        sys.exit(1)
     url = f"https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workitems/{defect_id}.json"
     data = session.get(url, timeout=60, headers={'Accept': 'application/json'}, verify=False).json()
 
