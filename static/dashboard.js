@@ -1256,6 +1256,90 @@ async function renderTriagedDefects(selectedComponents = null) {
     }
 }
 
+// ============================================
+// CLOSED DEFECTS (hidden by default, shown when a period is chosen)
+// ============================================
+
+function onClosedRangeChange() {
+    const range = document.getElementById('closedRangeSelect').value;
+    document.getElementById('closedCustomRange').style.display = range === 'custom' ? 'inline-flex' : 'none';
+    loadClosedDefects();
+}
+
+async function loadClosedDefects() {
+    const range = document.getElementById('closedRangeSelect')?.value;
+    const card = document.getElementById('closedDefectsCard');
+    const tbody = document.getElementById('closedDefectsTableBody');
+    const summary = document.getElementById('closedSummary');
+    if (!card || !tbody) return;
+
+    // Default: closed defects are not shown
+    if (!range) {
+        card.style.display = 'none';
+        tbody.innerHTML = '';
+        summary.textContent = '';
+        return;
+    }
+
+    const params = new URLSearchParams({ range });
+    if (range === 'custom') {
+        const from = document.getElementById('closedFromDate').value;
+        const to = document.getElementById('closedToDate').value;
+        if (!from && !to) {
+            card.style.display = 'none';
+            summary.textContent = 'Pick a From and/or To date';
+            return;
+        }
+        if (from) params.set('from', from);
+        if (to) params.set('to', to);
+    }
+    if (selectedComponents && selectedComponents.length > 0) {
+        params.set('components', selectedComponents.join(','));
+    }
+    params.set('_', Date.now());
+
+    card.style.display = 'block';
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; padding: 20px; color: #8899a6;">Loading closed defects...</td></tr>`;
+
+    try {
+        const response = await fetch('/api/closed-defects?' + params.toString(), { cache: 'no-store' });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Request failed');
+
+        const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+        const defects = result.defects || [];
+
+        const breakdown = Object.entries(result.by_state || {}).map(([k, v]) => `${k}: ${v}`).join(' · ');
+        summary.textContent = `${defects.length} closed${breakdown ? ' (' + breakdown + ')' : ''}`;
+
+        if (defects.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; padding: 20px; color: #8899a6;">No defects closed in this period</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = defects.map(d => {
+            const tags = (d.triageTags || []).map(t => `<span style="background: #8899a620; color: #8899a6; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-right: 4px;">${esc(t)}</span>`).join('') || '<span style="color: #8899a6;">-</span>';
+            const closedOn = d.closed_date ? new Date(d.closed_date).toLocaleString() : '-';
+            return `
+                <tr>
+                    <td>
+                        <a href="https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD#action=com.ibm.team.workitem.viewWorkItem&id=${encodeURIComponent(d.id)}"
+                           target="_blank" class="defect-id" style="color: #1d9bf0; text-decoration: none; font-weight: 600;">#${esc(d.id)}</a>
+                    </td>
+                    <td style="font-size: 11px; color: #8899a6;">${esc(d.component)}</td>
+                    <td style="font-size: 11px;">${esc(d.summary)}</td>
+                    <td style="font-size: 11px; color: #8899a6;">${esc(d.closed_state)}</td>
+                    <td style="font-size: 11px; color: #8899a6;">${esc(closedOn)}</td>
+                    <td style="font-size: 11px;">${tags}</td>
+                </tr>`;
+        }).join('');
+    } catch (error) {
+        console.error('Error loading closed defects:', error);
+        summary.textContent = '';
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; padding: 20px; color: #ff6b9d;">❌ Error loading closed defects</td></tr>`;
+    }
+}
+
 // No auto-load for monitored components - user selects components first
 
 // Add keyboard shortcut for refresh (R key)
@@ -1524,6 +1608,9 @@ async function generateExplorerDashboard() {
             console.error('Error stack:', e.stack);
         }
         
+        // Re-apply the closed-defects period (no-op while set to "None")
+        loadClosedDefects();
+
         // Render insights for selected components
         try {
             console.log('🚀 About to call renderComponentInsights with:', selectedComponents);

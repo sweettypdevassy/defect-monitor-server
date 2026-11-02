@@ -922,6 +922,66 @@ def api_untriaged_defects():
         logger.error(f"Error getting untriaged defects: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/closed-defects')
+def api_closed_defects():
+    """
+    Get defects closed (canceled / closed / resolved / closed GHE) in a time window.
+
+    Query params:
+        range:      24h | 7d | 30d | 3m | custom
+        from, to:   YYYY-MM-DD (used when range=custom, 'to' is inclusive)
+        components: optional comma-separated component names
+    """
+    try:
+        from datetime import timedelta
+
+        range_param = request.args.get('range', '').strip().lower()
+        components_param = request.args.get('components')
+        component_names = [c.strip() for c in components_param.split(',')] if components_param else None
+
+        now = datetime.utcnow()
+        since = until = None
+
+        deltas = {'24h': timedelta(hours=24), '7d': timedelta(days=7),
+                  '30d': timedelta(days=30), '3m': timedelta(days=90)}
+        if range_param in deltas:
+            since = (now - deltas[range_param]).strftime('%Y-%m-%dT%H:%M:%S')
+        elif range_param == 'custom':
+            date_from = request.args.get('from', '').strip()
+            date_to = request.args.get('to', '').strip()
+            try:
+                if date_from:
+                    since = datetime.strptime(date_from, '%Y-%m-%d').strftime('%Y-%m-%dT00:00:00')
+                if date_to:
+                    until = datetime.strptime(date_to, '%Y-%m-%d').strftime('%Y-%m-%dT23:59:59.999Z')
+            except ValueError:
+                return jsonify({"error": "Invalid date format, use YYYY-MM-DD"}), 400
+            if not since and not until:
+                return jsonify({"error": "Custom range requires 'from' and/or 'to'"}), 400
+        else:
+            return jsonify({"error": "range must be one of 24h, 7d, 30d, 3m, custom"}), 400
+
+        defects = database.get_closed_defects(since, until, component_names)
+
+        by_state: Dict[str, int] = {}
+        for d in defects:
+            by_state[d['closed_state']] = by_state.get(d['closed_state'], 0) + 1
+
+        response = jsonify({
+            "defects": defects,
+            "total_count": len(defects),
+            "by_state": by_state,
+            "range": range_param,
+            "since": since,
+            "until": until
+        })
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        return response
+    except Exception as e:
+        logger.error(f"Error getting closed defects: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/triaged-defects')
 def api_triaged_defects():
     """Get all triaged defects categorized by tag type (product, infra, test)"""

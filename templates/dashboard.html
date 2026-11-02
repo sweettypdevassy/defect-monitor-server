@@ -668,6 +668,16 @@
             cursor: pointer;
         }
 
+        .defect-filter-bar input[type="date"] {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 6px;
+            color: #e1e8ed;
+            font-size: 12px;
+            padding: 5px 8px;
+            color-scheme: dark;
+        }
+
         .defect-filter-bar input[type="text"]:focus,
         .defect-filter-bar select:focus {
             border-color: rgba(29, 155, 240, 0.5);
@@ -820,6 +830,44 @@
                     </div>
                 </div>
                 
+                <!-- Closed Defects (hidden until a period is chosen) -->
+                <div class="defect-filter-bar" id="closedDefectsBar" style="margin-top: 12px;">
+                    <label>🔒 Closed defects:</label>
+                    <select id="closedRangeSelect" onchange="onClosedRangeChange()">
+                        <option value="">None (hidden)</option>
+                        <option value="24h">Last 24 hours</option>
+                        <option value="7d">Last 7 days</option>
+                        <option value="30d">Last 30 days</option>
+                        <option value="3m">Last 3 months</option>
+                        <option value="custom">Custom range…</option>
+                    </select>
+                    <span id="closedCustomRange" style="display: none; align-items: center; gap: 8px;">
+                        <label for="closedFromDate">From</label>
+                        <input type="date" id="closedFromDate" onchange="loadClosedDefects()">
+                        <label for="closedToDate">To</label>
+                        <input type="date" id="closedToDate" onchange="loadClosedDefects()">
+                    </span>
+                    <span class="filter-match-count" id="closedSummary"></span>
+                </div>
+                <div class="chart-card" id="closedDefectsCard" style="margin-top: 0; display: none;">
+                    <div class="chart-title">🔒 Closed Defects</div>
+                    <div class="table-wrapper" style="max-height: 400px; overflow-y: auto; display: block;">
+                        <table class="defects-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 80px;">ID</th>
+                                    <th style="width: 120px;">Component</th>
+                                    <th style="min-width: 300px;">Summary</th>
+                                    <th style="width: 110px;">Closed As</th>
+                                    <th style="width: 160px;">Closed On</th>
+                                    <th style="width: 150px;">Triage Tags</th>
+                                </tr>
+                            </thead>
+                            <tbody id="closedDefectsTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <!-- Defect Filter Bar (applies to all defect tables below) -->
                 <div class="defect-filter-bar" id="defectFilterBar" style="margin-top: 12px;">
                     <label>🏷️ Filter by tag:</label>
@@ -931,6 +979,6 @@
         <!-- End Explorer Tab -->
     </div>
 
-    <script src="/static/dashboard.js?v=1776530905"></script>
+    <script src="/static/dashboard.js?v=1776530906"></script>
 </body>
 </html>

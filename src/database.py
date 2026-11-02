@@ -137,6 +137,19 @@ class DefectDatabase:
             except Exception:
                 pass  # Column already exists
             
+            # Closed defect tracking: real RTC close time (rtc_cm:resolved) and closed state label
+            for column in ("closed_date", "closed_state"):
+                try:
+                    cursor.execute(f"ALTER TABLE defect_descriptions ADD COLUMN {column} TEXT")
+                    logger.info(f"Added {column} column to defect_descriptions table")
+                except Exception:
+                    pass  # Column already exists
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_defect_closed_date
+                ON defect_descriptions(closed_date)
+            """)
+            
             # Create index for faster lookups
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_defect_component
@@ -237,6 +250,10 @@ class DefectDatabase:
                 # Get last occurrence date - the most recent build run date (from reported_builds parsing)
                 last_occurrence_date = defect.get('last_occurrence_date') or ''
 
+                # Closed info (real RTC close time + state label)
+                closed_date = defect.get('closed_date') or ''
+                closed_state = defect.get('closed_state') or ''
+
                 # Get number_builds if available
                 number_builds = defect.get('number_builds', defect.get('numberBuilds', 0))
 
@@ -245,8 +262,8 @@ class DefectDatabase:
                 # when doing a tag/state-only update that doesn't re-fetch OSLC details)
                 cursor.execute("""
                     INSERT INTO defect_descriptions
-                    (defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date, last_occurrence_date, fetched_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date, last_occurrence_date, closed_date, closed_state, fetched_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(defect_id) DO UPDATE SET
                         description = CASE WHEN excluded.description != '' THEN excluded.description ELSE description END,
                         summary = CASE WHEN excluded.summary != '' THEN excluded.summary ELSE summary END,
@@ -258,6 +275,8 @@ class DefectDatabase:
                         number_builds = CASE WHEN excluded.number_builds > 0 THEN excluded.number_builds ELSE number_builds END,
                         last_modified_date = CASE WHEN excluded.last_modified_date IS NOT NULL AND excluded.last_modified_date != '' THEN excluded.last_modified_date ELSE last_modified_date END,
                         last_occurrence_date = CASE WHEN excluded.last_occurrence_date IS NOT NULL AND excluded.last_occurrence_date != '' THEN excluded.last_occurrence_date ELSE last_occurrence_date END,
+                        closed_date = CASE WHEN excluded.closed_date IS NOT NULL AND excluded.closed_date != '' THEN excluded.closed_date ELSE closed_date END,
+                        closed_state = CASE WHEN excluded.closed_state IS NOT NULL AND excluded.closed_state != '' THEN excluded.closed_state ELSE closed_state END,
                         updated_at = excluded.updated_at
                 """, (
                     defect_id,
@@ -271,6 +290,8 @@ class DefectDatabase:
                     number_builds,
                     last_modified_date,
                     last_occurrence_date,
+                    closed_date,
+                    closed_state,
                     timestamp,
                     timestamp
                 ))
@@ -338,7 +359,7 @@ class DefectDatabase:
             cursor = conn.cursor()
             
             cursor.execute("""
-                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date, last_occurrence_date
+                SELECT defect_id, description, summary, component, functional_area, state, tags, creation_date, number_builds, last_modified_date, last_occurrence_date, closed_date, closed_state
                 FROM defect_descriptions
                 WHERE component = ?
             """, (component,))
@@ -346,7 +367,7 @@ class DefectDatabase:
             results = []
             filtered_count = 0
             for row in cursor.fetchall():
-                defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds, last_modified_date, last_occurrence_date = row
+                defect_id, description, summary, component, functional_area, state, tags_str, creation_date, number_builds, last_modified_date, last_occurrence_date, closed_date, closed_state = row
                 
                 # Filter out cancelled/closed/resolved defects (unless include_cancelled=True)
                 if not include_cancelled and state and isinstance(state, str):
@@ -368,7 +389,9 @@ class DefectDatabase:
                     'creation_date': creation_date or '',
                     'number_builds': number_builds or 0,
                     'last_modified_date': last_modified_date or '',
-                    'last_occurrence_date': last_occurrence_date or ''
+                    'last_occurrence_date': last_occurrence_date or '',
+                    'closed_date': closed_date or '',
+                    'closed_state': closed_state or ''
                 })
             
             conn.close()
@@ -424,6 +447,61 @@ class DefectDatabase:
             
         except Exception as e:
             logger.error(f"Error retrieving cancelled defects with tags: {e}")
+            return []
+
+    def get_closed_defects(self, since: Optional[str] = None, until: Optional[str] = None,
+                           component_names: Optional[List[str]] = None) -> List[Dict]:
+        """
+        Get defects closed (cancelled / closed / resolved / closed GHE) in a time window.
+
+        Args:
+            since: ISO timestamp (inclusive) - closed_date >= since
+            until: ISO timestamp (inclusive) - closed_date <= until
+            component_names: Optional component filter
+
+        Returns:
+            List of closed defects, most recently closed first
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            where = ["closed_date IS NOT NULL", "closed_date != ''"]
+            params: list = []
+            if since:
+                where.append("closed_date >= ?")
+                params.append(since)
+            if until:
+                where.append("closed_date <= ?")
+                params.append(until)
+            if component_names:
+                where.append(f"component IN ({','.join('?' * len(component_names))})")
+                params.extend(component_names)
+
+            cursor.execute(f"""
+                SELECT defect_id, summary, component, tags, creation_date, closed_date, closed_state
+                FROM defect_descriptions
+                WHERE {' AND '.join(where)}
+                ORDER BY closed_date DESC
+            """, params)
+
+            results = []
+            for defect_id, summary, component, tags_str, creation_date, closed_date, closed_state in cursor.fetchall():
+                results.append({
+                    'id': defect_id,
+                    'summary': summary or '',
+                    'component': component or '',
+                    'triageTags': json.loads(tags_str) if tags_str else [],
+                    'creation_date': creation_date or '',
+                    'closed_date': closed_date,
+                    'closed_state': closed_state or 'Closed'
+                })
+
+            conn.close()
+            return results
+
+        except Exception as e:
+            logger.error(f"Error retrieving closed defects: {e}")
             return []
     
     

@@ -19,6 +19,7 @@ import time
 from ml_tag_suggester import MLTagSuggester
 from duplicate_detector import DuplicateDetector
 from fetch_checkpoint import FetchCheckpoint
+from rtc_states import closed_state_label
 
 logger = logging.getLogger(__name__)
 
@@ -628,6 +629,8 @@ class DefectChecker:
                     created = data.get('dc:created', '')
                     description = str(data.get('dc:description', ''))
                     modified = data.get('dc:modified', '')
+                    # Exact time the defect was resolved/closed/cancelled
+                    resolved = data.get('rtc_cm:resolved', '') or ''
                     
                     # Creator is a nested object with rdf:resource
                     creator_obj = data.get('dc:creator', {})
@@ -665,6 +668,7 @@ class DefectChecker:
                         'description': description,
                         'created': created,
                         'modified': modified,
+                        'resolved': resolved,
                         'creator': creator,
                         'state': state,
                         'is_cancelled': is_cancelled,
@@ -1182,7 +1186,39 @@ class DefectChecker:
             if removed_ids:
                 logger.info(f"🔍 Found {len(removed_ids)} defects in cache but not in API (likely cancelled): {removed_ids}")
                 
-                # Only delete UNTRIAGED defects (no ML tags)
+                # Confirm closure against RTC for removed defects with no recorded close date yet.
+                # rtc_cm:resolved gives the exact close time used by the dashboard "Closed defects" filter.
+                ids_needing_details = [
+                    str(d.get('id')) for d in all_cached_for_component
+                    if str(d.get('id')) in removed_ids and not d.get('closed_date')
+                ]
+                removed_details = self.fetch_details_parallel(ids_needing_details, max_workers=8) if ids_needing_details else {}
+                
+                confirmed_closed_ids = set()
+                closed_updates = []
+                for defect in all_cached_for_component:
+                    defect_id = str(defect.get('id'))
+                    if defect_id not in removed_ids:
+                        continue
+                    if defect.get('closed_date'):
+                        confirmed_closed_ids.add(defect_id)
+                        continue
+                    details = removed_details.get(defect_id) or {}
+                    label = closed_state_label(details.get('state', ''))
+                    close_time = details.get('resolved') or details.get('modified') or ''
+                    if label and close_time:
+                        defect['state'] = details['state']
+                        defect['closed_state'] = label
+                        defect['closed_date'] = close_time
+                        confirmed_closed_ids.add(defect_id)
+                        closed_updates.append(defect)
+                
+                if closed_updates:
+                    self.database.cache_defect_descriptions(closed_updates)
+                    logger.info(f"🔒 Recorded close date for {len(closed_updates)} closed defects")
+                
+                # Only delete UNTRIAGED defects (no ML tags) that are NOT confirmed closed.
+                # Confirmed-closed untriaged defects are kept so they show in the dashboard Closed filter.
                 # Keep TRIAGED defects for ML training even if cancelled
                 untriaged_to_delete = []
                 triaged_to_keep = []
@@ -1199,7 +1235,7 @@ class DefectChecker:
                         
                         if has_ml_tags:
                             triaged_to_keep.append(defect_id)
-                        else:
+                        elif defect_id not in confirmed_closed_ids:
                             untriaged_to_delete.append(defect_id)
                 
                 # Delete only untriaged defects
@@ -1220,10 +1256,11 @@ class DefectChecker:
                     for defect in all_cached_for_component:
                         defect_id = str(defect.get('id'))
                         if defect_id in triaged_to_keep:
-                            # Mark as cancelled without fetching (saves time)
                             defect['is_cancelled'] = True
-                            # Set state to a cancelled workflow URL so insights analyzer can filter it
-                            defect['state'] = 'https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workflows/_CuZu4UEqEeKR8dRjEY0HCg/states/com.ibm.team.apt.storyWorkflow.state.s3.canceled'
+                            # Keep the real RTC state when confirmed; otherwise fall back to a cancelled
+                            # workflow URL so insights analyzer can filter it
+                            if defect_id not in confirmed_closed_ids:
+                                defect['state'] = 'https://wasrtc.hursley.ibm.com:9443/jazz/oslc/workflows/_CuZu4UEqEeKR8dRjEY0HCg/states/com.ibm.team.apt.storyWorkflow.state.s3.canceled'
                             
                             # Add to duplicate detection pool (even if cancelled)
                             all_defects_for_dup_check.append(defect)
@@ -1239,7 +1276,9 @@ class DefectChecker:
                                 'state': defect['state'],  # Cancelled state URL
                                 'triageTags': defect.get('triageTags', []),
                                 'creation_date': defect.get('creation_date', ''),
-                                'number_builds': defect.get('number_builds', 0)
+                                'number_builds': defect.get('number_builds', 0),
+                                'closed_date': defect.get('closed_date', ''),
+                                'closed_state': defect.get('closed_state', '')
                             })
                     
                     # Update cache with cancelled state so insights analyzer can filter them
@@ -1308,6 +1347,10 @@ class DefectChecker:
                                 defect_info['last_modified'] = modified  # Store dc:modified for last_occurrence fallback
                                 defect_info['state'] = state
                                 defect_info['is_cancelled'] = is_cancelled
+                                label = closed_state_label(state)
+                                if label:
+                                    defect_info['closed_state'] = label
+                                    defect_info['closed_date'] = details.get('resolved') or modified
                                 defect_info['component'] = component
                                 # Preserve number_builds from API (already in defect_info)
                                 # Use tags from IBM RTC API if available, otherwise keep existing tags
