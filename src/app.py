@@ -1273,13 +1273,7 @@ def api_data_source_status():
         logger.warning(f"RTC reachability check failed: {e}")
         result["rtc_available"] = False
         result["message"] = ("IBM RTC is currently unreachable. The numbers below come from cached data "
-                             "and may be outdated or incomplete. A value of 0 does not confirm there are "
-                             "no untriaged defects.")
-        try:
-            snapshot = database.get_latest_all_components_snapshot()
-            result["last_cached_at"] = snapshot.get("created_at") if snapshot else None
-        except Exception:
-            result["last_cached_at"] = None
+                             "and may be outdated or incomplete.")
 
     _rtc_status_cache.update({"checked_at": now, "result": result})
     return jsonify(result)

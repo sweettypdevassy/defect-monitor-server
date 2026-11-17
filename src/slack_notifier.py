@@ -390,10 +390,6 @@ class SlackNotifier:
             message += "Please do not read this as \"no untriaged defects\".\n\n"
             message += "What happened\n"
             message += f"• {cause}\n"
-            if last_updated:
-                message += f"• Last saved data ({last_updated}) cannot be relied on: {cache_issue}\n"
-            else:
-                message += f"• {cache_issue[0].upper() + cache_issue[1:]}\n"
             message += "\nWhat to do\n"
             message += "• Check untriaged defects directly in RTC: https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaList.html\n"
             message += "• The monitor will retry at the next scheduled check\n"
