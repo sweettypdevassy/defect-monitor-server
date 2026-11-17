@@ -371,20 +371,36 @@ class SlackNotifier:
         return message
     
     def send_data_source_unavailable_notification(self, team_name: str, components: list,
-                                                  reason: str, last_updated: Optional[str] = None) -> bool:
+                                                  fetch_error: str, cache_issue: str,
+                                                  last_updated: Optional[str] = None) -> bool:
         """Notify that defect data could not be verified, instead of sending misleading counts"""
         try:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
             
-            message = f"⚠️ Defect Data Unavailable - {team_name}\n\n"
-            message += "Could not retrieve up-to-date defect data, so no defect counts are being reported. "
-            message += "This is NOT a confirmation that there are no untriaged defects.\n\n"
-            message += f"Components: {', '.join(components) if components else 'N/A'}\n"
-            message += f"Reason: {reason}\n"
+            err = (fetch_error or "").lower()
+            if "authentication" in err:
+                cause = "Could not log in to IBM RTC (server unreachable or login/session issue)"
+            elif "timeout" in err:
+                cause = "IBM RTC did not respond in time"
+            else:
+                cause = f"Could not fetch data from IBM RTC ({fetch_error})"
+            
+            message = f"⚠️ Defect check could not be completed - {team_name}\n\n"
+            message += "Today's defect status is unknown because the live data source is unavailable. "
+            message += "Please do not read this as \"no untriaged defects\".\n\n"
+            message += "What happened\n"
+            message += f"• {cause}\n"
             if last_updated:
-                message += f"Last cached data: {last_updated}\n"
-            message += "\nPlease check RTC manually or contact the defect monitor admin.\n\n"
-            message += f"Time: {timestamp}"
+                message += f"• Last successful data: {last_updated} - {cache_issue}\n"
+            else:
+                message += f"• {cache_issue[0].upper() + cache_issue[1:]}\n"
+            message += "\nWhat to do\n"
+            message += "• Check untriaged defects directly in RTC: https://libh-proxy1.fyre.ibm.com/cognitive/functionalAreaList.html\n"
+            message += "• The monitor will retry at the next scheduled check\n"
+            message += "• If this keeps happening, contact the defect monitor admin\n\n"
+            if components:
+                message += f"Components ({len(components)}): {', '.join(components)}\n"
+            message += f"Checked at: {timestamp}"
             
             response = requests.post(self.webhook_url, json={"message": message}, timeout=10)
             response.raise_for_status()

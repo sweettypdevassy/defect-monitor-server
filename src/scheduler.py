@@ -801,12 +801,12 @@ class DefectScheduler:
                 expected_components = [c.get("name") for c in team_components
                                        if c.get("name") and c.get("notify", True)]
                 unavailable_reason = self._check_cached_data_health(
-                    results, expected_components, cached_at, fresh_error
+                    results, expected_components, cached_at
                 )
                 if unavailable_reason:
-                    logger.error(f"🚫 Data source unhealthy for {team_name}: {unavailable_reason}")
+                    logger.error(f"🚫 Data source unhealthy for {team_name}: {fresh_error}; {unavailable_reason}")
                     logger.error("   Skipping defect notification to avoid reporting incorrect data")
-                    self.database.store_check_history(results, False, unavailable_reason)
+                    self.database.store_check_history(results, False, f"{fresh_error}; {unavailable_reason}")
                     from slack_notifier import SlackNotifier
                     alert_notifier = SlackNotifier(
                         webhook_url=team_webhook or self.slack_notifier.webhook_url,
@@ -814,7 +814,7 @@ class DefectScheduler:
                         config=self.config
                     )
                     alert_notifier.send_data_source_unavailable_notification(
-                        team_name, expected_components, unavailable_reason, fetch_timestamp
+                        team_name, expected_components, fresh_error, unavailable_reason, fetch_timestamp
                     )
                     return
             
@@ -859,27 +859,24 @@ class DefectScheduler:
                 )
                 team_notifier.send_error_notification(f"Team check failed for {team_name}: {str(e)}")
     
-    def _check_cached_data_health(self, results: dict, expected_components: list,
-                                  cached_at, fresh_error: str):
+    def _check_cached_data_health(self, results: dict, expected_components: list, cached_at):
         """
-        Validate cached fallback data. Returns a reason string if the data cannot be
-        trusted for notification, or None if it is acceptable.
+        Validate cached fallback data. Returns a short reason string if the cached data
+        cannot be trusted for notification, or None if it is acceptable.
         """
-        error_info = f"IBM RTC fetch failed: {fresh_error}. "
-        
         missing = [c for c in expected_components if c not in results.get("components", {})]
         if missing:
-            return error_info + f"No cached data available for: {', '.join(missing)}."
+            return f"no cached data for {len(missing)} component(s): {', '.join(missing)}"
         
         max_age_hours = self.config.get("data_health", {}).get("max_cache_age_hours", 24)
         if cached_at is not None:
             age_hours = (datetime.now() - cached_at).total_seconds() / 3600
             if age_hours > max_age_hours:
-                return error_info + f"Cached data is {age_hours:.0f}h old (limit {max_age_hours}h)."
+                return f"cached data is {age_hours:.0f}h old (limit {max_age_hours}h)"
         
         soe_defects = (results.get("soe_triage") or {}).get("defects", [])
         if results.get("total_untriaged", 0) == 0 and not soe_defects:
-            return error_info + "Cached data shows 0 defects, which cannot be confirmed as current."
+            return "cached data shows 0 untriaged defects, which cannot be confirmed as current"
         
         return None
     
