@@ -185,6 +185,8 @@ class SlackNotifier:
         # Add data source indicator at the end
         data_indicator = "🔄 Fresh Data" if data_source == "fresh" else "📦 Cached Data"
         message += f"\n\n{data_indicator} | Last Updated: {fetch_timestamp}"
+        if data_source == "cached":
+            message = "⚠️ IBM RTC is unreachable - showing cached data, which may be outdated.\n\n" + message
         
         # Send to Slack using simple format (Workflow Builder compatible)
         payload = {"message": message}
@@ -367,6 +369,30 @@ class SlackNotifier:
         # Single RTC link at the bottom for easy access to all defects
         message += "\n🔗 View defects in RTC: https://wasrtc.hursley.ibm.com:9443/jazz/web/projects/WS-CD\n"
         return message
+    
+    def send_data_source_unavailable_notification(self, team_name: str, components: list,
+                                                  reason: str, last_updated: Optional[str] = None) -> bool:
+        """Notify that defect data could not be verified, instead of sending misleading counts"""
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
+            
+            message = f"⚠️ Defect Data Unavailable - {team_name}\n\n"
+            message += "Could not retrieve up-to-date defect data, so no defect counts are being reported. "
+            message += "This is NOT a confirmation that there are no untriaged defects.\n\n"
+            message += f"Components: {', '.join(components) if components else 'N/A'}\n"
+            message += f"Reason: {reason}\n"
+            if last_updated:
+                message += f"Last cached data: {last_updated}\n"
+            message += "\nPlease check RTC manually or contact the defect monitor admin.\n\n"
+            message += f"Time: {timestamp}"
+            
+            response = requests.post(self.webhook_url, json={"message": message}, timeout=10)
+            response.raise_for_status()
+            logger.info("✅ Data source unavailable notification sent")
+            return True
+        except Exception as e:
+            logger.error(f"Error sending data source unavailable notification: {e}")
+            return False
     
     def send_error_notification(self, error_message: str):
         """Send error notification to Slack"""

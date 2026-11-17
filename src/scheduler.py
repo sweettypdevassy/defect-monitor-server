@@ -674,6 +674,8 @@ class DefectScheduler:
             logger.info(f"🔄 Fetching fresh data from IBM for {len(component_names)} components (5-minute timeout)...")
             data_source = "fresh"
             fetch_timestamp = None
+            fresh_error = None
+            cached_at = None
             
             def fetch_fresh_data():
                 """Inner function to fetch fresh data (for timeout wrapper)"""
@@ -754,6 +756,7 @@ class DefectScheduler:
                 
             except Exception as e:
                 # Fallback: If fresh fetch fails, use cached data
+                fresh_error = str(e)
                 logger.warning(f"⚠️  Fresh data fetch from IBM failed: {e}")
                 logger.info(f"📦 Falling back to cached data...")
                 
@@ -773,6 +776,7 @@ class DefectScheduler:
                             else:
                                 # Standard format: 2026-04-18 22:43:13
                                 created_at = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+                            cached_at = created_at
                             fetch_timestamp = created_at.strftime("%d %b %Y, %I:%M:%S %p IST")
                         except Exception as parse_error:
                             logger.warning(f"Could not parse timestamp: {parse_error}")
@@ -789,12 +793,33 @@ class DefectScheduler:
             results['data_source'] = data_source
             results['fetch_timestamp'] = fetch_timestamp
             
-            # Store check history
-            self.database.store_check_history(results, True)
-            
-            # Send notification to team's webhook
             team_webhook = team.get("webhook_url")
             team_channel = team.get("slack_channel", f"#{team_name.lower().replace(' ', '-')}")
+            
+            # Data source health check: do not report defect counts we cannot trust
+            if data_source == "cached":
+                expected_components = [c.get("name") for c in team_components
+                                       if c.get("name") and c.get("notify", True)]
+                unavailable_reason = self._check_cached_data_health(
+                    results, expected_components, cached_at, fresh_error
+                )
+                if unavailable_reason:
+                    logger.error(f"🚫 Data source unhealthy for {team_name}: {unavailable_reason}")
+                    logger.error("   Skipping defect notification to avoid reporting incorrect data")
+                    self.database.store_check_history(results, False, unavailable_reason)
+                    from slack_notifier import SlackNotifier
+                    alert_notifier = SlackNotifier(
+                        webhook_url=team_webhook or self.slack_notifier.webhook_url,
+                        default_channel=team_channel,
+                        config=self.config
+                    )
+                    alert_notifier.send_data_source_unavailable_notification(
+                        team_name, expected_components, unavailable_reason, fetch_timestamp
+                    )
+                    return
+            
+            # Store check history
+            self.database.store_check_history(results, True)
             
             if team_webhook:
                 # Create a temporary notifier for this team
@@ -833,6 +858,30 @@ class DefectScheduler:
                     config=self.config
                 )
                 team_notifier.send_error_notification(f"Team check failed for {team_name}: {str(e)}")
+    
+    def _check_cached_data_health(self, results: dict, expected_components: list,
+                                  cached_at, fresh_error: str):
+        """
+        Validate cached fallback data. Returns a reason string if the data cannot be
+        trusted for notification, or None if it is acceptable.
+        """
+        error_info = f"IBM RTC fetch failed: {fresh_error}. "
+        
+        missing = [c for c in expected_components if c not in results.get("components", {})]
+        if missing:
+            return error_info + f"No cached data available for: {', '.join(missing)}."
+        
+        max_age_hours = self.config.get("data_health", {}).get("max_cache_age_hours", 24)
+        if cached_at is not None:
+            age_hours = (datetime.now() - cached_at).total_seconds() / 3600
+            if age_hours > max_age_hours:
+                return error_info + f"Cached data is {age_hours:.0f}h old (limit {max_age_hours}h)."
+        
+        soe_defects = (results.get("soe_triage") or {}).get("defects", [])
+        if results.get("total_untriaged", 0) == 0 and not soe_defects:
+            return error_info + "Cached data shows 0 defects, which cannot be confirmed as current."
+        
+        return None
     
     def run_manual_check(self):
         """Run manual defect check (for testing)"""
