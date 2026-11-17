@@ -1250,6 +1250,41 @@ def api_fetch_components():
     except Exception as e:
         logger.error(f"Error fetching components: {e}")
 
+_rtc_status_cache = {"checked_at": 0.0, "result": None}
+
+
+@app.route('/api/data-source-status')
+def api_data_source_status():
+    """Report whether IBM RTC (the live data source) is reachable. Cached for 60s."""
+    import time
+    import requests as http
+
+    now = time.time()
+    if _rtc_status_cache["result"] and now - _rtc_status_cache["checked_at"] < 60:
+        return jsonify(_rtc_status_cache["result"])
+
+    from ibm_auth import JAZZ_BASE
+    result = {"rtc_available": True, "message": None,
+              "checked_at": datetime.now().strftime("%d %b %Y, %I:%M:%S %p IST")}
+    try:
+        # Any HTTP response means the server is up; only connection-level failures count as down
+        http.get(f"{JAZZ_BASE}/", timeout=5, verify=False, allow_redirects=False)
+    except Exception as e:
+        logger.warning(f"RTC reachability check failed: {e}")
+        result["rtc_available"] = False
+        result["message"] = ("IBM RTC is currently unreachable. The numbers below come from cached data "
+                             "and may be outdated or incomplete. A value of 0 does not confirm there are "
+                             "no untriaged defects.")
+        try:
+            snapshot = database.get_latest_all_components_snapshot()
+            result["last_cached_at"] = snapshot.get("created_at") if snapshot else None
+        except Exception:
+            result["last_cached_at"] = None
+
+    _rtc_status_cache.update({"checked_at": now, "result": result})
+    return jsonify(result)
+
+
 @app.route('/health')
 def health():
     """Health check endpoint"""

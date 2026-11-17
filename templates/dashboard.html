@@ -58,6 +58,23 @@
             color: #8899a6;
         }
 
+        .rtc-warning-banner {
+            display: none;
+            margin-bottom: 12px;
+            padding: 12px 16px;
+            background: rgba(255, 173, 31, 0.12);
+            border: 1px solid rgba(255, 173, 31, 0.5);
+            border-left: 4px solid #ffad1f;
+            border-radius: 8px;
+            color: #ffd27a;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .rtc-warning-banner strong {
+            color: #ffad1f;
+        }
+
         /* Toggle Switch */
         .toggle-switch input:checked + span {
             background-color: #1d9bf0 !important;
@@ -713,6 +730,9 @@
 </head>
 <body>
     <div class="dashboard-container">
+        <!-- RTC data source warning (shown only when RTC is unreachable) -->
+        <div id="rtcWarningBanner" class="rtc-warning-banner" role="alert"></div>
+
         <!-- Header -->
         <div class="dashboard-header">
             <div class="header-left">
@@ -980,5 +1000,28 @@
     </div>
 
     <script src="/static/dashboard.js?v=1776530906"></script>
+    <script>
+        // Warn when the live data source (IBM RTC) is down so cached numbers are not mistaken for current ones
+        (function () {
+            function checkDataSource() {
+                fetch('/api/data-source-status')
+                    .then(function (r) { return r.json(); })
+                    .then(function (s) {
+                        var el = document.getElementById('rtcWarningBanner');
+                        if (!el) return;
+                        if (s.rtc_available === false) {
+                            var cached = s.last_cached_at ? ' Last cached data: ' + s.last_cached_at + '.' : '';
+                            el.innerHTML = '<strong>⚠️ Data source unavailable.</strong> ' + s.message + cached;
+                            el.style.display = 'block';
+                        } else {
+                            el.style.display = 'none';
+                        }
+                    })
+                    .catch(function () { /* status check is best-effort */ });
+            }
+            checkDataSource();
+            setInterval(checkDataSource, 60000);
+        })();
+    </script>
 </body>
 </html>
