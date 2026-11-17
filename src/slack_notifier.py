@@ -391,7 +391,7 @@ class SlackNotifier:
             message += "What happened\n"
             message += f"• {cause}\n"
             if last_updated:
-                message += f"• Last successful data: {last_updated} - {cache_issue}\n"
+                message += f"• Last saved data ({last_updated}) cannot be relied on: {cache_issue}\n"
             else:
                 message += f"• {cache_issue[0].upper() + cache_issue[1:]}\n"
             message += "\nWhat to do\n"
@@ -477,7 +477,8 @@ class SlackNotifier:
             logger.error(f"Error sending ML training notification: {e}")
             return False
     
-    def send_fetch_completion_notification(self, num_components: int, total_defects: int, total_untriaged: int) -> bool:
+    def send_fetch_completion_notification(self, num_components: int, total_defects: int, total_untriaged: int,
+                                           failed: int = 0) -> bool:
         """
         Send component fetch completion notification to Slack
         
@@ -487,9 +488,20 @@ class SlackNotifier:
             total_untriaged: Total untriaged defects
         """
         try:
-            message_text = (f"📥 *Component Fetch Complete for {num_components} components*\n"
-                           f"• Total Defects: {total_defects}\n"
-                           f"• Untriaged: {total_untriaged}")
+            if num_components == 0 and failed > 0:
+                message_text = (f"🚨 *Component Fetch Failed*\n"
+                               f"• Could not fetch any of {failed} components from IBM RTC\n"
+                               f"• No defect data was updated - counts are not available")
+            elif failed > 0:
+                message_text = (f"⚠️ *Component Fetch Partially Complete*\n"
+                               f"• Fetched: {num_components} components\n"
+                               f"• Failed: {failed} components (data not updated)\n"
+                               f"• Total Defects (fetched only): {total_defects}\n"
+                               f"• Untriaged (fetched only): {total_untriaged}")
+            else:
+                message_text = (f"📥 *Component Fetch Complete for {num_components} components*\n"
+                               f"• Total Defects: {total_defects}\n"
+                               f"• Untriaged: {total_untriaged}")
             
             payload = {"message": message_text}
             response = requests.post(self.webhook_url, json=payload, timeout=10)

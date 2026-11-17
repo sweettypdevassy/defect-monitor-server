@@ -70,8 +70,9 @@ class DefectChecker:
                 if attempt < max_retries:
                     time.sleep(2 ** attempt)
 
+        # Return None (not []) so callers can tell a failed fetch apart from "0 defects"
         logger.warning(f"⚠️  Could not fetch defects for {component} after {max_retries} attempts")
-        return []
+        return None
 
     def _fetch_via_rtc_oslc(self, component: str) -> Optional[List[Dict]]:
         """
@@ -103,8 +104,9 @@ class DefectChecker:
 
             raw_json = result.stdout.strip()
             if not raw_json:
+                # A valid response is always a JSON array (even "[]"); empty output means the fetch failed
                 logger.warning(f"RTCFetchDefects returned empty output for {component}")
-                return []
+                return None
 
             items = json.loads(raw_json)
             defects = []

@@ -315,7 +315,8 @@ class DefectScheduler:
                 self.slack_notifier.send_fetch_completion_notification(
                     num_components=summary['successful'],
                     total_defects=total_defects,
-                    total_untriaged=total_untriaged
+                    total_untriaged=total_untriaged,
+                    failed=summary['failed']
                 )
             except Exception as notify_error:
                 logger.error(f"Error sending fetch completion notification: {notify_error}")
@@ -700,6 +701,8 @@ class DefectScheduler:
                     
                     logger.info(f"🔄 Fetching {component_name} from IBM...")
                     defects = self.defect_checker.fetch_defects_for_component(component_name)
+                    if defects is None:
+                        raise Exception(f"Failed to fetch defects for {component_name}")
                     parsed_data = self.defect_checker.parse_defects(defects, component_name, collect_triaged=False)
                     
                     # Store in database
