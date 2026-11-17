@@ -386,8 +386,7 @@ class SlackNotifier:
                 cause = f"Could not fetch data from IBM RTC ({fetch_error})"
             
             message = f"⚠️ Defect check could not be completed - {team_name}\n\n"
-            message += "Today's defect status is unknown because the live data source is unavailable. "
-            message += "Please do not read this as \"no untriaged defects\".\n\n"
+            message += "Today's defect status is unknown because the live data source is unavailable.\n\n"
             message += "What happened\n"
             message += f"• {cause}\n"
             message += "\nWhat to do\n"
