@@ -86,11 +86,18 @@ public class RTCFetchDefects {
                 String summary = wi.getHTMLSummary() != null
                         ? escJson(wi.getHTMLSummary().toString()) : "";
 
-                // Extract build-label tags (e.g. "cl260520260416-1902") to derive
-                // number_builds and last_occurrence_date without extra RTC calls.
-                List<String> buildDates = extractBuildDates(tags);
-                int numberBuilds = buildDates.size();
-                String lastOccurrenceDate = buildDates.isEmpty() ? "" : buildDates.get(buildDates.size() - 1);
+                // Occurrences come from two sources on the work item:
+                //  1. build-label tags, e.g. "cl261020260909-0232" (may have a prefix like "soe_")
+                //  2. "New FAT Outputs retained ..." discussion comments posted by libertybuild,
+                //     one per failing build. Newer defects often have comments but no tags.
+                // number_builds is the larger of the two; the last occurrence is the newest date.
+                List<String> occurrenceDates = new ArrayList<>(extractBuildDates(tags));
+                List<String> commentDates = extractOccurrenceCommentDates(wi);
+                int numberBuilds = Math.max(occurrenceDates.size(), commentDates.size());
+                occurrenceDates.addAll(commentDates);
+                occurrenceDates.sort(Comparator.naturalOrder());
+                String lastOccurrenceDate = occurrenceDates.isEmpty()
+                        ? "" : occurrenceDates.get(occurrenceDates.size() - 1);
 
                 sb.append("{")
                   .append("\"id\":").append(wi.getId()).append(",")
@@ -206,25 +213,49 @@ public class RTCFetchDefects {
      * Returns dates sorted oldest-first; last element is the most recent occurrence.
      */
     static List<String> extractBuildDates(List<String> tags) {
-        // Match 8-digit date within a tag, e.g. "cl260520260416-1902" → "20260416"
-        Pattern p = Pattern.compile("\\b(\\d{4})(\\d{2})(\\d{2})\\b");
+        // Build label: cl<4 digits><YYYYMMDD>-<HHMM>, e.g. "cl261020260909-0232" → 2026-09-09.
+        // There is no word boundary between a prefix (e.g. "soe_") and the label, so it is
+        // matched by its "cl" prefix rather than with \b.
+        Pattern p = Pattern.compile("cl\\d{4}(\\d{4})(\\d{2})(\\d{2})-\\d{4}");
         List<String> dates = new ArrayList<>();
+        java.util.Set<String> seenBuilds = new java.util.HashSet<>();
         DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyyMMdd");
         for (String tag : tags) {
             Matcher m = p.matcher(tag);
             while (m.find()) {
+                // Count each distinct build once (same label may appear with and without a prefix)
+                if (!seenBuilds.add(m.group(0))) continue;
                 String raw = m.group(1) + m.group(2) + m.group(3);
                 try {
                     LocalDate d = LocalDate.parse(raw, fmt);
                     // Sanity-check: only accept dates in a plausible range (2020–2035)
                     if (d.getYear() >= 2020 && d.getYear() <= 2035) {
                         dates.add(d.toString()); // YYYY-MM-DD
-                        break; // one date per tag is enough
                     }
                 } catch (Exception ignored) {}
             }
         }
         dates.sort(Comparator.naturalOrder());
+        return dates;
+    }
+
+    /**
+     * Returns the creation date (YYYY-MM-DD) of each "New FAT Outputs retained" comment.
+     * libertybuild posts one such comment per failing build, so the list size is an
+     * occurrence count even when the defect carries no build-label tags.
+     */
+    static List<String> extractOccurrenceCommentDates(IWorkItem wi) {
+        List<String> dates = new ArrayList<>();
+        try {
+            if (wi.getComments() == null) return dates;
+            for (var c : wi.getComments().getContents()) {
+                String text = c.getHTMLContent() != null ? c.getHTMLContent().getPlainText() : "";
+                if (text != null && text.contains("New FAT Outputs retained")
+                        && c.getCreationDate() != null) {
+                    dates.add(c.getCreationDate().toLocalDateTime().toLocalDate().toString());
+                }
+            }
+        } catch (Exception ignored) {}
         return dates;
     }
 

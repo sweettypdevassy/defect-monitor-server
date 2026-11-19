@@ -1991,12 +1991,24 @@ async function renderComponentInsights(selectedComponents) {
                     }
                 }
                 
-                // Build count info
-                const buildInfo = defect.build_count ? ` - ${defect.build_count} build${defect.build_count > 1 ? 's' : ''}` : '';
+                // Occurrence count (number of builds the defect appeared in)
+                const occurrences = defect.build_count || 0;
+                const buildInfo = ` - ${occurrences} occurrence${occurrences === 1 ? '' : 's'}`;
+                
+                // Triage tag badge
+                const tag = defect.tag || 'untriaged';
+                const tagColors = {
+                    test_bug: '#ffa726',
+                    product_bug: '#ef5350',
+                    infrastructure_bug: '#4fc3f7',
+                    untriaged: '#8899a6'
+                };
+                const tagColor = tagColors[tag] || '#8899a6';
+                const tagBadge = `<span style="color: ${tagColor}; border: 1px solid ${tagColor}; border-radius: 4px; padding: 0 6px; font-size: 0.85em; margin-left: 6px;">${tag}</span>`;
                 
                 html += `
                     <li style="padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
-                        • Defect ${defectLink} (${defect.age_info || 'old defect'}${creationInfo}${buildInfo})
+                        • Defect ${defectLink} (${defect.age_info || 'old defect'}${creationInfo}${buildInfo})${tagBadge}
                     </li>
                 `;
             });

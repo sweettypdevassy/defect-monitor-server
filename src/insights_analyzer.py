@@ -219,10 +219,17 @@ class InsightsAnalyzer:
                 # Include if last occurrence is older than 30 days (regardless of build count)
                 if days_old is not None and days_old >= 30:
                     logger.info(f"✅ Found aged defect: {defect_id} (last occurrence {days_old} days ago, {build_count} total builds)")
+                    # Prefer the triage tag; cached defects store tags under 'triageTags'
+                    all_tags = defect.get('tags') or defect.get('triageTags') or []
+                    triage_tag = next(
+                        (t for t in all_tags
+                         if str(t).strip().lower() in ('test_bug', 'product_bug', 'infrastructure_bug')),
+                        None
+                    )
                     rare_defects.append({
                         'id': defect_id,
                         'summary': defect['summary'],
-                        'tag': defect.get('tags', ['unknown'])[0] if defect.get('tags') else 'unknown',
+                        'tag': triage_tag or 'untriaged',
                         'build_count': build_count,
                         'age_info': age_info,
                         'days_old': days_old,
