@@ -240,9 +240,11 @@ public class RTCFetchDefects {
     }
 
     /**
-     * Returns the creation date (YYYY-MM-DD) of each "New FAT Outputs retained" comment.
-     * libertybuild posts one such comment per failing build, so the list size is an
-     * occurrence count even when the defect carries no build-label tags.
+     * Returns the creation date (YYYY-MM-DD) of each libertybuild occurrence comment.
+     * libertybuild posts one comment per failing build, so the list size is an
+     * occurrence count even when the defect carries no build-label tags. Two wordings exist:
+     *   - "New FAT Outputs retained for ..."         (recent defects, one per occurrence)
+     *   - "This Defect has been detected in the ..." (older defects, the first occurrence)
      */
     static List<String> extractOccurrenceCommentDates(IWorkItem wi) {
         List<String> dates = new ArrayList<>();
@@ -250,7 +252,9 @@ public class RTCFetchDefects {
             if (wi.getComments() == null) return dates;
             for (var c : wi.getComments().getContents()) {
                 String text = c.getHTMLContent() != null ? c.getHTMLContent().getPlainText() : "";
-                if (text != null && text.contains("New FAT Outputs retained")
+                if (text != null
+                        && (text.contains("New FAT Outputs retained")
+                            || text.contains("This Defect has been detected in"))
                         && c.getCreationDate() != null) {
                     dates.add(c.getCreationDate().toLocalDateTime().toLocalDate().toString());
                 }
