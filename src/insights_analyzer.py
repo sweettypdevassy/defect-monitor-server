@@ -219,13 +219,19 @@ class InsightsAnalyzer:
                 # Include if last occurrence is older than 30 days (regardless of build count)
                 if days_old is not None and days_old >= 30:
                     logger.info(f"✅ Found aged defect: {defect_id} (last occurrence {days_old} days ago, {build_count} total builds)")
-                    # Prefer the triage tag; cached defects store tags under 'triageTags'
-                    all_tags = defect.get('tags') or defect.get('triageTags') or []
-                    triage_tag = next(
-                        (t for t in all_tags
-                         if str(t).strip().lower() in ('test_bug', 'product_bug', 'infrastructure_bug')),
-                        None
-                    )
+                    # Cached defects store tags under 'triageTags'. RTC tags may be the short
+                    # form ("infrastructure", "test") or the _bug form, so match both, using the
+                    # same precedence as the dashboard counts: infra > test > product.
+                    all_tags = [str(t).strip().lower() for t in
+                                (defect.get('tags') or defect.get('triageTags') or [])]
+                    if any('infra' in t for t in all_tags):
+                        triage_tag = 'infrastructure_bug'
+                    elif any('test' in t for t in all_tags):
+                        triage_tag = 'test_bug'
+                    elif any('product' in t for t in all_tags):
+                        triage_tag = 'product_bug'
+                    else:
+                        triage_tag = None
                     rare_defects.append({
                         'id': defect_id,
                         'summary': defect['summary'],
