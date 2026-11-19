@@ -8,6 +8,7 @@ import yaml
 import json
 import logging
 import os
+import re
 from pathlib import Path
 import sys
 from datetime import datetime
@@ -899,7 +900,7 @@ def api_untriaged_defects():
         components_param = request.args.get('components')
         component_names = None
         if components_param:
-            component_names = [c.strip() for c in components_param.split(',')]
+            component_names = [c.strip() for c in re.split(r',(?![^()]*\))', components_param)]
         
         # Get all untriaged defects from database
         untriaged_defects = database.get_all_untriaged_defects(component_names)
@@ -937,7 +938,7 @@ def api_closed_defects():
 
         range_param = request.args.get('range', '').strip().lower()
         components_param = request.args.get('components')
-        component_names = [c.strip() for c in components_param.split(',')] if components_param else None
+        component_names = [c.strip() for c in re.split(r',(?![^()]*\))', components_param)] if components_param else None
 
         now = datetime.utcnow()
         since = until = None
@@ -990,7 +991,7 @@ def api_triaged_defects():
         components_param = request.args.get('components')
         component_names = None
         if components_param:
-            component_names = [c.strip() for c in components_param.split(',')]
+            component_names = [c.strip() for c in re.split(r',(?![^()]*\))', components_param)]
         
         # Get triaged defects categorized by type from database
         triaged_data = database.get_all_triaged_defects_by_category(component_names)
@@ -1161,7 +1162,7 @@ def api_all_components_data():
         days = request.args.get('days', 7, type=int)
         
         if components_param:
-            component_names = [c.strip() for c in components_param.split(',')]
+            component_names = [c.strip() for c in re.split(r',(?![^()]*\))', components_param)]
         else:
             component_names = None
         
