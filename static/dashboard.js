@@ -1395,7 +1395,29 @@ function initializeComponentExplorer() {
         // Hide dashboard, show selector
         document.querySelector('.component-explorer').style.display = 'block';
         document.getElementById('explorerDashboard').style.display = 'none';
+        // Forget the selection in the URL so a reload returns to the selector
+        history.replaceState(null, '', window.location.pathname);
     });
+}
+
+// Keep the selected components in the URL so a browser reload re-opens the same dashboard
+function saveSelectionToUrl() {
+    const params = new URLSearchParams();
+    selectedComponents.forEach(c => params.append('c', c));
+    history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+}
+
+// If the URL has a saved selection, tick those boxes and open the dashboard directly
+function restoreSelectionFromUrl() {
+    const saved = new URLSearchParams(window.location.search).getAll('c');
+    if (saved.length === 0) return;
+    document.querySelectorAll('#componentGrid input[type="checkbox"]').forEach(cb => {
+        cb.checked = saved.includes(cb.value);
+    });
+    updateSelectedComponents();
+    if (selectedComponents.length > 0) {
+        generateExplorerDashboard();
+    }
 }
 
 // Update selected components
@@ -1550,6 +1572,7 @@ async function generateExplorerDashboard() {
         // Hide component selector, show dashboard
         document.querySelector('.component-explorer').style.display = 'none';
         document.getElementById('explorerDashboard').style.display = 'block';
+        saveSelectionToUrl();
         
         // Scroll to top
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2629,6 +2652,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (grid && (!grid.children || grid.children.length === 0)) {
         initializeComponentExplorer();
     }
+
+    // Re-open the dashboard for the components saved in the URL (page reload)
+    restoreSelectionFromUrl();
 });
 
 // Made with Bob
